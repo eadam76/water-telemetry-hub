@@ -8,12 +8,17 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
 
 ### Hardver
 
-- Impulzusadó: **IZAR PULSE i** (Diehl Metering), induktív érzékelésű, **open collector** (polarizált) kimenet, saját lítium elemmel (a jeladó nem igényel tápellátást az ESP-től).
+- Impulzusadó: **IZAR PULSE i, 4-wire 5m** (Diehl Metering, P/N 3108333), induktív érzékelésű, **open collector** kimenet, saját lítium elemmel (a jeladó nem igényel tápellátást az ESP-től).
   - Dokumentáció: [`docs/hardver/izar-pulse-i-adatlap.pdf`](docs/hardver/izar-pulse-i-adatlap.pdf), [`izar-pulse-i-telepitesi-utmutato.pdf`](docs/hardver/izar-pulse-i-telepitesi-utmutato.pdf).
-  - Bekötés (standard 3-eres, csalásjelzéssel): fehér = impulzus, zöld = csalás/manipuláció jelzés (nem használjuk), barna = föld. Kimenet nyitott kollektoros → ESP oldali pull-up szükséges.
-  - **A tényleges vezetékkiosztást és impulzusértéket a konkrét egységen lévő címke alapján kell ellenőrizni** – több változat létezik (3-eres csalásjelzéssel, 4-eres irány+csalásjelzéssel, potenciálmentes kontaktus, egyedi impulzussúlyú 1/3-kimenetes verzió).
-  - Impulzusérték (`liters_per_pulse`): gyári alapértékek 1, 10 vagy 100 l/impulzus (egyedi érték is lehetséges) – innen ered, hogy a kalibráció konfigurálható paraméter kell legyen.
-  - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms – ezek irányadók az ESPHome `pulse_meter` szűrő/timeout beállításához.
+  - **A beszerzett egységen ellenőrzött bekötés** (a konkrét darab címkéje alapján, 3-kimenetes, egyidejűleg 3 eltérő felbontású jelet ad):
+    - fehér = impulzus, `RATIO 1:1` → 1 impulzus = 1 liter
+    - sárga = impulzus, `RATIO 10:1` → 1 impulzus = 10 liter
+    - zöld = impulzus, `RATIO 100:1` → 1 impulzus = 100 liter
+    - barna = föld (közös GND)
+  - Csak a **fehér (1:1) vezetéket** kötjük az ESP GPIO-jára a legjobb felbontásért, + barna GND. Sárga/zöld nem kerül bekötésre.
+  - Kimenet nyitott kollektoros → ESP oldali pull-up szükséges.
+  - `liters_per_pulse = 1` (a fehér vezetékkel), a paraméter így is konfigurálható marad.
+  - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms – ezek irányadók az ESPHome `pulse_meter` szűrő/timeout beállításához (1:1 arány mellett ez max. ~480 l/perc pillanatnyi átfolyást jelent hibamentesen mérve).
   - Kompatibilis Diehl/MOM óracsalád (a gyártói lista kifejezetten tartalmazza a **Corona M**-et).
 - Vízóra: **MOM Corona D3 1"**.
 - Két mérési pont, azonos modulstruktúrával, egymástól függetlenül:
