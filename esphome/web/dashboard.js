@@ -749,6 +749,18 @@
   // whole number from scratch. Deliberately NOT re-applied continuously
   // while the page stays open, only on entry - and never while the field
   // is actively focused, so it can't clobber an in-progress edit.
+  //
+  // Critical: this also POSTs the value, not just displays it. Update's
+  // actual effect is decided entirely server-side - it reads the Reading
+  // number entity's own current *device-side* state, not anything sent
+  // from the press itself (buttons carry no payload). Only changing the
+  // input's DOM value here left the two out of sync: the box could show
+  // a fresh prefill while the device was still sitting on whatever was
+  // last actually typed-and-blurred (or nothing, on first boot) - so
+  // pressing Update without touching the field applied a stale, unrelated
+  // old value instead of what was visibly on screen. Sending the same
+  // value keeps what's shown and what Update would apply identical,
+  // always.
   function prefillReadingFields() {
     for (const entity of entities.values()) {
       if (entity.domain !== "number" || !entity.inputEl || !comboBaseKey(entity.id)) continue;
@@ -757,7 +769,11 @@
       if (!source || typeof source.value !== "number" || Number.isNaN(source.value)) continue;
       const step = entity.step || 0.001;
       const snapped = Math.round(source.value / step) * step;
-      entity.inputEl.value = Math.round(snapped * 1000) / 1000;
+      const value = Math.round(snapped * 1000) / 1000;
+      if (value === entity.value) continue; // already in sync, nothing to push
+      entity.inputEl.value = value;
+      entity.value = value;
+      fetch(`${entity.namePath}/set?value=${encodeURIComponent(value)}`, { method: "POST" });
     }
   }
 
@@ -842,32 +858,25 @@
     source.onerror = () => setConnected(false);
   }
 
-  // iOS Safari's toolbar overlays fixed-position content rather than
-  // resizing the layout viewport - 100dvh (dashboard.css) mostly tracks
-  // that, but only settles *after* an interactive scroll gesture ends, so
-  // the bottom nav can still be briefly covered mid-scroll (CR #2, a
-  // follow-up to CR #10). visualViewport reports the *actual* visible
-  // area continuously, so mirroring it into an inline height (which wins
-  // over the CSS dvh/vh rules regardless of specificity) keeps #dc-root
-  // correct live instead of only once the gesture settles.
-  function syncViewportHeight() {
-    const root = document.getElementById("dc-root");
-    if (!root) return;
-    const vv = window.visualViewport;
-    root.style.height = (vv ? vv.height : window.innerHeight) + "px";
-  }
-
+  // A previous round tried mirroring window.visualViewport into an
+  // inline height on #dc-root, to keep the bottom nav from being briefly
+  // covered mid-scroll by iOS's toolbar (CR #10's follow-up). Reverted:
+  // on a real device, launched from the home screen, that inline
+  // override left the bottom nav completely unresponsive to taps until
+  // the first scroll (visualViewport's very first reading right after
+  // launch, before anything has settled, doesn't reliably match the
+  // actual hit-testing viewport in standalone/WKWebView mode - a scroll
+  // forces WebKit to resync the two, which is why it "healed" the moment
+  // scrolling started). A broken-until-you-scroll nav is a worse bug
+  // than the mid-scroll covering it was trying to fix, so this is back
+  // to plain CSS (100dvh, dashboard.css) - a little less perfectly live
+  // during an active scroll gesture, but it doesn't fight WebKit's own
+  // viewport handling.
   function start() {
     fixMobileMeta();
     currentPage = loadRememberedPage();
     buildShell();
     connect();
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", syncViewportHeight);
-      window.visualViewport.addEventListener("scroll", syncViewportHeight);
-    }
-    window.addEventListener("orientationchange", syncViewportHeight);
-    syncViewportHeight();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
