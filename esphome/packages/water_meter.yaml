@@ -143,6 +143,46 @@ sensor:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 50
 
+switch:
+  # Dashboard-only visibility toggle (see web/dashboard.js) - flip off for
+  # a meter that isn't physically installed on this deployment, to stop
+  # its Home card and other Service fields (Reading, Zero-Flow Timeout,
+  # Display Name) cluttering the UI. Deliberately does NOT stop pulse
+  # counting: there's no cost to leaving that running on an unconnected
+  # GPIO, and "disabled but still pulsing anyway" would itself be worth
+  # noticing, not something to hide.
+  - platform: template
+    id: ${id_prefix}_enabled
+    name: "${friendly_name} Enabled"
+    icon: "mdi:eye-outline"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 5
+
+text:
+  # Purely cosmetic label - shown on the dashboard's Home card and
+  # Service section header instead of the fixed "${friendly_name}", so a
+  # meter can be called e.g. "Meter 1" without touching the YAML. The
+  # id_prefix/entity names/sorting_group stay fixed at compile time -
+  # only what's *displayed* changes.
+  - platform: template
+    id: ${id_prefix}_display_name
+    name: "${friendly_name} Display Name"
+    icon: "mdi:rename-box"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "${friendly_name}"
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 6
+
 number:
   # Physical meter reading entry (m3) - input only, does nothing by
   # itself; the "Update" button below reads it.

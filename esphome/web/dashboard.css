@@ -34,7 +34,18 @@ esp-app {
 
 #dc-root {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* iOS Safari's address bar/toolbar slides in over fixed-position content
+   * instead of resizing the layout viewport - a plain `inset: 0`/100%
+   * height stays sized for when the chrome is hidden, so the bottom nav
+   * ends up covered the moment it reappears (CR #10). 100vh first as a
+   * fallback for engines without dvh; 100dvh (the *current*, shrinkable
+   * viewport height) overrides it wherever supported and tracks the
+   * chrome live. */
+  height: 100vh;
+  height: 100dvh;
   background: var(--dc-bg);
   color: var(--dc-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -193,10 +204,20 @@ esp-app {
 
 .dc-metric {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   padding: 7px 0;
   border-top: 1px solid var(--dc-border);
+}
+
+/* Its help text (see attachHelp() in dashboard.js) is a flex sibling of
+ * the value/label, inserted right after whichever one it's attached to -
+ * forcing it onto its own full-width line (via flex-wrap above) keeps it
+ * from being squeezed in as a third column next to the number. */
+.dc-metric .dc-help-text {
+  flex-basis: 100%;
+  order: 3;
 }
 
 .dc-metric:first-child {
@@ -217,6 +238,9 @@ esp-app {
 }
 
 .dc-metric .l {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   color: var(--dc-text-muted);
 }
@@ -283,6 +307,13 @@ esp-app {
   margin-bottom: 0;
 }
 
+/* CR #9: a disabled meter's fields collapse to just its "Enabled" toggle
+ * (marked .dc-field-keep-visible when built - see upsertServiceSwitch()
+ * in dashboard.js) - that one has to stay reachable to turn it back on. */
+.dc-service-group.dc-meter-disabled .dc-field:not(.dc-field-keep-visible) {
+  display: none;
+}
+
 .dc-fields {
   display: flex;
   flex-direction: column;
@@ -297,6 +328,9 @@ esp-app {
 }
 
 .dc-field .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   font-weight: 500;
   margin-bottom: 10px;
@@ -308,7 +342,8 @@ esp-app {
   gap: 10px;
 }
 
-.dc-field input[type="number"] {
+.dc-field input[type="number"],
+.dc-field input[type="text"] {
   flex: 1 1 auto;
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
@@ -319,7 +354,8 @@ esp-app {
   min-width: 0;
 }
 
-.dc-field input[type="number"]:focus {
+.dc-field input[type="number"]:focus,
+.dc-field input[type="text"]:focus {
   outline: none;
   border-color: var(--dc-accent);
 }
@@ -344,6 +380,75 @@ esp-app {
 
 .dc-hint:empty {
   display: none;
+}
+
+/* CR #7: a small tap-to-reveal "?" next to a label, and the explanation
+ * it toggles - see attachHelp() in dashboard.js. Off by default, so it
+ * never adds clutter to anything that doesn't opt in with actual text. */
+.dc-help-btn {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--dc-text-muted);
+  background: none;
+  color: var(--dc-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.dc-help-btn:hover {
+  border-color: var(--dc-accent);
+  color: var(--dc-accent);
+}
+
+.dc-help-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dc-text-muted);
+  margin: -4px 0 10px;
+}
+
+/* CR #9: the pill toggle for an "Enabled" switch field. */
+.dc-toggle {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--dc-border);
+  background: var(--dc-surface-2);
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+}
+
+.dc-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--dc-text-muted);
+  transition: transform 150ms, background 150ms;
+}
+
+.dc-toggle.dc-toggle-on {
+  background: var(--dc-accent-dim);
+  border-color: var(--dc-accent);
+}
+
+.dc-toggle.dc-toggle-on::after {
+  transform: translateX(18px);
+  background: var(--dc-accent);
+}
+
+/* CR #9: a disabled meter's Home card disappears entirely. */
+.dc-hidden {
+  display: none !important;
 }
 
 .dc-btn {

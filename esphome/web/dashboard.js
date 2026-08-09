@@ -27,6 +27,29 @@
   const NUMBER_MODE_SLIDER = 2;
   const FALLBACK_GROUP = "Other";
 
+  // Short explanations, shown behind a tap-to-reveal "?" next to a
+  // field/metric's label (CR #7). Keyed by displayName() - the label as
+  // shown on screen, with the group name already stripped - so one entry
+  // covers the entity in every meter's group without repeating it.
+  // Nothing here for an entity that isn't in this map - the "?" just
+  // doesn't render, rather than showing an empty hint.
+  const HELP_TEXT = {
+    "Total Consumption": "Cumulative water use, calculated from the pulse count and the last calibration - not a live meter photograph.",
+    "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
+    "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
+    "Update": "Applies the Reading field above, overwriting the calculated total. Cannot be undone.",
+    "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
+    "Restart": "Reboots the device. Calibration and other settings are kept.",
+    "Enabled": "Shows or hides this meter on the Home page and its other Service fields below. Pulse counting keeps running either way.",
+    "Display Name": "Shown instead of the fixed name above, on the Home page and here.",
+  };
+
+  // Buttons/fields whose action isn't easily undone get an explicit
+  // confirmation before firing (CR #4, #6) - matched by displayName(),
+  // so it applies uniformly across meters without hardcoding names.
+  const CONFIRM_ON_PRESS = new Set(["Update", "Restart"]);
+  const CONFIRM_ON_CHANGE = new Set(["Zero-Flow Timeout"]);
+
   // Small hand-drawn icon set (24x24, stroke-based) - deliberately not an
   // icon font/CDN, so the page renders with zero network access.
   const ICONS = {
@@ -71,7 +94,35 @@
   // per-entity sorting_weight, which only orders entities *within* a
   // group - these two are easy to conflate).
   const groupWeights = new Map();
+  // sorting_group name -> its "Enabled" switch's current state (CR #9).
+  // Missing entry == not yet known/no such switch -> treated as enabled,
+  // never as hidden, so groups without one (Network, System, ...) are
+  // unaffected and a not-yet-arrived switch state doesn't flash-hide
+  // anything.
+  const groupEnabled = new Map();
+  // sorting_group name -> its "Display Name" text's current value (CR
+  // #8), shown on card/section headers instead of the fixed group name.
+  // Missing/empty entry -> fall back to the real group name.
+  const groupDisplayNames = new Map();
   let currentPage = "home";
+
+  function groupLabel(name) {
+    return groupDisplayNames.get(name) || name;
+  }
+
+  // Re-applies a group's current display name to every page that has
+  // already built a container for it - called both when the name itself
+  // changes and (from ensure*Group()) when a container is created after
+  // the name was already known, so arrival order never matters.
+  function refreshGroupLabel(name) {
+    const label = groupLabel(name);
+    const home = homeGroups.get(name);
+    if (home) home.card.querySelector(".dc-meter-card-header span").textContent = label;
+    const svc = serviceGroups.get(name);
+    if (svc) svc.section.querySelector(".dc-section-label").textContent = label;
+    const diag = diagGroups.get(name);
+    if (diag) diag.section.querySelector(".dc-section-label").textContent = label;
+  }
 
   // --- Home page: one card per meter's sorting_group ------------------
 
@@ -84,10 +135,11 @@
     const header = el(
       "div",
       "dc-meter-card-header",
-      `${svgIcon(GROUP_ICON_BY_NAME[name] || "dot")}<span>${name}</span>`
+      `${svgIcon(GROUP_ICON_BY_NAME[name] || "dot")}<span>${groupLabel(name)}</span>`
     );
     const body = el("div", "dc-meter-card-body");
     card.append(header, body);
+    if (groupEnabled.get(name) === false) card.classList.add("dc-hidden");
     g = { weight: groupWeights.get(name) ?? 500, card, body };
     homeGroups.set(name, g);
     document.getElementById("dc-page-home").appendChild(card);
@@ -108,14 +160,16 @@
       entity.el = el(
         "div",
         "dc-metric",
-        `<div class="v"><span class="val"></span><span class="unit"></span></div><div class="l"></div>`
+        `<div class="v"><span class="val"></span><span class="unit"></span></div><div class="l"><span class="label-text"></span></div>`
       );
       group.body.appendChild(entity.el);
     }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     entity.el.querySelector(".val").textContent = fmtValue(entity);
     entity.el.querySelector(".unit").textContent = entity.uom || "";
-    entity.el.querySelector(".l").textContent = displayName(entity);
+    const label = displayName(entity);
+    entity.el.querySelector(".label-text").textContent = label;
+    attachHelp(entity.el.querySelector(".l"), HELP_TEXT[label]);
     // The lowest-weight metric in the card is the headline (big) number -
     // Total Consumption, by sorting_weight, see packages/water_meter.yaml.
     const rows = [...group.body.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight));
@@ -133,7 +187,7 @@
     let g = diagGroups.get(name);
     if (g) return g;
     const section = el("div", "dc-diag-group");
-    const label = el("div", "dc-section-label", name);
+    const label = el("div", "dc-section-label", groupLabel(name));
     const list = el("div", "dc-list");
     section.append(label, list);
     g = { weight: groupWeights.get(name) ?? 500, section, list };
@@ -172,9 +226,10 @@
     let g = serviceGroups.get(name);
     if (g) return g;
     const section = el("div", "dc-service-group");
-    const label = el("div", "dc-section-label", name);
+    const label = el("div", "dc-section-label", groupLabel(name));
     const fields = el("div", "dc-fields");
     section.append(label, fields);
+    if (groupEnabled.get(name) === false) section.classList.add("dc-meter-disabled");
     g = { weight: groupWeights.get(name) ?? 500, section, fields };
     serviceGroups.set(name, g);
     document.getElementById("dc-page-service").appendChild(section);
@@ -206,7 +261,7 @@
       entity.el = el(
         "div",
         "dc-field",
-        `<div class="label"></div><div class="dc-field-row"></div><div class="dc-hint"></div>`
+        `<div class="label"><span class="label-text"></span></div><div class="dc-field-row"></div><div class="dc-hint"></div>`
       );
       const row = entity.el.querySelector(".dc-field-row");
       const input = document.createElement("input");
@@ -223,6 +278,16 @@
         row.appendChild(readout);
       }
       input.addEventListener("change", () => {
+        // A handful of numbers take effect the instant they're set (no
+        // separate "apply" step, unlike Reading/Update) - CR #6 asks for
+        // a confirmation before those specifically.
+        if (CONFIRM_ON_CHANGE.has(displayName(entity))) {
+          const message = `Change ${entity.groupName} ${displayName(entity)} to ${input.value}${entity.uom ? " " + entity.uom : ""}?`;
+          if (!confirm(message)) {
+            input.value = entity.value ?? ""; // revert the visible value to the last known server state
+            return;
+          }
+        }
         fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
       });
       if (input.type === "range") {
@@ -234,7 +299,9 @@
       entity.readoutEl = readout;
       group.fields.appendChild(entity.el);
     }
-    entity.el.querySelector(".label").textContent = displayName(entity);
+    const label = displayName(entity);
+    entity.el.querySelector(".label-text").textContent = label;
+    attachHelp(entity.el.querySelector(".label"), HELP_TEXT[label]);
     const hint = entity.el.querySelector(".dc-hint");
     hint.textContent =
       entity.min !== undefined && entity.max !== undefined
@@ -248,6 +315,76 @@
     if (base) {
       const sibling = entities.get(`button-${base}_update`);
       if (sibling) mountComboButton(sibling, entity.el.querySelector(".dc-field-row"));
+    }
+  }
+
+  // Display Name (CR #8) - a plain text field, styled like a number field
+  // but with no min/max hint and no confirm-on-change (purely cosmetic,
+  // nothing to protect against). Renaming immediately relabels this
+  // meter's Home card and Service/Diagnostics section headers.
+  function upsertServiceText(entity) {
+    const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
+    if (!entity.el) {
+      entity.el = el(
+        "div",
+        "dc-field",
+        `<div class="label"><span class="label-text"></span></div><div class="dc-field-row"></div>`
+      );
+      const row = entity.el.querySelector(".dc-field-row");
+      const input = document.createElement("input");
+      input.type = "text";
+      row.appendChild(input);
+      input.addEventListener("change", () => {
+        fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+      });
+      entity.inputEl = input;
+      group.fields.appendChild(entity.el);
+    }
+    if (entity.maxLength !== undefined) entity.inputEl.maxLength = entity.maxLength;
+    const label = displayName(entity);
+    entity.el.querySelector(".label-text").textContent = label;
+    attachHelp(entity.el.querySelector(".label"), HELP_TEXT[label]);
+    if (document.activeElement !== entity.inputEl) entity.inputEl.value = entity.value ?? "";
+    if (label === "Display Name") {
+      groupDisplayNames.set(entity.groupName, (entity.value || "").trim());
+      refreshGroupLabel(entity.groupName);
+    }
+  }
+
+  // Enabled (CR #9) - a pill toggle. Purely a dashboard visibility
+  // switch (see the YAML comment next to it) - flipping it shows/hides
+  // this meter's Home card and its own other Service fields, nothing
+  // else.
+  function upsertServiceSwitch(entity) {
+    const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
+    if (!entity.el) {
+      entity.el = el(
+        "div",
+        "dc-field dc-field-keep-visible",
+        `<div class="label"><span class="label-text"></span></div><div class="dc-field-row"></div>`
+      );
+      const toggle = el("button", "dc-toggle", "");
+      toggle.type = "button";
+      toggle.setAttribute("role", "switch");
+      toggle.addEventListener("click", () => {
+        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+      });
+      entity.el.querySelector(".dc-field-row").appendChild(toggle);
+      entity.toggleEl = toggle;
+      group.fields.appendChild(entity.el);
+    }
+    const label = displayName(entity);
+    entity.el.querySelector(".label-text").textContent = label;
+    attachHelp(entity.el.querySelector(".label"), HELP_TEXT[label]);
+    const on = entity.value === true;
+    entity.toggleEl.classList.toggle("dc-toggle-on", on);
+    entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
+    if (label === "Enabled") {
+      groupEnabled.set(entity.groupName, on);
+      const home = homeGroups.get(entity.groupName);
+      if (home) home.card.classList.toggle("dc-hidden", !on);
+      const svc = serviceGroups.get(entity.groupName);
+      if (svc) svc.section.classList.toggle("dc-meter-disabled", !on);
     }
   }
 
@@ -269,6 +406,7 @@
     buttonEntity.btnEl.className = "dc-btn dc-btn-compact";
     buttonEntity.btnEl.textContent = "Update";
     if (buttonEntity.btnEl.parentElement !== row) row.appendChild(buttonEntity.btnEl);
+    attachHelp(row, HELP_TEXT["Update"]);
     if (buttonEntity.el) {
       buttonEntity.el.remove();
       buttonEntity.el = null;
@@ -276,11 +414,28 @@
   }
 
   function pressButton(entity) {
+    const label = displayName(entity);
+    if (CONFIRM_ON_PRESS.has(label) && !confirm(confirmMessageForPress(entity, label))) return;
     const btn = entity.btnEl;
     btn.classList.add("dc-pressed");
     fetch(`${entity.namePath}/press`, { method: "POST" }).finally(() => {
       setTimeout(() => btn.classList.remove("dc-pressed"), 400);
     });
+  }
+
+  // Update's confirmation names the actual value about to be applied
+  // (read straight off the paired Reading field's input) rather than a
+  // generic "are you sure?" - Restart just needs a plain yes/no.
+  function confirmMessageForPress(entity, label) {
+    if (label === "Restart") return "Restart the device now?";
+    if (label === "Update") {
+      const base = comboBaseKey(entity.id);
+      const numberEntity = base && entities.get(`number-${base}_reading`);
+      const value = numberEntity && numberEntity.inputEl ? numberEntity.inputEl.value : "the entered value";
+      const unit = numberEntity && numberEntity.uom ? " " + numberEntity.uom : "";
+      return `Set ${entity.groupName} Reading to ${value}${unit}? This overwrites the accumulated total and cannot be undone.`;
+    }
+    return "Are you sure?";
   }
 
   function upsertServiceButton(entity) {
@@ -297,9 +452,12 @@
     const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.btnEl) {
       entity.el = el("div", "dc-field");
+      const row = el("div", "dc-field-row");
       entity.btnEl = el("button", "dc-btn", entity.name);
       entity.btnEl.addEventListener("click", () => pressButton(entity));
-      entity.el.appendChild(entity.btnEl);
+      row.appendChild(entity.btnEl);
+      attachHelp(row, HELP_TEXT[displayName(entity)]);
+      entity.el.appendChild(row);
       group.fields.appendChild(entity.el);
     }
   }
@@ -332,6 +490,26 @@
     return entity.name;
   }
 
+  // Adds a tap-to-reveal "?" to `container` (typically a `.label`/row
+  // element) and a hidden explanation block right after it (CR #7) - a
+  // no-op if there's no text for this label, or if it's already been
+  // attached (upsert* runs on every SSE update, this only needs to
+  // happen once).
+  function attachHelp(container, text) {
+    if (!text || container.querySelector(".dc-help-btn")) return;
+    const btn = el("button", "dc-help-btn", "?");
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Help");
+    const hint = el("div", "dc-help-text", text);
+    hint.hidden = true;
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      hint.hidden = !hint.hidden;
+    });
+    container.appendChild(btn);
+    container.insertAdjacentElement("afterend", hint);
+  }
+
   function fmtValue(entity) {
     const v = entity.value;
     if (v === null || v === undefined || v === "") return "--";
@@ -356,9 +534,11 @@
     return entity.domain === "button" && /factory reset/i.test(entity.name);
   }
 
+  const SERVICE_DOMAINS = new Set(["number", "button", "switch", "text"]);
+
   function pageFor(entity) {
     if (entity.category === ENTITY_CATEGORY_DIAGNOSTIC) return "diagnostics";
-    if (entity.domain === "number" || entity.domain === "button") return "service";
+    if (SERVICE_DOMAINS.has(entity.domain)) return "service";
     return "home";
   }
 
@@ -370,6 +550,8 @@
     else if (page === "service") {
       if (entity.domain === "number") upsertServiceNumber(entity);
       else if (entity.domain === "button") upsertServiceButton(entity);
+      else if (entity.domain === "switch") upsertServiceSwitch(entity);
+      else if (entity.domain === "text") upsertServiceText(entity);
     }
   }
 
@@ -408,6 +590,7 @@
     if (data.max_value !== undefined) entity.max = data.max_value;
     if (data.step !== undefined) entity.step = data.step;
     if (data.mode !== undefined) entity.mode = data.mode;
+    if (data.max_length !== undefined) entity.maxLength = data.max_length;
     entity.value = coerceValue(entity.domain, data.value);
     render(entity);
   }
@@ -468,6 +651,34 @@
       document.getElementById(`dc-page-${p.id}`).classList.toggle("active", active);
     }
     document.getElementById("dc-title").textContent = PAGES.find((p) => p.id === id).label;
+    if (id === "service") prefillReadingFields();
+  }
+
+  // CR #3: each time the Service page is opened, every Reading field is
+  // pre-filled with its meter's current Total Consumption - a sensible
+  // starting point (instead of showing 0, the field's optimistic default,
+  // which would otherwise be one accidental Update press away from
+  // zeroing the total) and a smaller nudge to correct than typing the
+  // whole number from scratch. Deliberately NOT re-applied continuously
+  // while the page stays open, only on entry - and never while the field
+  // is actively focused, so it can't clobber an in-progress edit.
+  function prefillReadingFields() {
+    for (const entity of entities.values()) {
+      if (entity.domain !== "number" || !entity.inputEl || !comboBaseKey(entity.id)) continue;
+      if (document.activeElement === entity.inputEl) continue;
+      const source = totalConsumptionFor(entity.groupName);
+      if (!source || typeof source.value !== "number" || Number.isNaN(source.value)) continue;
+      const step = entity.step || 0.001;
+      const snapped = Math.round(source.value / step) * step;
+      entity.inputEl.value = Math.round(snapped * 1000) / 1000;
+    }
+  }
+
+  function totalConsumptionFor(groupName) {
+    for (const e of entities.values()) {
+      if (e.groupName === groupName && displayName(e) === "Total Consumption") return e;
+    }
+    return null;
   }
 
   function buildShell() {
