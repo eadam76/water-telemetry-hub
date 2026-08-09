@@ -53,9 +53,11 @@ offset_m3 := célérték − pulse_count × liters_per_pulse / 1000
 
 Ezzel a diagnosztikai impulzusszám törésmentes marad, a fogyasztás pedig azonnal a megadott értékre áll, és a rendszer minden mutatott adata konzisztens.
 
+A kézi szinkron az `Összes fogyasztás`-t **lefelé is** mozgathatja (ha a fizikai óra állása kisebb, mint amit az ESP addig mutatott) – ilyenkor ugyanaz a HA `total_increasing` statisztikai következmény jelentkezik, mint a tápvesztés utáni visszaugrásnál, csak itt szándékosan. A kézi szinkron ritka, karbantartási jellegű esemény; ha a HA hosszú távú statisztikáját ez érzékenyen érinti, azt szükség esetén kézzel kell korrigálni – emiatt nem indokolt az ESP adatmodelljét bonyolítani.
+
 ### Pillanatnyi átfolyás számítása
 
-- A Térfogatáram és az Impulzusráta **egymást követő impulzusok közti időből** (periódusidő) származik, nem fix időablakos impulzusszámlálásból – ez alacsony átfolyásnál is pontos, gyors reakciójú értéket ad. A kettő ugyanabból a mérésből számolt, egymással konzisztens (ugyanaz az arány köztük, mint `liters_per_pulse`).
+- A Térfogatáram és az Impulzusráta **egymást követő impulzusok közti időből** (periódusidő) származik, nem fix időablakos impulzusszámlálásból – ez a fix időablakos számlálásnál jobb felbontást és reakciót ad alacsony átfolyásnál. A kettő ugyanabból a mérésből számolt, egymással konzisztens (ugyanaz az arány köztük, mint `liters_per_pulse`).
 - **Nulla-átfolyás timeout**: ha egy vízórán X másodpercig nem érkezik új impulzus, a Térfogatáram/Impulzusráta explicit 0-ra áll (különben az utolsó periódusidőből számolt érték érvénytelenül "befagyva" maradna).
   - Alapértelmezett: `15 s`, vízóránként konfigurálható – elsősorban az ESP saját webes felületéről, opcionálisan HA-ból is.
   - Kompromisszum: rövidebb timeout → gyorsabb, pontosabb "elzárva" jelzés, de tartós alacsony átfolyásnál (ahol az impulzusköz meghaladja a timeoutot) a kijelzett érték szaggatottan 0 és a tényleges ráta közt ugrál. Hosszabb timeout → simább alacsony átfolyás, de lassabb "elzárva" jelzés valódi leálláskor.
@@ -65,9 +67,9 @@ Ezzel a diagnosztikai impulzusszám törésmentes marad, a fogyasztás pedig azo
 
 - Az ESP az elsődleges adatforrás; a működés nem függhet HA/MQTT/API/Wi-Fi elérhetőségétől.
 - `pulse_count` RAM-ban él, periodikusan checkpointként kerül NVS-be. Az `offset_m3` **nem** része a periodikus checkpointnak – csak szinkronkor változik, és akkor azonnal, önálló írással perzisztálódik, nincs mit rajta rendszeresen menteni.
-- Checkpoint időköz konfigurálható, **kizárólag az ESP saját webes felületéről** (javasolt tartomány: 10–600 s, alapértelmezett: 60 s), figyelmeztető szöveggel és az ajánlott értékkel a felületen – nem HA-entitás.
-  - Rövidebb időköz → kevesebb elveszett impulzus tápvesztéskor, de több flash-írás.
-  - Tipikus SPI flash élettartam ~100 000 törlési ciklus/szektor; NVS wear-leveling ezt szektorok közt szórja szét, de a checkpoint gyakorisága egyenesen arányos a kopással (pl. 60 s ≈ 1440 írás/nap, 10 s ≈ 8640 írás/nap).
+- Checkpoint időköz **fix `60 s`, fordítási időben rögzített** érték (nem futásidőben állítható, sem HA-ból, sem ESP webről) – az ESPHome `web_server` ugyanazokat az entitásokat adná ki az API-n (HA) keresztül is, mint a helyi weboldalon, tehát a "csak ESP-n állítható" elkülönítés egyedi komponenst igényelne. Az egyszerűség kedvéért ezt nem vállaljuk be.
+  - 60 s ≈ napi 1440 flash-írás; tipikus SPI flash élettartam ~100 000 törlési ciklus/szektor, NVS wear-leveling ezt szektorok közt szórja szét – ez a gyakoriság évekre bőven biztonságos, indoklás nélkül nem indokolt tovább rövidíteni.
+  - Ha később mégis más érték kellene, az egy YAML/`substitutions` módosítás + újraflashelés, nem éles konfigurációs paraméter.
 - Kézi szinkron (`offset_m3`) mindig azonnal perzisztál, checkpointtól függetlenül.
 - Újraindítás után a számlálás az utolsó perzisztált `pulse_count`/`offset_m3` alapján folytatódik.
   - Tápvesztéskor legfeljebb egy checkpoint-nyi impulzus veszhet el, emiatt újraindítás után az `Összes fogyasztás` kis mértékben visszaugorhat. Ez elfogadott mellékhatása a checkpoint-alapú perzisztenciának. A HA `total_increasing` szenzortípus alapvetően monoton növekvő értéket vár; a csökkenést bizonyos esetekben resetként kezeli, de ennek pontos viselkedése (pl. a kis mértékű csökkenésekre vonatkozó tolerancia) HA-verziófüggő és nem garantált – a hosszú távú statisztikák helyes működését implementáció közben külön ellenőrizni kell.
@@ -90,14 +92,14 @@ Vízóránként (Fő vízmérő, Locsoló mérő):
 Diagnosztikai entitások:
 
 - `Impulzusráta` – `impulzus/min`, `state_class: measurement`
-- `Összes impulzus` – `impulzus`, `state_class: total_increasing`
+- `Összes impulzus` – `impulzus`, state class nélkül (nincs szükség rá HA-statisztikában – arra az `Összes fogyasztás` szolgál –, és ugyanúgy visszaugorhatna tápvesztéskor, mint a `pulse_count`)
 
 Beállító/szerviz entitások:
 
 - fizikai vízóra állásának megadása (`m³`) + szinkronizálás
 - nulla-átfolyás timeout (`number`, s)
 
-Checkpoint időköz **nem** HA-entitás, kizárólag az ESP saját webes felületén állítható (lásd Perzisztencia és hibakezelés).
+Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (lásd Perzisztencia és hibakezelés).
 
 ### Idősoros adatok és statisztikák
 
@@ -115,9 +117,7 @@ Checkpoint időköz **nem** HA-entitás, kizárólag az ESP saját webes felüle
 
 - ESPHome `pulse_meter` az impulzusérzékeléshez, a pergésmentesítéshez (`internal_filter`) és a rátaszámításhoz (`timeout`).
 - Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (pl. `fomero`/`locsolo` id-prefix).
-- ESPHome `preferences`/NVS a `pulse_count` (periodikus checkpoint) és `offset_m3` (szinkronkor, azonnali írás) tárolásához.
-  - A futásidőben állítható checkpoint-időköz miatt ez nem oldható meg a statikus `flash_write_interval` YAML-paraméterrel – saját ütemezés kell (pl. `interval:` komponens + lambda, ami az aktuálisan beállított időköz szerint hívja a `save()`-t).
-- Checkpoint időköz kizárólag az ESP saját webes felületén állítható, alapértelmezett 60 s, figyelmeztető szöveggel.
+- ESPHome `preferences`/NVS a `pulse_count` (periodikus checkpoint, `flash_write_interval: 60s`) és `offset_m3` (szinkronkor, azonnali `save()`) tárolásához. A checkpoint fix érték, ezért a beépített statikus `flash_write_interval` paraméter közvetlenül használható, nem kell hozzá egyedi ütemezőlogika.
 
 ## Jelenleg nem követelmény
 
