@@ -1,4 +1,4 @@
-# Vízellátás-felügyelet – követelmények
+# Vízellátó rendszer felügyelet – követelmények
 
 ## Hatókör
 
