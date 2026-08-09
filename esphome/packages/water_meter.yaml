@@ -32,8 +32,8 @@ globals:
   # global_preferences->sync() call right after assignment would see
   # nothing queued yet: the sync button would only persist on a SECOND
   # press, one polling cycle later. Handled instead with our own
-  # ESPPreferenceObject, saved explicitly and immediately (see the "Sync"
-  # button and the boot-load lambdas below).
+  # ESPPreferenceObject, saved explicitly and immediately (see the
+  # "Update" button and the boot-load lambdas below).
   - id: ${id_prefix}_offset_m3
     type: float
     restore_value: false
@@ -97,6 +97,12 @@ sensor:
 
   # Flow Rate - calibrated (liters_per_pulse-scaled) value, updated only
   # from Pulse Rate's on_value, no update schedule of its own.
+  #
+  # sorting_weight 20, after Total Consumption's 10: the dashboard's Home
+  # page shows the lowest-weight entity of a meter's group as the big
+  # "headline" number (see web/dashboard.js), and Total Consumption -
+  # what's actually being billed - is the one that belongs there, not the
+  # instantaneous rate.
   - platform: template
     id: ${id_prefix}_flow_rate
     name: "${friendly_name} Flow Rate"
@@ -106,7 +112,7 @@ sensor:
     state_class: measurement
     web_server:
       sorting_group_id: ${sorting_group_id}
-      sorting_weight: 10
+      sorting_weight: 20
 
   # Total Consumption - the primary source for HA long-term statistics.
   # offset_m3 + pulse_count * liters_per_pulse / 1000.
@@ -120,7 +126,7 @@ sensor:
     accuracy_decimals: 3
     web_server:
       sorting_group_id: ${sorting_group_id}
-      sorting_weight: 20
+      sorting_weight: 10
 
   # Total Pulses - diagnostic, raw readout of the persistent pulse_count.
   # Deliberately NO state_class: no need for HA long-term statistics on it
@@ -139,10 +145,16 @@ sensor:
 
 number:
   # Physical meter reading entry (m3) - input only, does nothing by
-  # itself; the "Sync" button reads it.
+  # itself; the "Update" button below reads it.
+  #
+  # Naming note: the object_id this name generates ("..._reading") and the
+  # Update button's ("..._update") are matched by suffix in
+  # web/dashboard.js to render the two as one combined field+button row
+  # on the dashboard's Service page - keep both names' *_reading/*_update
+  # endings if either is ever renamed.
   - platform: template
     id: ${id_prefix}_sync_target
-    name: "${friendly_name} Meter Reading"
+    name: "${friendly_name} Reading"
     icon: "mdi:counter"
     unit_of_measurement: "m³"
     mode: box
@@ -181,9 +193,12 @@ button:
   # immediately to the given reading, without disturbing pulse_count (the
   # diagnostic pulse counter). Saves immediately, independent of the
   # checkpoint schedule.
+  #
+  # Named "Update" (not "Sync") and paired with the Reading field above by
+  # object_id suffix - see the note there.
   - platform: template
     id: ${id_prefix}_sync_apply
-    name: "${friendly_name} Sync"
+    name: "${friendly_name} Update"
     icon: "mdi:sync"
     entity_category: config
     web_server:
@@ -224,9 +239,9 @@ esphome:
     # globals being restored) has already run by this point.
     then:
       # Load offset_m3 from its own preference slot, BEFORE anything uses
-      # it - same preference key as the "Sync" button's save. If there was
-      # never a manual sync, load() returns false and it stays at its 0
-      # initial_value.
+      # it - same preference key as the "Update" button's save. If there
+      # was never a manual sync, load() returns false and it stays at its
+      # 0 initial_value.
       - lambda: |-
           auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
           float loaded = 0;

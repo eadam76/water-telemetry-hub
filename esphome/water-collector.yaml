@@ -116,21 +116,28 @@ esp32_improv:
   authorizer: none
 
 sensor:
+  # entity_category: diagnostic on everything below - it's what routes
+  # these onto the dashboard's "Diagnostics" page (see web/dashboard.js:
+  # pageFor()) instead of the primary "Home" page, which is reserved for
+  # the meters' own readings.
   - platform: wifi_signal
     name: "Wi-Fi Signal"
     update_interval: 60s
+    entity_category: diagnostic
     web_server:
       sorting_group_id: sorting_group_network
       sorting_weight: 10
 
   - platform: uptime
     name: "Uptime"
+    entity_category: diagnostic
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 10
 
   - platform: internal_temperature
     name: "Unit Temperature"
+    entity_category: diagnostic
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 20
@@ -138,6 +145,7 @@ sensor:
   - platform: debug
     free:
       name: "Free Heap"
+      entity_category: diagnostic
       web_server:
         sorting_group_id: sorting_group_system
         sorting_weight: 30
@@ -146,17 +154,20 @@ text_sensor:
   - platform: wifi_info
     ip_address:
       name: "IP Address"
+      entity_category: diagnostic
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 20
     ssid:
       name: "Connected SSID"
+      entity_category: diagnostic
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 30
 
   - platform: version
     name: "Firmware Version"
+    entity_category: diagnostic
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 40
@@ -164,13 +175,18 @@ text_sensor:
   - platform: debug
     device:
       name: "Reset Reason"
+      entity_category: diagnostic
       web_server:
         sorting_group_id: sorting_group_system
         sorting_weight: 50
 
 button:
+  # entity_category: config -> dashboard "Service" page, alongside the
+  # meters' own Update buttons (a device-level action still belongs there,
+  # not on Diagnostics, which is read-only info).
   - platform: restart
     name: "Restart"
+    entity_category: config
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 90
@@ -180,6 +196,12 @@ button:
   # action; this is the closest equivalent to "switch to a different
   # hotspot", at the cost of also clearing the other saved preferences
   # (calibration offsets, zero-flow timeouts) - a rare, deliberate action.
+  #
+  # Deliberately left off the custom web UI entirely (dashboard.js skips
+  # any button named "Factory Reset..." outright, not just a confirm
+  # dialog) - stays reachable through the Home Assistant API/entity if
+  # ever needed there, just not one accidental tap away on the device's
+  # own page.
   - platform: factory_reset
     name: "Factory Reset (incl. Wi-Fi)"
     web_server:

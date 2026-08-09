@@ -3,6 +3,11 @@
  * meaningful CSS theming hooks) and styles our own overlay UI, injected by
  * dashboard.js. Self-contained, no external fonts/icons/CDN - everything
  * here has to work with zero network access.
+ *
+ * Structure (see dashboard.js for the "why"): four fixed pages - Home
+ * (meter readings, the device's actual job), Service (calibration +
+ * device actions), Diagnostics (everything else, as plain label/value
+ * rows) and Log (live debug output) - not one page per sorting_group.
  */
 
 esp-app {
@@ -18,8 +23,6 @@ esp-app {
   --dc-text-muted: #8b93a1;
   --dc-accent: #2dd4bf;
   --dc-accent-dim: #205f58;
-  --dc-danger: #f87171;
-  --dc-danger-dim: #5c2b2b;
   --dc-radius: 14px;
   --dc-radius-sm: 9px;
 }
@@ -127,18 +130,18 @@ esp-app {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--dc-danger);
+  background: var(--dc-danger, #f87171);
 }
 
 #dc-status.connected .dot {
   background: var(--dc-accent);
 }
 
-.dc-panel {
+.dc-page {
   display: none;
 }
 
-.dc-panel.active {
+.dc-page.active {
   display: block;
 }
 
@@ -147,71 +150,143 @@ esp-app {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--dc-text-muted);
-  margin: 28px 0 10px;
+  margin: 0 0 10px;
 }
 
-.dc-section-label:first-child {
-  margin-top: 0;
-}
+/* --- Home page: one card per meter (Main/Garden, later Pressure) --- */
 
-/* Not every group has diagnostics/settings (e.g. Network is all
- * diagnostic-category sensors, no config entities) - don't show an empty
- * heading with nothing under it. */
-.dc-tiles:empty,
-.dc-settings:empty {
-  display: none;
-}
-
-.dc-section-label:has(+ .dc-tiles:empty),
-.dc-section-label:has(+ .dc-settings:empty) {
-  display: none;
-}
-
-/* --- Tiles (sensors) --- */
-
-.dc-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
-}
-
-.dc-tile {
+.dc-meter-card {
   background: var(--dc-surface);
   border: 1px solid var(--dc-border);
   border-radius: var(--dc-radius);
-  padding: 16px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
 }
 
-.dc-tile .value {
-  font-size: 26px;
+.dc-meter-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.dc-meter-card-header svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  color: var(--dc-accent);
+}
+
+.dc-meter-card-header span {
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1.15;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dc-text-muted);
 }
 
-.dc-tile .value .unit {
-  font-size: 14px;
+/* A meter's lowest-weight metric (Total Consumption) - the one figure
+ * that actually matters day to day - shown big; everything else in the
+ * card (Flow Rate) as a plain, secondary label/value line. */
+
+.dc-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-top: 1px solid var(--dc-border);
+}
+
+.dc-metric:first-child {
+  border-top: none;
+}
+
+.dc-metric .v {
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dc-metric .v .unit {
+  font-size: 12px;
   font-weight: 400;
   color: var(--dc-text-muted);
   margin-left: 4px;
 }
 
-.dc-tile .label {
-  font-size: 12.5px;
+.dc-metric .l {
+  font-size: 13px;
   color: var(--dc-text-muted);
-  margin-top: 6px;
 }
 
-.dc-tiles.dc-diagnostic .dc-tile .value {
-  font-size: 18px;
+.dc-metric.dc-metric-headline {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 0 14px;
+  border-top: none;
 }
 
-/* --- Settings (config: number + button) --- */
+.dc-metric.dc-metric-headline .v {
+  font-size: 32px;
+  font-weight: 700;
+}
 
-.dc-settings {
+.dc-metric.dc-metric-headline .v .unit {
+  font-size: 15px;
+}
+
+/* --- Diagnostics page: grouped, plain label/value rows - no boxes --- */
+
+.dc-diag-group {
+  margin-bottom: 24px;
+}
+
+.dc-diag-group:last-child {
+  margin-bottom: 0;
+}
+
+.dc-list-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--dc-border);
+  font-size: 13.5px;
+}
+
+.dc-list-row:last-child {
+  border-bottom: none;
+}
+
+.dc-list-row .k {
+  color: var(--dc-text-muted);
+}
+
+.dc-list-row .v {
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* --- Service page: calibration + device actions --- */
+
+.dc-service-group {
+  margin-bottom: 26px;
+  max-width: 420px;
+}
+
+.dc-service-group:last-child {
+  margin-bottom: 0;
+}
+
+.dc-fields {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 420px;
 }
 
 .dc-field {
@@ -254,9 +329,8 @@ esp-app {
   accent-color: var(--dc-accent);
 }
 
-/* The actual ask: min/max shown as a separate, distinctly styled +
- * positioned hint chip, not inline with the label or crammed next to the
- * input. */
+/* min/max shown as a separate, distinctly styled + positioned hint chip,
+ * not inline with the label or crammed next to the input. */
 .dc-hint {
   display: inline-block;
   margin-top: 8px;
@@ -266,6 +340,10 @@ esp-app {
   border: 1px solid var(--dc-border);
   border-radius: 999px;
   padding: 3px 10px;
+}
+
+.dc-hint:empty {
+  display: none;
 }
 
 .dc-btn {
@@ -286,18 +364,50 @@ esp-app {
   color: #06201d;
 }
 
-.dc-btn.dc-btn-danger {
-  background: var(--dc-danger-dim);
-  color: var(--dc-danger);
-  border-color: var(--dc-danger);
-}
-
-.dc-btn.dc-btn-danger:hover {
-  background: var(--dc-danger);
-  color: #2a0a0a;
-}
-
 .dc-btn.dc-pressed {
+  opacity: 0.6;
+}
+
+/* A button mounted next to a field (e.g. Reading + Update) instead of
+ * taking its own full-width card. */
+.dc-btn.dc-btn-compact {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 9px 16px;
+}
+
+/* --- Log page --- */
+
+#dc-log-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+#dc-log-toolbar .dc-btn {
+  width: auto;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+#dc-log {
+  margin: 0;
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  padding: 12px 14px;
+  max-height: 65vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dc-text-muted);
+}
+
+#dc-log:empty::before {
+  content: "Waiting for log output…";
   opacity: 0.6;
 }
 
