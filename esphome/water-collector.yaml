@@ -4,7 +4,7 @@
 # (Hungarian) at the repo root for the full spec.
 #
 # Initial testing: `board_type`/`main_meter_pulse_pin`/
-# `irrigation_meter_pulse_pin` are set to an older, non-S3 ESP32 devkit
+# `garden_meter_pulse_pin` are set to an older, non-S3 ESP32 devkit
 # (see below). Once the production hardware arrives (Waveshare
 # ESP32-S3-RS485-CAN, docs/hardver/esp32-s3-rs485-can-board.md), flip the
 # commented-out substitutions: board_type -> esp32-s3-devkitc-1, pulse pins
@@ -17,12 +17,12 @@ substitutions:
   # --- Hardware: test phase (non-S3 board) ---
   board_type: esp32dev
   main_meter_pulse_pin: GPIO32
-  irrigation_meter_pulse_pin: GPIO33
+  garden_meter_pulse_pin: GPIO33
 
   # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
   # board_type: esp32-s3-devkitc-1
   # main_meter_pulse_pin: GPIO1
-  # irrigation_meter_pulse_pin: GPIO2
+  # garden_meter_pulse_pin: GPIO2
 
 esphome:
   name: ${device_name}
@@ -66,8 +66,8 @@ web_server:
     - id: sorting_group_main_meter
       name: "Main Meter"
       sorting_weight: 10
-    - id: sorting_group_irrigation_meter
-      name: "Irrigation Meter"
+    - id: sorting_group_garden_meter
+      name: "Garden Meter"
       sorting_weight: 20
     # Reserved for the planned pressure sensors (x3) - uncomment and wire
     # up their sorting_group_id once that hardware exists.
@@ -177,12 +177,12 @@ packages:
       zero_flow_timeout_default: "60"
       sorting_group_id: sorting_group_main_meter
 
-  irrigation_meter: !include
+  garden_meter: !include
     file: packages/water_meter.yaml
     vars:
-      id_prefix: irrigation
-      friendly_name: "Irrigation Meter"
-      pulse_pin: ${irrigation_meter_pulse_pin}
+      id_prefix: garden
+      friendly_name: "Garden Meter"
+      pulse_pin: ${garden_meter_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
-      sorting_group_id: sorting_group_irrigation_meter
+      sorting_group_id: sorting_group_garden_meter
