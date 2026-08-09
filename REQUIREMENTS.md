@@ -79,8 +79,8 @@ A kézi szinkron az `Összes fogyasztás`-t **lefelé is** mozgathatja (ha a fiz
 
 ### Hálózat és biztonság
 
-- A kódban nem szerepelhet semmilyen secret (Wi-Fi jelszó, API kulcs) – ESPHome `secrets.yaml`, verziókezelésből kizárva.
-- Első indításkor Wi-Fi beállítás elérhető legyen Bluetooth (BLE improv) és Wi-Fi hotspot (AP + captive portal) módon is.
+- **Wi-Fi SSID/jelszó soha nem kerül fordítási időbe** (se `secrets.yaml`-ba, se máshova a firmware-t generáló repóban) – az eszköz Wi-Fi hitelesítő adat nélkül bootol, azt kizárólag futásidőben, az első indításkor kapja meg Bluetooth (BLE improv) vagy Wi-Fi hotspot (AP + captive portal) útján, és az ESP a saját flash-ébe menti (nem a build tárolja).
+- Egyéb, eszköz-specifikus secretek (API titkosítási kulcs, OTA jelszó, admin jelszó az ESP saját webes felületéhez) ESPHome `secrets.yaml`-ban, verziókezelésből kizárva – ezeknek nincs futásidejű provisioning megfelelőjük az ESPHome-ban, de nem hálózati hitelesítők, nem szivárogtatnak semmit az otthoni hálózatról.
 
 ### Home Assistant adatmodell
 

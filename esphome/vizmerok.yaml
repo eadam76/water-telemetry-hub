@@ -54,11 +54,14 @@ web_server:
     username: admin
     password: !secret web_server_password
 
+# Szándékosan NINCS itt ssid/password: a Wi-Fi hitelesítő adat sosem kerül
+# fordítási időben a firmware-be (lásd REQUIREMENTS.md "Hálózat és
+# biztonság"). Az eszköz üresen bootol; a lenti `ap:` (Wi-Fi hotspot +
+# captive portal) és az `esp32_improv:` (BLE) ad módot a Wi-Fi megadására
+# az első indításkor - amit ott megadnak, azt az ESP a saját flash-ébe
+# menti (nem a mi buildünkbe), onnantól magától csatlakozik újraindítás
+# után is.
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  # Wi-Fi hotspot (AP) fallback, ha nem sikerül csatlakozni - ezen keresztül
-  # is elérhető a kezdeti Wi-Fi beállítás a captive portálon át.
   ap:
     ssid: "${friendly_device_name} beallitas"
 
