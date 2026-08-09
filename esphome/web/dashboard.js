@@ -209,17 +209,26 @@
     }
   }
 
+  // "domain-object_id", e.g. "text_sensor-ip_address" - domain names never
+  // contain a hyphen, object_id never does either (snake_case), so the
+  // first hyphen is an unambiguous split point. Unlike the separate
+  // `domain` JSON field (only present on ?detail=all payloads), `id` is
+  // always there, so this works for both bare `state` events and detail
+  // payloads alike.
+  function splitEntityId(id) {
+    const i = id.indexOf("-");
+    return { domain: id.slice(0, i), objectId: id.slice(i + 1) };
+  }
+
   function handleDetailAll(data) {
     let entity = entities.get(data.id);
     if (!entity) {
       entity = { id: data.id };
       entities.set(data.id, entity);
     }
-    entity.domain = data.domain;
-    // id looks like "{domain}-{object_id}" (see web_server.cpp set_json_id) -
-    // domain is only present on detail_all payloads, which is exactly when
-    // we need to derive object_id for the first time.
-    entity.objectId = data.id.slice(data.domain.length + 1);
+    const { domain, objectId } = splitEntityId(data.id);
+    entity.domain = domain;
+    entity.objectId = objectId;
     entity.name = data.name || entity.objectId;
     entity.uom = data.uom;
     entity.category = data.entity_category || 0;
@@ -233,11 +242,36 @@
     render(entity);
   }
 
+  // Entities the client has learned about via a bare `state` event, before
+  // their full detail (min/max/group/...) has been fetched - guards
+  // against firing duplicate GET .../?detail=all requests when several
+  // `state` events for the same still-unknown entity arrive in a burst.
+  const pendingDetailFetch = new Set();
+
   function handleState(data) {
     const entity = entities.get(data.id);
-    if (!entity) return; // detail_all always arrives first on connect
-    entity.value = coerceValue(entity.domain, data.value);
-    render(entity);
+    if (entity) {
+      entity.value = coerceValue(entity.domain, data.value);
+      render(entity);
+      return;
+    }
+    // In principle `state_detail_all` should have registered every entity
+    // before any bare `state` event arrives (see web_server.cpp,
+    // deferrable_send_state's "allow all details_all through first"
+    // guard) - but that dump doesn't reliably fire for every ESPHome
+    // build/platform. Self-heal instead of just dropping the update:
+    // fetch this one entity's own detail directly over REST, which uses
+    // the exact same JSON shape (see e.g. WebServer::sensor_json_).
+    if (pendingDetailFetch.has(data.id)) return;
+    pendingDetailFetch.add(data.id);
+    const { domain, objectId } = splitEntityId(data.id);
+    fetch(`/${domain}/${objectId}?detail=all`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (json) handleDetailAll(json);
+      })
+      .catch(() => {})
+      .finally(() => pendingDetailFetch.delete(data.id));
   }
 
   // text_sensor values are genuinely strings (e.g. an IP address or the
