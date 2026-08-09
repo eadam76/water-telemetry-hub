@@ -858,25 +858,49 @@
     source.onerror = () => setConnected(false);
   }
 
-  // A previous round tried mirroring window.visualViewport into an
-  // inline height on #dc-root, to keep the bottom nav from being briefly
-  // covered mid-scroll by iOS's toolbar (CR #10's follow-up). Reverted:
-  // on a real device, launched from the home screen, that inline
-  // override left the bottom nav completely unresponsive to taps until
-  // the first scroll (visualViewport's very first reading right after
-  // launch, before anything has settled, doesn't reliably match the
-  // actual hit-testing viewport in standalone/WKWebView mode - a scroll
-  // forces WebKit to resync the two, which is why it "healed" the moment
-  // scrolling started). A broken-until-you-scroll nav is a worse bug
-  // than the mid-scroll covering it was trying to fix, so this is back
-  // to plain CSS (100dvh, dashboard.css) - a little less perfectly live
-  // during an active scroll gesture, but it doesn't fight WebKit's own
-  // viewport handling.
+  // Standalone/home-screen mode (WKWebView) still leaves the bottom nav
+  // untappable until the first scroll, even after dashboard.css stopped
+  // wrapping everything in a position: fixed, never-itself-scrolling
+  // shell (which fixed the white strip and the nav creeping up - real,
+  // confirmed progress, just not the whole thing). What's left now
+  // points at a different, narrower cause: the <meta name=viewport> tag
+  // (fixMobileMeta(), below) can only be inserted *after* the page has
+  // already parsed - there's no way to get it into the server-sent HTML
+  // itself - and WebKit is known to apply a late viewport change to
+  // visual layout (why the page still *looks* right immediately) without
+  // necessarily re-syncing its internal touch hit-testing to match,
+  // until something - a real scroll gesture - forces that resync.
+  //
+  // nudgeViewportSync() tries to force that resync programmatically
+  // instead of waiting for the user to stumble into it: a 1px scroll and
+  // immediately back, right after the page is built. document.
+  // documentElement is briefly given extra height first so there's
+  // always *something* to scroll even on a page shorter than the
+  // viewport (e.g. Home with a single meter card), which a real scroll
+  // gesture doesn't need but a scripted one does.
+  //
+  // Flagged honestly: this is a best-effort attempt at a documented but
+  // hard-to-pin-down WebKit quirk, not a confirmed fix - there's no
+  // device here to verify it against. If the nav is still dead until a
+  // real scroll after this, that's real signal the cause is something
+  // else, not a reason to keep guessing at the same theory.
+  function nudgeViewportSync() {
+    const root = document.documentElement;
+    const previousMinHeight = root.style.minHeight;
+    root.style.minHeight = "calc(100vh + 10px)";
+    window.scrollTo(0, 1);
+    requestAnimationFrame(() => {
+      window.scrollTo(0, 0);
+      root.style.minHeight = previousMinHeight;
+    });
+  }
+
   function start() {
     fixMobileMeta();
     currentPage = loadRememberedPage();
     buildShell();
     connect();
+    nudgeViewportSync();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
