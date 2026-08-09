@@ -59,8 +59,8 @@ A kézi szinkron az `Összes fogyasztás`-t **lefelé is** mozgathatja (ha a fiz
 
 - A Térfogatáram és az Impulzusráta **egymást követő impulzusok közti időből** (periódusidő) származik, nem fix időablakos impulzusszámlálásból – ez a fix időablakos számlálásnál jobb felbontást és reakciót ad alacsony átfolyásnál. A kettő ugyanabból a mérésből számolt, egymással konzisztens (ugyanaz az arány köztük, mint `liters_per_pulse`).
 - **Nulla-átfolyás timeout**: ha egy vízórán X másodpercig nem érkezik új impulzus, a Térfogatáram/Impulzusráta explicit 0-ra áll (különben az utolsó periódusidőből számolt érték érvénytelenül "befagyva" maradna).
-  - Alapértelmezett: `30 s`, vízóránként konfigurálható – futásidőben állítható, alacsony szintű paraméter, elsősorban az ESP saját webes felületéről, opcionálisan HA-ból is (nem fordításidőben beégetett érték).
-  - A korábban javasolt `15 s` túl agresszívnak bizonyult: 1 l/impulzus mellett már egy hétköznapi, nem is lassú folyás (2–5 L/perc, pl. kézmosás) impulzusköze is 12–30 mp – ennél rövidebb timeout ezt is szaggatottá tenné.
+  - Alapértelmezett: `60 s`, vízóránként konfigurálható – futásidőben állítható, alacsony szintű paraméter, elsősorban az ESP saját webes felületéről, opcionálisan HA-ból is (nem fordításidőben beégetett érték).
+  - A korábban javasolt `15 s` túl agresszívnak bizonyult: 1 l/impulzus mellett már egy hétköznapi, nem is lassú folyás (2–5 L/perc, pl. kézmosás) impulzusköze is 12–30 mp – ennél rövidebb timeout ezt is szaggatottá tenné. `60 s` a jóval lassabb, de még hétköznapi (~1 L/perc, csordogálás) folyást is villogás nélkül lefedi.
   - Kompromisszum: rövidebb timeout → gyorsabb, pontosabb "elzárva" jelzés, de tartós alacsony átfolyásnál (ahol az impulzusköz meghaladja a timeoutot) a kijelzett érték szaggatottan 0 és a tényleges ráta közt ugrál. Hosszabb timeout → simább alacsony átfolyás, de lassabb "elzárva" jelzés valódi leálláskor.
   - Ez csak a pillanatnyi Térfogatáram/Impulzusráta kijelzést érinti; az Összes fogyasztás (`pulse_count` alapú) ettől függetlenül pontos marad.
 
@@ -116,11 +116,11 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 
 ## Kezdeti implementációs döntések
 
-- ESPHome `pulse_meter` az impulzusérzékeléshez és a pergésmentesítéshez (`internal_filter`).
+- A `pulse_meter` végzi az impulzusérzékelést, pergésmentesítést és periódusidő-alapú rátamérést. A futásidőben állítható nulla-átfolyás timeout külön ESPHome logikával történik, mert a `pulse_meter.timeout` nem futásidőben konfigurálható.
 - Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (pl. `fomero`/`locsolo` id-prefix).
 - **Checkpoint (`pulse_count`)**: a futó `pulse_count` egy ESPHome `preferences`/`global` állapotban él, minden impulzusnál frissül. A tényleges flash-írást a `flash_write_interval: 60s` korlátozza – ez önmagában **nem** a checkpoint mechanizmusa, csak a fizikai flush gyakoriságát szabályozza, a checkpointot maga a preference-alapú tárolás adja. Ha a `pulse_count` az adott flush-időszak alatt nem változott, ne történjen felesleges fizikai írás – ezt implementáció közben ellenőrizni kell (az ESP-IDF NVS réteg elvben már önmagában kihagyja az azonos érték újraírását, de erre tesztelés nélkül nem szabad vakon támaszkodni).
 - **Kézi szinkron (`offset_m3`)**: módosításkor explicit, azonnali preference-sync/`save()` történik, nem várja meg a `flash_write_interval`-t.
-- **Nulla-átfolyás timeout**: a `pulse_meter` beépített `timeout` paramétere fordításidőben rögzített, futásidőben nem állítható – mivel ez futásidőben konfigurálható kell maradjon (alacsony szintű paraméter), **nem** erre épül, hanem saját, egyszerű "watchdog" logikára: egy `interval:` komponens rendszeresen összeveti az utolsó impulzus időbélyegét a beállított timeout-tal, és lejáratkor explicit 0-ra állítja a Térfogatáram/Impulzusráta szenzorokat.
+- **Nulla-átfolyás timeout megvalósítása**: saját, egyszerű "watchdog" logika – egy `interval:` komponens rendszeresen összeveti az utolsó impulzus időbélyegét a beállított timeout-tal, és lejáratkor explicit 0-ra állítja a Térfogatáram/Impulzusráta szenzorokat.
 
 ## Jelenleg nem követelmény
 
