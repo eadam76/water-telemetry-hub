@@ -53,6 +53,14 @@ offset_m3 := célérték − pulse_count × liters_per_pulse / 1000
 
 Ezzel a diagnosztikai impulzusszám törésmentes marad, a fogyasztás pedig azonnal a megadott értékre áll, és a rendszer minden mutatott adata konzisztens.
 
+### Pillanatnyi átfolyás számítása
+
+- A Térfogatáram és az Impulzusráta **egymást követő impulzusok közti időből** (periódusidő) származik, nem fix időablakos impulzusszámlálásból – ez alacsony átfolyásnál is pontos, gyors reakciójú értéket ad. A kettő ugyanabból a mérésből számolt, egymással konzisztens (ugyanaz az arány köztük, mint `liters_per_pulse`).
+- **Nulla-átfolyás timeout**: ha egy vízórán X másodpercig nem érkezik új impulzus, a Térfogatáram/Impulzusráta explicit 0-ra áll (különben az utolsó periódusidőből számolt érték érvénytelenül "befagyva" maradna).
+  - Alapértelmezett: `15 s`, vízóránként konfigurálható – elsősorban az ESP saját webes felületéről, opcionálisan HA-ból is.
+  - Kompromisszum: rövidebb timeout → gyorsabb, pontosabb "elzárva" jelzés, de tartós alacsony átfolyásnál (ahol az impulzusköz meghaladja a timeoutot) a kijelzett érték szaggatottan 0 és a tényleges ráta közt ugrál. Hosszabb timeout → simább alacsony átfolyás, de lassabb "elzárva" jelzés valódi leálláskor.
+  - Ez csak a pillanatnyi Térfogatáram/Impulzusráta kijelzést érinti; az Összes fogyasztás (`pulse_count` alapú) ettől függetlenül pontos marad.
+
 ### Perzisztencia és hibakezelés
 
 - Az ESP az elsődleges adatforrás; a működés nem függhet HA/MQTT/API/Wi-Fi elérhetőségétől.
@@ -88,6 +96,7 @@ Beállító/szerviz entitások:
 
 - fizikai vízóra állásának megadása (`m³`) + szinkronizálás
 - checkpoint időköz (`number`, s)
+- nulla-átfolyás timeout (`number`, s)
 
 ### Idősoros adatok és statisztikák
 
@@ -99,16 +108,16 @@ Beállító/szerviz entitások:
 ### Kalibráció
 
 - Az impulzus–térfogat átváltás (`liters_per_pulse`) vízóránként konfigurálható.
-- Az impulzusbemenet pergésmentesítése konfigurálható.
+- Az impulzusbemenet pergésmentesítése konfigurálható (ESPHome `pulse_meter` `internal_filter` paramétere, nem külön logika).
 
 ## Kezdeti implementációs döntések
 
-- ESPHome `pulse_meter` az impulzusérzékeléshez és impulzusráta-méréshez.
+- ESPHome `pulse_meter` az impulzusérzékeléshez, a pergésmentesítéshez (`internal_filter`) és a rátaszámításhoz (`timeout`).
 - Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (pl. `fomero`/`locsolo` id-prefix).
 - ESPHome `preferences`/NVS a `pulse_count` és `offset_m3` checkpointjaihoz.
 - Checkpoint gyakoriság konfigurálható `number` entitással, alapértelmezett 60 s.
 
 ## Jelenleg nem követelmény
 
-- Hibaészlelés/riasztás (szivárgás, csőtörés, tartós nulla fogyasztás stb.) – később, HA oldalon kerül definiálásra.
+- Hibaészlelés/riasztás (szivárgás, csőtörés, tartós nulla fogyasztás stb.) – később, HA oldalon kerül definiálásra. A szükséges nyers adat (historizált `Összes fogyasztás`) már rendelkezésre áll ehhez, a jelenlegi adatmodell emiatt nem igényel bővítést. Felbontási korlát: `liters_per_pulse`-nál (1 l) kisebb szivárgás egy impulzusköznyi időn belül nem észlelhető.
 - Fizikai/környezeti kialakítás (ház, védettség, tápellátás) – nem szoftverkövetelmény.
