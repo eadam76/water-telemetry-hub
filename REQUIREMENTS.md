@@ -38,7 +38,7 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
 
 Vízóránként két perzisztens állapot:
 
-- `pulse_count` – monoton növekvő impulzusszám (soha nem módosul szinkronnál).
+- `pulse_count` – normál futás közben monoton növekvő impulzusszám (soha nem módosul szinkronnál); tápvesztés utáni restore esetén legfeljebb egy checkpoint-időszaknyit visszaállhat (lásd Perzisztencia és hibakezelés).
 - `offset_m3` – korrekciós eltolás.
 
 ```
@@ -70,7 +70,7 @@ Ezzel a diagnosztikai impulzusszám törésmentes marad, a fogyasztás pedig azo
   - Tipikus SPI flash élettartam ~100 000 törlési ciklus/szektor; NVS wear-leveling ezt szektorok közt szórja szét, de a checkpoint gyakorisága egyenesen arányos a kopással (pl. 60 s ≈ 1440 írás/nap, 10 s ≈ 8640 írás/nap).
 - Kézi szinkron (`offset_m3`) mindig azonnal perzisztál, checkpointtól függetlenül.
 - Újraindítás után a számlálás az utolsó perzisztált `pulse_count`/`offset_m3` alapján folytatódik.
-  - Tápvesztéskor legfeljebb egy checkpoint-nyi impulzus veszhet el, emiatt újraindítás után az `Összes fogyasztás` a korábban HA által látott értéknél kisebb lehet egy pillanatra. A `total_increasing` HA-szemantika ezt korrekt módon számlálóresetként kezeli (nem negatív fogyasztásként) – ez elfogadott, dokumentált mellékhatása a checkpoint-alapú perzisztenciának, nem hiba.
+  - Tápvesztéskor legfeljebb egy checkpoint-nyi impulzus veszhet el, emiatt újraindítás után az `Összes fogyasztás` kis mértékben visszaugorhat. Ez elfogadott mellékhatása a checkpoint-alapú perzisztenciának. A HA `total_increasing` szenzortípus alapvetően monoton növekvő értéket vár; a csökkenést bizonyos esetekben resetként kezeli, de ennek pontos viselkedése (pl. a kis mértékű csökkenésekre vonatkozó tolerancia) HA-verziófüggő és nem garantált – a hosszú távú statisztikák helyes működését implementáció közben külön ellenőrizni kell.
 - Első implementáció nem igényel külső FRAM-ot vagy más kiegészítő nem felejtő memóriát.
 
 ### Hálózat és biztonság
