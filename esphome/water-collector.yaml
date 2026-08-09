@@ -117,6 +117,16 @@ web_server:
 wifi:
   ap:
     ssid: "${friendly_device_name} Setup"
+  # ESPHome's own default on ESP32 is "light" (modem-sleep power saving) -
+  # a well-documented source of exactly the symptom seen on real hardware
+  # (dashboard/ping unreachable for many seconds while the device is
+  # still alive and logging over serial, web_server_idf logging "Closing
+  # stuck EventSource connection after 2500 failed sends" - an ~20s
+  # continuous inability to get a single TCP send out). Trades a small
+  # amount of extra power draw (irrelevant - this device is always
+  # mains/USB powered) for the radio never dropping into a sleep state
+  # that can stall an in-progress send.
+  power_save_mode: none
 
 captive_portal:
 
