@@ -118,7 +118,7 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 ## Kezdeti implementációs döntések
 
 - A `pulse_meter` végzi az impulzusérzékelést, pergésmentesítést és periódusidő-alapú rátamérést. A futásidőben állítható nulla-átfolyás timeout külön ESPHome logikával történik, mert a `pulse_meter.timeout` nem futásidőben konfigurálható.
-- Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (pl. `fomero`/`locsolo` id-prefix).
+- Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (`main`/`irrigation` id-prefix – a kódban és fájlnevekben angol terminológia, lásd `esphome/water-collector.yaml`).
 - **Checkpoint (`pulse_count`)**: a futó `pulse_count` egy ESPHome `preferences`/`global` állapotban él, minden impulzusnál frissül. A tényleges flash-írást a `flash_write_interval: 60s` korlátozza – ez önmagában **nem** a checkpoint mechanizmusa, csak a fizikai flush gyakoriságát szabályozza, a checkpointot maga a preference-alapú tárolás adja. Ha a `pulse_count` az adott flush-időszak alatt nem változott, ne történjen felesleges fizikai írás – ezt implementáció közben ellenőrizni kell (az ESP-IDF NVS réteg elvben már önmagában kihagyja az azonos érték újraírását, de erre tesztelés nélkül nem szabad vakon támaszkodni).
 - **Kézi szinkron (`offset_m3`)**: módosításkor explicit, azonnali preference-sync/`save()` történik, nem várja meg a `flash_write_interval`-t.
 - **Nulla-átfolyás timeout megvalósítása**: saját, egyszerű "watchdog" logika – egy `interval:` komponens rendszeresen összeveti az utolsó impulzus időbélyegét a beállított timeout-tal, és lejáratkor explicit 0-ra állítja a Térfogatáram/Impulzusráta szenzorokat.

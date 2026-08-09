@@ -1,0 +1,250 @@
+# Water meter pulse-counter channel - reusable ESPHome package.
+#
+# Full logic for one water meter: pulse sensing, the offset_m3/pulse_count
+# accounting model, checkpoint persistence, zero-flow timeout watchdog,
+# manual calibration sync. See REQUIREMENTS.md (Hungarian) at the repo root
+# for the full rationale.
+#
+# Instantiate per meter from the top-level config (water-collector.yaml)
+# via `!include ... vars:`. Required vars:
+#   id_prefix                 - unique id prefix, e.g. main / irrigation
+#   friendly_name             - display name, e.g. "Main Meter"
+#   pulse_pin                 - GPIO number (int or string), the IZAR PULSE
+#                                white (pulse) wire
+#   liters_per_pulse          - liters/pulse, 1.0 on the white (1:1) wire
+#   zero_flow_timeout_default - default zero-flow timeout, seconds (number)
+#   sorting_group_id          - web_server sorting group id for this meter's
+#                                card section (declared in water-collector.yaml)
+
+globals:
+  # Checkpoint-persistent, monotonic (during normal runtime) pulse count.
+  # Only written by the total: on_value handler and the boot-seed step;
+  # the periodic flash checkpoint is governed by preferences:
+  # flash_write_interval (see water-collector.yaml).
+  - id: ${id_prefix}_pulse_count
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  # Calibration offset (m3), changes only on manual sync.
+  # NOT restore_value: true - that mechanism only saves via the globals
+  # component's own 1s polling (memcmp in its update()), so an immediate
+  # global_preferences->sync() call right after assignment would see
+  # nothing queued yet: the sync button would only persist on a SECOND
+  # press, one polling cycle later. Handled instead with our own
+  # ESPPreferenceObject, saved explicitly and immediately (see the "Sync"
+  # button and the boot-load lambdas below).
+  - id: ${id_prefix}_offset_m3
+    type: float
+    restore_value: false
+    initial_value: "0"
+
+  # millis() timestamp of the last valid pulse - for the zero-flow
+  # watchdog. Deliberately NOT persistent: after every restart, "we just
+  # booted, we don't yet know when the last pulse was" is the correct
+  # starting state, not a stale value from a previous session.
+  - id: ${id_prefix}_last_pulse_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+sensor:
+  # Pulse Rate (diagnostic, raw, uncalibrated signal) + the built-in
+  # `total` sub-sensor, which is the pulse_meter component's own "since
+  # boot" raw pulse total - never exposed to HA directly (internal: true),
+  # only used as the source for the persistent pulse_count.
+  #
+  # Debounce (internal_filter) is a compile-time, not runtime-configurable
+  # parameter here - see REQUIREMENTS.md "Kalibráció". 10 ms: well below
+  # the IZAR PULSE's minimum pulse width (50 ms), so it won't filter out a
+  # real pulse, while still rejecting noise spikes.
+  - platform: pulse_meter
+    id: ${id_prefix}_pulse_rate
+    name: "${friendly_name} Pulse Rate"
+    icon: "mdi:pulse"
+    pin:
+      number: ${pulse_pin}
+      mode: INPUT_PULLUP
+    internal_filter: 10ms
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 40
+    total:
+      id: ${id_prefix}_pulse_total
+      internal: true
+      accuracy_decimals: 0
+      state_class: ""
+      on_value:
+        then:
+          - lambda: |-
+              // The pulse_meter total already reflects the absolute pulse
+              // count since the boot-seed (see on_boot) - this is
+              // pulse_count's only write site during normal operation.
+              uint32_t new_count = (uint32_t) x;
+              id(${id_prefix}_pulse_count) = new_count;
+              id(${id_prefix}_last_pulse_ms) = millis();
+              id(${id_prefix}_total_pulses).publish_state(new_count);
+              float total_m3 = id(${id_prefix}_offset_m3) + (new_count * (float) ${liters_per_pulse}) / 1000.0f;
+              id(${id_prefix}_total_consumption).publish_state(total_m3);
+    on_value:
+      then:
+        - lambda: |-
+            // Flow Rate is derived from the same period-based measurement
+            // as Pulse Rate - the two stay consistent with each other.
+            id(${id_prefix}_flow_rate).publish_state(x * (float) ${liters_per_pulse});
+
+  # Flow Rate - calibrated (liters_per_pulse-scaled) value, updated only
+  # from Pulse Rate's on_value, no update schedule of its own.
+  - platform: template
+    id: ${id_prefix}_flow_rate
+    name: "${friendly_name} Flow Rate"
+    icon: "mdi:water-pump"
+    unit_of_measurement: "L/min"
+    accuracy_decimals: 3
+    state_class: measurement
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 10
+
+  # Total Consumption - the primary source for HA long-term statistics.
+  # offset_m3 + pulse_count * liters_per_pulse / 1000.
+  - platform: template
+    id: ${id_prefix}_total_consumption
+    name: "${friendly_name} Total Consumption"
+    icon: "mdi:water"
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 20
+
+  # Total Pulses - diagnostic, raw readout of the persistent pulse_count.
+  # Deliberately NO state_class: no need for HA long-term statistics on it
+  # (that's what Total Consumption is for), and being checkpoint-based it
+  # could jump backwards on power loss just like pulse_count itself.
+  - platform: template
+    id: ${id_prefix}_total_pulses
+    name: "${friendly_name} Total Pulses"
+    icon: "mdi:counter"
+    unit_of_measurement: "pulses"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 50
+
+number:
+  # Physical meter reading entry (m3) - input only, does nothing by
+  # itself; the "Sync" button reads it.
+  - platform: template
+    id: ${id_prefix}_sync_target
+    name: "${friendly_name} Meter Reading"
+    icon: "mdi:counter"
+    unit_of_measurement: "m³"
+    mode: box
+    min_value: 0
+    max_value: 100000
+    step: 0.001
+    optimistic: true
+    initial_value: 0
+    entity_category: config
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 60
+
+  # Zero-flow timeout - runtime-adjustable, low-level parameter (see
+  # REQUIREMENTS.md "Pillanatnyi átfolyás számítása"). restore_value: true
+  # -> survives a restart too.
+  - platform: template
+    id: ${id_prefix}_zero_flow_timeout
+    name: "${friendly_name} Zero-Flow Timeout"
+    icon: "mdi:timer-cog-outline"
+    unit_of_measurement: "s"
+    mode: box
+    min_value: 10
+    max_value: 600
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: ${zero_flow_timeout_default}
+    entity_category: config
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 70
+
+button:
+  # Apply manual sync: recompute offset_m3 so Total Consumption jumps
+  # immediately to the given reading, without disturbing pulse_count (the
+  # diagnostic pulse counter). Saves immediately, independent of the
+  # checkpoint schedule.
+  - platform: template
+    id: ${id_prefix}_sync_apply
+    name: "${friendly_name} Sync"
+    icon: "mdi:sync"
+    entity_category: config
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 80
+    on_press:
+      - lambda: |-
+          float target = id(${id_prefix}_sync_target).state;
+          float measured_m3 = (id(${id_prefix}_pulse_count) * (float) ${liters_per_pulse}) / 1000.0f;
+          id(${id_prefix}_offset_m3) = target - measured_m3;
+          // Own preference object, explicit save() + sync(): persists to
+          // flash immediately in THIS call, independent of the globals:
+          // restore_value polling cycle, on a single button press.
+          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          pref.save(&id(${id_prefix}_offset_m3));
+          global_preferences->sync();
+          id(${id_prefix}_total_consumption).publish_state(target);
+
+interval:
+  # Zero-flow watchdog: if no new pulse has arrived for `timeout` seconds,
+  # Flow Rate (and, via the on_value chain, nothing else, since Pulse Rate
+  # is the source) is explicitly set to 0. Only publishes when not already
+  # 0, to avoid generating redundant, repeated states.
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(${id_prefix}_pulse_rate).state != 0) {
+            uint32_t timeout_ms = (uint32_t) (id(${id_prefix}_zero_flow_timeout).state * 1000);
+            uint32_t elapsed_ms = millis() - id(${id_prefix}_last_pulse_ms);
+            if (elapsed_ms > timeout_ms) {
+              id(${id_prefix}_pulse_rate).publish_state(0);
+            }
+          }
+
+esphome:
+  on_boot:
+    # Default priority: every component's setup() (including restore_value
+    # globals being restored) has already run by this point.
+    then:
+      # Load offset_m3 from its own preference slot, BEFORE anything uses
+      # it - same preference key as the "Sync" button's save. If there was
+      # never a manual sync, load() returns false and it stays at its 0
+      # initial_value.
+      - lambda: |-
+          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          float loaded = 0;
+          if (pref.load(&loaded)) {
+            id(${id_prefix}_offset_m3) = loaded;
+          }
+      # Seed the pulse_meter's own "since boot" total with the persisted
+      # pulse_count, so from now on the total: on_value gives the
+      # absolute (not just "since boot") pulse count.
+      - pulse_meter.set_total_pulses:
+          id: ${id_prefix}_pulse_rate
+          value: !lambda 'return id(${id_prefix}_pulse_count);'
+      # The set_total_pulses call above also publishes the `total:`
+      # sub-sensor, which synchronously runs the on_value chain further up
+      # - Total Pulses, Total Consumption and last_pulse_ms are already
+      # updated there (pulse_count onto itself, a no-op). All that's left
+      # here is explicitly zeroing Pulse Rate at startup, which cascades
+      # to Flow Rate via its own on_value - so there's no duplicated logic
+      # anywhere.
+      - lambda: |-
+          id(${id_prefix}_pulse_rate).publish_state(0);

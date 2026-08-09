@@ -1,0 +1,188 @@
+# Water Data Collector - pulse-counter data acquisition unit.
+# This device collects raw measurements only; Home Assistant owns
+# historization, statistics and presentation. See REQUIREMENTS.md
+# (Hungarian) at the repo root for the full spec.
+#
+# Initial testing: `board_type`/`main_meter_pulse_pin`/
+# `irrigation_meter_pulse_pin` are set to an older, non-S3 ESP32 devkit
+# (see below). Once the production hardware arrives (Waveshare
+# ESP32-S3-RS485-CAN, docs/hardver/esp32-s3-rs485-can-board.md), flip the
+# commented-out substitutions: board_type -> esp32-s3-devkitc-1, pulse pins
+# -> GPIO1 / GPIO2.
+
+substitutions:
+  device_name: water-collector
+  friendly_device_name: "Water Data Collector"
+
+  # --- Hardware: test phase (non-S3 board) ---
+  board_type: esp32dev
+  main_meter_pulse_pin: GPIO32
+  irrigation_meter_pulse_pin: GPIO33
+
+  # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
+  # board_type: esp32-s3-devkitc-1
+  # main_meter_pulse_pin: GPIO1
+  # irrigation_meter_pulse_pin: GPIO2
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_device_name}
+  comment: "Water supply data collector - pulse counters (+ pressure sensors planned)"
+
+esp32:
+  board: ${board_type}
+  framework:
+    type: esp-idf
+
+# Checkpoint mechanism: every restore_value: true global/number persists
+# through this. flash_write_interval already defaults to 60s, spelled out
+# explicitly here to keep it traceable against REQUIREMENTS.md.
+preferences:
+  flash_write_interval: 60s
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Backs the "Free Heap" diagnostic sensor below.
+debug:
+
+web_server:
+  version: 3
+  # Bundles the dashboard JS into the firmware instead of fetching it from
+  # oi.esphome.io on every page load - keeps the local UI usable with no
+  # internet access, consistent with the ESP not depending on the network.
+  local: true
+  auth:
+    username: admin
+    password: !secret web_server_password
+  sorting_groups:
+    - id: sorting_group_main_meter
+      name: "Main Meter"
+      sorting_weight: 10
+    - id: sorting_group_irrigation_meter
+      name: "Irrigation Meter"
+      sorting_weight: 20
+    # Reserved for the planned pressure sensors (x3) - uncomment and wire
+    # up their sorting_group_id once that hardware exists.
+    # - id: sorting_group_pressure
+    #   name: "Pressure Sensors"
+    #   sorting_weight: 30
+    - id: sorting_group_network
+      name: "Network"
+      sorting_weight: 80
+    - id: sorting_group_system
+      name: "System"
+      sorting_weight: 90
+
+# Wi-Fi credentials are deliberately absent here (see REQUIREMENTS.md
+# "Hálózat és biztonság"): the device boots with none configured, and gets
+# them only at runtime, via BLE (esp32_improv below) or this AP + captive
+# portal. Whatever is entered there is saved to the ESP's own flash, not
+# to this build.
+wifi:
+  ap:
+    ssid: "${friendly_device_name} Setup"
+
+captive_portal:
+
+esp32_improv:
+  authorizer: none
+
+sensor:
+  - platform: wifi_signal
+    name: "Wi-Fi Signal"
+    update_interval: 60s
+    web_server:
+      sorting_group_id: sorting_group_network
+      sorting_weight: 10
+
+  - platform: uptime
+    name: "Uptime"
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 10
+
+  - platform: internal_temperature
+    name: "Unit Temperature"
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 20
+
+  - platform: debug
+    free:
+      name: "Free Heap"
+      web_server:
+        sorting_group_id: sorting_group_system
+        sorting_weight: 30
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 20
+    ssid:
+      name: "Connected SSID"
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 30
+
+  - platform: version
+    name: "Firmware Version"
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 40
+
+  - platform: debug
+    device:
+      name: "Reset Reason"
+      web_server:
+        sorting_group_id: sorting_group_system
+        sorting_weight: 50
+
+button:
+  - platform: restart
+    name: "Restart"
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 90
+
+  # Wipes ALL settings (Wi-Fi included, not just Wi-Fi) and reboots into
+  # provisioning mode. There is no ESPHome-native "forget Wi-Fi only"
+  # action; this is the closest equivalent to "switch to a different
+  # hotspot", at the cost of also clearing the other saved preferences
+  # (calibration offsets, zero-flow timeouts) - a rare, deliberate action.
+  - platform: factory_reset
+    name: "Factory Reset (incl. Wi-Fi)"
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 91
+
+packages:
+  main_meter: !include
+    file: packages/water_meter.yaml
+    vars:
+      id_prefix: main
+      friendly_name: "Main Meter"
+      pulse_pin: ${main_meter_pulse_pin}
+      liters_per_pulse: "1.0"
+      zero_flow_timeout_default: "60"
+      sorting_group_id: sorting_group_main_meter
+
+  irrigation_meter: !include
+    file: packages/water_meter.yaml
+    vars:
+      id_prefix: irrigation
+      friendly_name: "Irrigation Meter"
+      pulse_pin: ${irrigation_meter_pulse_pin}
+      liters_per_pulse: "1.0"
+      zero_flow_timeout_default: "60"
+      sorting_group_id: sorting_group_irrigation_meter
