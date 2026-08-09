@@ -139,10 +139,33 @@
   // once, then settle the *final* state cleanly in one pass, and apply
   // immediately (no more waiting) for everything from then on, including
   // later reconnects.
+  //
+  // How long to wait isn't a fixed number: on a healthy network the whole
+  // burst is over in well under a second, but on a congested one (a
+  // laggy/roaming Wi-Fi - confirmed from real device logs with SCAN_
+  // CONNECTING loops and multi-second ping RTTs) it can take much longer,
+  // and a fixed short delay just moved *when* the flash happened, not
+  // whether it did. So this debounces instead: every full-payload entity
+  // (see scheduleSettle(), called from handleFullPayload()) pushes the
+  // deadline out another SETTLE_QUIET_MS - it only actually settles once
+  // entities stop arriving for that long, i.e. the burst is genuinely
+  // over. SETTLE_MAX_MS is just a backstop in case that quiet moment
+  // never comes, so the UI can't wait forever.
+  const SETTLE_QUIET_MS = 800;
+  const SETTLE_MAX_MS = 6000;
   let initialSettled = false;
+  let settleQuietTimer = null;
+
+  function scheduleSettle() {
+    if (initialSettled) return;
+    clearTimeout(settleQuietTimer);
+    settleQuietTimer = setTimeout(settleInitialBurst, SETTLE_QUIET_MS);
+  }
 
   function settleInitialBurst() {
+    if (initialSettled) return;
     initialSettled = true;
+    clearTimeout(settleQuietTimer);
     const names = new Set([...homeGroups.keys(), ...serviceGroups.keys(), ...diagGroups.keys()]);
     for (const name of names) {
       refreshGroupLabel(name);
@@ -630,6 +653,7 @@
     if (data.max_length !== undefined) entity.maxLength = data.max_length;
     entity.value = coerceValue(entity.domain, data.value);
     render(entity);
+    scheduleSettle();
   }
 
   function handleStateEvent(data) {
@@ -839,10 +863,11 @@
     }
     window.addEventListener("orientationchange", syncViewportHeight);
     syncViewportHeight();
-    // See settleInitialBurst()'s own comment - there's no explicit
-    // "initial dump complete" signal in the SSE protocol to wait for
-    // instead, so this is a fixed, generous grace period.
-    setTimeout(settleInitialBurst, 1500);
+    // Backstop for settleInitialBurst() - see its own comment. Normally
+    // scheduleSettle()'s per-entity debounce (called from
+    // handleFullPayload()) fires it sooner than this; this only matters
+    // if entities somehow never stop trickling in.
+    setTimeout(settleInitialBurst, SETTLE_MAX_MS);
   }
 
   if (document.readyState === "loading") {

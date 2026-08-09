@@ -116,7 +116,13 @@ esp-app {
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 24px 28px 80px;
+  /* Launched from the home screen (apple-mobile-web-app-capable), there's
+   * no Safari chrome anymore to hold the header below the system status
+   * bar (clock/battery) - it draws directly over the page, on top of our
+   * own header, unless we reserve the same space it does (CR "webapp
+   * nézetben felkúszik"). env(safe-area-inset-top) is 0 in an ordinary
+   * browser tab, so this is a no-op there. */
+  padding: calc(24px + env(safe-area-inset-top)) 28px 80px;
 }
 
 #dc-header {
