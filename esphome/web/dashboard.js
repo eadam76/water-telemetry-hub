@@ -346,6 +346,25 @@
         row.appendChild(readout);
       }
       input.addEventListener("change", () => {
+        // Nothing stopped an empty box, or a single pasted garbage
+        // character, from reaching /set before this - the ESP-side
+        // number component does reject unparseable/out-of-range values
+        // (safely, logged as "No operation" / a min/max warning, not
+        // itself a crash as far as could be confirmed), but firing a
+        // request that can never do anything useful is still worth not
+        // doing, and it muddies any future crash investigation to have
+        // it in the log right before something else goes wrong. Revert
+        // and skip the request entirely for anything that isn't an
+        // actual in-range number.
+        const parsed = parseFloat(input.value);
+        const outOfRange =
+          Number.isNaN(parsed) ||
+          (entity.min !== undefined && parsed < entity.min) ||
+          (entity.max !== undefined && parsed > entity.max);
+        if (outOfRange) {
+          input.value = entity.value ?? "";
+          return;
+        }
         // A handful of numbers take effect the instant they're set (no
         // separate "apply" step, unlike Reading/Update) - CR #6 asks for
         // a confirmation before those specifically.
