@@ -3,12 +3,12 @@
 # historization, statistics and presentation. See REQUIREMENTS.md
 # (Hungarian) at the repo root for the full spec.
 #
-# Initial testing: `board_type`/`main_meter_pulse_pin`/
-# `garden_meter_pulse_pin` are set to an older, non-S3 ESP32 devkit
-# (see below). Once the production hardware arrives (Waveshare
-# ESP32-S3-RS485-CAN, docs/hardver/esp32-s3-rs485-can-board.md), flip the
-# commented-out substitutions: board_type -> esp32-s3-devkitc-1, pulse pins
-# -> GPIO1 / GPIO2.
+# Initial testing: `board_type`/`meter1_pulse_pin`/`meter2_pulse_pin` are
+# set to an older, non-S3 ESP32 devkit (see below). Once the production
+# hardware arrives (Waveshare ESP32-S3-RS485-CAN,
+# docs/hardver/esp32-s3-rs485-can-board.md), flip the commented-out
+# substitutions: board_type -> esp32-s3-devkitc-1, pulse pins -> GPIO1 /
+# GPIO2.
 
 substitutions:
   device_name: water-collector
@@ -16,13 +16,13 @@ substitutions:
 
   # --- Hardware: test phase (non-S3 board) ---
   board_type: esp32dev
-  main_meter_pulse_pin: GPIO32
-  garden_meter_pulse_pin: GPIO33
+  meter1_pulse_pin: GPIO32
+  meter2_pulse_pin: GPIO33
 
   # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
   # board_type: esp32-s3-devkitc-1
-  # main_meter_pulse_pin: GPIO1
-  # garden_meter_pulse_pin: GPIO2
+  # meter1_pulse_pin: GPIO1
+  # meter2_pulse_pin: GPIO2
 
 esphome:
   name: ${device_name}
@@ -91,10 +91,10 @@ web_server:
     # not something to bake into the firmware. Rename via each meter's own
     # "Display Name" field on the Service page instead - see the note next
     # to friendly_name below.
-    - id: sorting_group_main_meter
+    - id: sorting_group_meter1
       name: "Water Meter 1"
       sorting_weight: 10
-    - id: sorting_group_garden_meter
+    - id: sorting_group_meter2
       name: "Water Meter 2"
       sorting_weight: 20
     # Reserved for the planned pressure sensors (x3) - uncomment and wire
@@ -223,26 +223,29 @@ packages:
   # names (e.g. "Water Meter 1 Reading") and the "Display Name" field's
   # starting value, which is what you'd actually rename on the Service
   # page ("Main Meter"/"Garden Meter", or whatever fits) without needing
-  # a recompile. id_prefix (main/garden below) stays as-is - it's a
-  # purely internal identifier, never shown anywhere; changing it would
-  # also reset any already-saved calibration (it's part of the flash
-  # preference key for offset_m3 - see water_meter.yaml).
-  main_meter: !include
+  # a recompile. id_prefix (meter1/meter2 below), same reasoning - purely
+  # internal, never shown anywhere. Changing an *existing*, already-
+  # calibrated meter's id_prefix later would still reset its saved
+  # calibration though (it's part of the flash preference key for
+  # offset_m3 - see water_meter.yaml) - a non-issue this early on, before
+  # anything's built on top of these entities (no HA setup yet), but not
+  # a free rename anymore once that's no longer true.
+  meter1: !include
     file: packages/water_meter.yaml
     vars:
-      id_prefix: main
+      id_prefix: meter1
       friendly_name: "Water Meter 1"
-      pulse_pin: ${main_meter_pulse_pin}
+      pulse_pin: ${meter1_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
-      sorting_group_id: sorting_group_main_meter
+      sorting_group_id: sorting_group_meter1
 
-  garden_meter: !include
+  meter2: !include
     file: packages/water_meter.yaml
     vars:
-      id_prefix: garden
+      id_prefix: meter2
       friendly_name: "Water Meter 2"
-      pulse_pin: ${garden_meter_pulse_pin}
+      pulse_pin: ${meter2_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
-      sorting_group_id: sorting_group_garden_meter
+      sorting_group_id: sorting_group_meter2

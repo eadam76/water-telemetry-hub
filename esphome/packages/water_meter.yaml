@@ -7,10 +7,10 @@
 #
 # Instantiate per meter from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
-#   id_prefix                 - unique internal id prefix, e.g. main / garden
-#                                (never shown anywhere - see the note next
-#                                to offset_m3 below before ever changing an
-#                                existing one)
+#   id_prefix                 - unique internal id prefix, e.g. meter1 /
+#                                meter2 (never shown anywhere - see the
+#                                note next to offset_m3 below before ever
+#                                changing an existing one)
 #   friendly_name             - display name, deliberately generic, e.g.
 #                                "Water Meter 1" - also the "Display Name"
 #                                field's starting value (see the text:

@@ -21,11 +21,11 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
   - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms.
   - Kompatibilis Diehl/MOM óracsalád (a gyártói lista kifejezetten tartalmazza a **Corona M**-et).
 - Vízóra: **MOM Corona D3 1"**.
-- ESP board (tervezett, szállítás alatt): **Waveshare ESP32-S3-RS485-CAN**, izolált RS485/CAN, DIN-sínes. Dokumentáció: [`docs/hardver/esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md) (+ eredeti PDF ugyanott). A jeladók a board SH1.0 csatlakozójára kerülnek: `Fő vízmérő → GPIO1`, `Locsoló mérő → GPIO2`. A kezdeti teszteléshez másik (nem S3) boardot használunk, ezért a `board:` típus és a pulzus-GPIO-k a YAML-ban `substitutions`-ként paraméterezettek.
-- Két mérési pont, azonos modulstruktúrával, egymástól függetlenül:
-  - **Fő vízmérő** – teljes fogyasztás (ház + kert).
-  - **Locsoló mérő** – csak a kerti vízellátás (részhalmaza a fő mérőnek).
-  - A ház-only fogyasztás (fő − locsoló) HA oldali származtatott szenzorral számolható, nem ESP feladat.
+- ESP board (tervezett, szállítás alatt): **Waveshare ESP32-S3-RS485-CAN**, izolált RS485/CAN, DIN-sínes. Dokumentáció: [`docs/hardver/esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md) (+ eredeti PDF ugyanott). A jeladók a board SH1.0 csatlakozójára kerülnek: `1. vízmérő → GPIO1`, `2. vízmérő → GPIO2` (`meter1`/`meter2`, lásd Kezdeti implementációs döntések – melyik fizikai mérő melyik, az telepítésfüggő, nincs a kódba égetve). A kezdeti teszteléshez másik (nem S3) boardot használunk, ezért a `board:` típus és a pulzus-GPIO-k a YAML-ban `substitutions`-ként paraméterezettek.
+- Két mérési pont, azonos modulstruktúrával, egymástól függetlenül. A jelen telepítésben (nem a firmware része, csak a konkrét beállítás):
+  - **1. vízmérő ("Fő")** – teljes fogyasztás (ház + kert).
+  - **2. vízmérő ("Locsoló")** – csak a kerti vízellátás (részhalmaza az elsőnek).
+  - A ház-only fogyasztás (1. − 2.) HA oldali származtatott szenzorral számolható, nem ESP feladat.
 
 ### Funkcionális követelmények
 
@@ -85,7 +85,7 @@ A kézi szinkron az `Összes fogyasztás`-t **lefelé is** mozgathatja (ha a fiz
 
 ### Home Assistant adatmodell
 
-Vízóránként (Fő vízmérő, Locsoló mérő):
+Vízóránként (a jelen telepítésben: 1. vízmérő/"Fő", 2. vízmérő/"Locsoló" – lásd Scope):
 
 Üzemi entitások:
 
@@ -119,7 +119,7 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 ## Kezdeti implementációs döntések
 
 - A `pulse_meter` végzi az impulzusérzékelést, pergésmentesítést és periódusidő-alapú rátamérést. A futásidőben állítható nulla-átfolyás timeout külön ESPHome logikával történik, mert a `pulse_meter.timeout` nem futásidőben konfigurálható.
-- Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (`main`/`irrigation` id-prefix – a kódban és fájlnevekben angol terminológia, lásd `esphome/water-collector.yaml`).
+- Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (`meter1`/`meter2` id-prefix – szándékosan generikus, semmilyen konkrét telepítésre jellemző név (pl. "Fő"/"Locsoló") nincs a kódba égetve; a kódban és fájlnevekben angol terminológia, lásd `esphome/water-collector.yaml`). Melyik fizikai mérő melyik, az a dashboard "Display Name" mezőjével, futásidőben állítható be.
 - **Checkpoint (`pulse_count`)**: a futó `pulse_count` egy ESPHome `preferences`/`global` állapotban él, minden impulzusnál frissül. A tényleges flash-írást a `flash_write_interval: 60s` korlátozza – ez önmagában **nem** a checkpoint mechanizmusa, csak a fizikai flush gyakoriságát szabályozza, a checkpointot maga a preference-alapú tárolás adja. Ha a `pulse_count` az adott flush-időszak alatt nem változott, ne történjen felesleges fizikai írás – ezt implementáció közben ellenőrizni kell (az ESP-IDF NVS réteg elvben már önmagában kihagyja az azonos érték újraírását, de erre tesztelés nélkül nem szabad vakon támaszkodni).
 - **Kézi szinkron (`offset_m3`)**: módosításkor explicit, azonnali preference-sync/`save()` történik, nem várja meg a `flash_write_interval`-t.
 - **Nulla-átfolyás timeout megvalósítása**: saját, egyszerű "watchdog" logika – egy `interval:` komponens rendszeresen összeveti az utolsó impulzus időbélyegét a beállított timeout-tal, és lejáratkor explicit 0-ra állítja a Térfogatáram/Impulzusráta szenzorokat.
