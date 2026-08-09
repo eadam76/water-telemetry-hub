@@ -23,11 +23,18 @@ globals:
     restore_value: true
     initial_value: "0"
 
-  # Korrekciós eltolás (m3), kizárólag kézi szinkronkor módosul, akkor
-  # azonnal (flash_write_interval-től függetlenül) perzisztálva.
+  # Korrekciós eltolás (m3), kizárólag kézi szinkronkor módosul.
+  # NEM restore_value: true - az a globals komponens saját, 1 mp-es
+  # pollingján keresztül menti csak (memcmp az update()-ben), így egy
+  # azonnali global_preferences->sync() hívás közvetlenül az értékadás
+  # után még nem látna semmit menteni: a szinkron gomb az első
+  # megnyomásra csak a kijelzett értéket frissítené, a tényleges flash-írás
+  # csak a következő pollingciklus után, a MÁSODIK megnyomásra történne
+  # meg. Ehelyett saját ESPPreferenceObject-tel kezeljük explicit, azonnali
+  # mentéssel (lásd a "Szinkronizálás" gomb és a boot-betöltés lambdáit).
   - id: ${id_prefix}_offset_m3
     type: float
-    restore_value: true
+    restore_value: false
     initial_value: "0"
 
   # Az utolsó érvényes impulzus millis() időbélyege - a nulla-átfolyás
@@ -153,6 +160,11 @@ button:
           float target = id(${id_prefix}_sync_target).state;
           float measured_m3 = (id(${id_prefix}_pulse_count) * (float) ${liters_per_pulse}) / 1000.0f;
           id(${id_prefix}_offset_m3) = target - measured_m3;
+          // Saját preference-objektum, explicit save() + sync(): a
+          // globals: restore_value pollingjától függetlenül, EBBEN a
+          // hívásban azonnal flash-be kerül, egyetlen gombnyomásra.
+          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          pref.save(&id(${id_prefix}_offset_m3));
           global_preferences->sync();
           id(${id_prefix}_total_consumption).publish_state(target);
 
@@ -177,6 +189,16 @@ esphome:
     # Alapértelmezett prioritás: minden komponens setup()-ja (így a
     # restore_value globálisok visszaállítása is) ezt megelőzően lefut.
     then:
+      # offset_m3 saját (nem globals: restore_value-s) betöltése, MIELŐTT
+      # bármi számolna vele - ugyanaz a preference-kulcs, mint a
+      # "Szinkronizálás" gomb mentésénél. Ha még sosem volt kézi szinkron,
+      # a load() false-t ad vissza, marad a 0 initial_value.
+      - lambda: |-
+          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          float loaded = 0;
+          if (pref.load(&loaded)) {
+            id(${id_prefix}_offset_m3) = loaded;
+          }
       # A pulse_meter saját, boot óta számlált total-ját a perzisztens
       # pulse_count-ra állítjuk, hogy onnantól a total: on_value már az
       # abszolút (nem csak "boot óta") impulzusszámot adja.
