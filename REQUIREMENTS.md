@@ -21,6 +21,7 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
   - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms.
   - Kompatibilis Diehl/MOM óracsalád (a gyártói lista kifejezetten tartalmazza a **Corona M**-et).
 - Vízóra: **MOM Corona D3 1"**.
+- ESP board (tervezett, szállítás alatt): **Waveshare ESP32-S3-RS485-CAN**, izolált RS485/CAN, DIN-sínes. Dokumentáció: [`docs/hardver/esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md) (+ eredeti PDF ugyanott). A jeladók a board SH1.0 csatlakozójára kerülnek: `Fő vízmérő → GPIO1`, `Locsoló mérő → GPIO2`. A kezdeti teszteléshez másik (nem S3) boardot használunk, ezért a `board:` típus és a pulzus-GPIO-k a YAML-ban `substitutions`-ként paraméterezettek.
 - Két mérési pont, azonos modulstruktúrával, egymástól függetlenül:
   - **Fő vízmérő** – teljes fogyasztás (ház + kert).
   - **Locsoló mérő** – csak a kerti vízellátás (részhalmaza a fő mérőnek).
