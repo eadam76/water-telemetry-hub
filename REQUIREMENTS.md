@@ -8,8 +8,13 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
 
 ### Hardver
 
-- Impulzusadó: **IZAR PULSE** induktív (érintkezésmentes) impulzuskimenet, Diehl/MOM vízórákhoz.
-  - Pontos elektromos jellemzők (terhelhetőség, kontaktustípus, impulzusérték) a gyártói dokumentáció alapján ellenőrizendők GPIO/pull-up tervezéskor.
+- Impulzusadó: **IZAR PULSE i** (Diehl Metering), induktív érzékelésű, **open collector** (polarizált) kimenet, saját lítium elemmel (a jeladó nem igényel tápellátást az ESP-től).
+  - Dokumentáció: [`docs/hardver/izar-pulse-i-adatlap.pdf`](docs/hardver/izar-pulse-i-adatlap.pdf), [`izar-pulse-i-telepitesi-utmutato.pdf`](docs/hardver/izar-pulse-i-telepitesi-utmutato.pdf).
+  - Bekötés (standard 3-eres, csalásjelzéssel): fehér = impulzus, zöld = csalás/manipuláció jelzés (nem használjuk), barna = föld. Kimenet nyitott kollektoros → ESP oldali pull-up szükséges.
+  - **A tényleges vezetékkiosztást és impulzusértéket a konkrét egységen lévő címke alapján kell ellenőrizni** – több változat létezik (3-eres csalásjelzéssel, 4-eres irány+csalásjelzéssel, potenciálmentes kontaktus, egyedi impulzussúlyú 1/3-kimenetes verzió).
+  - Impulzusérték (`liters_per_pulse`): gyári alapértékek 1, 10 vagy 100 l/impulzus (egyedi érték is lehetséges) – innen ered, hogy a kalibráció konfigurálható paraméter kell legyen.
+  - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms – ezek irányadók az ESPHome `pulse_meter` szűrő/timeout beállításához.
+  - Kompatibilis Diehl/MOM óracsalád (a gyártói lista kifejezetten tartalmazza a **Corona M**-et).
 - Vízóra: **MOM Corona D3 1"**.
 - Két mérési pont, azonos modulstruktúrával, egymástól függetlenül:
   - **Fő vízmérő** – teljes fogyasztás (ház + kert).
