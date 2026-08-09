@@ -1,0 +1,330 @@
+/* Water Data Collector - custom dark dashboard.
+ * Hides the stock ESPHome web_server v3 app (<esp-app>, Shadow DOM, no
+ * meaningful CSS theming hooks) and styles our own overlay UI, injected by
+ * dashboard.js. Self-contained, no external fonts/icons/CDN - everything
+ * here has to work with zero network access.
+ */
+
+esp-app {
+  display: none !important;
+}
+
+:root {
+  --dc-bg: #14161a;
+  --dc-surface: #1c2028;
+  --dc-surface-2: #242a34;
+  --dc-border: #2c313c;
+  --dc-text: #eef1f5;
+  --dc-text-muted: #8b93a1;
+  --dc-accent: #2dd4bf;
+  --dc-accent-dim: #205f58;
+  --dc-danger: #f87171;
+  --dc-danger-dim: #5c2b2b;
+  --dc-radius: 14px;
+  --dc-radius-sm: 9px;
+}
+
+#dc-root,
+#dc-root * {
+  box-sizing: border-box;
+}
+
+#dc-root {
+  position: fixed;
+  inset: 0;
+  background: var(--dc-bg);
+  color: var(--dc-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  z-index: 999999;
+  overflow: hidden;
+}
+
+/* --- Sidebar (desktop) / bottom tab bar (mobile) --- */
+
+#dc-nav {
+  flex: 0 0 84px;
+  background: var(--dc-surface);
+  border-right: 1px solid var(--dc-border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 14px 8px;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.dc-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: var(--dc-radius-sm);
+  cursor: pointer;
+  color: var(--dc-text-muted);
+  border: 1px solid transparent;
+  background: none;
+  font: inherit;
+}
+
+.dc-nav-item svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.dc-nav-item span {
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-align: center;
+  max-width: 68px;
+}
+
+.dc-nav-item.active {
+  color: var(--dc-accent);
+  background: var(--dc-accent-dim);
+  border-color: var(--dc-accent);
+}
+
+.dc-nav-item:hover:not(.active) {
+  background: var(--dc-surface-2);
+  color: var(--dc-text);
+}
+
+/* --- Main content --- */
+
+#dc-main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 24px 28px 80px;
+}
+
+#dc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+#dc-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+#dc-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dc-text-muted);
+}
+
+#dc-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dc-danger);
+}
+
+#dc-status.connected .dot {
+  background: var(--dc-accent);
+}
+
+.dc-panel {
+  display: none;
+}
+
+.dc-panel.active {
+  display: block;
+}
+
+.dc-section-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dc-text-muted);
+  margin: 28px 0 10px;
+}
+
+.dc-section-label:first-child {
+  margin-top: 0;
+}
+
+/* Not every group has diagnostics/settings (e.g. Network is all
+ * diagnostic-category sensors, no config entities) - don't show an empty
+ * heading with nothing under it. */
+.dc-tiles:empty,
+.dc-settings:empty {
+  display: none;
+}
+
+.dc-section-label:has(+ .dc-tiles:empty),
+.dc-section-label:has(+ .dc-settings:empty) {
+  display: none;
+}
+
+/* --- Tiles (sensors) --- */
+
+.dc-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.dc-tile {
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  padding: 16px;
+}
+
+.dc-tile .value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.dc-tile .value .unit {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--dc-text-muted);
+  margin-left: 4px;
+}
+
+.dc-tile .label {
+  font-size: 12.5px;
+  color: var(--dc-text-muted);
+  margin-top: 6px;
+}
+
+.dc-tiles.dc-diagnostic .dc-tile .value {
+  font-size: 18px;
+}
+
+/* --- Settings (config: number + button) --- */
+
+.dc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.dc-field {
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  padding: 14px 16px;
+}
+
+.dc-field .label {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+.dc-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dc-field input[type="number"] {
+  flex: 1 1 auto;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 9px 10px;
+  font-size: 15px;
+  min-width: 0;
+}
+
+.dc-field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--dc-accent);
+}
+
+.dc-field input[type="range"] {
+  flex: 1 1 auto;
+  accent-color: var(--dc-accent);
+}
+
+/* The actual ask: min/max shown as a separate, distinctly styled +
+ * positioned hint chip, not inline with the label or crammed next to the
+ * input. */
+.dc-hint {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dc-text-muted);
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.dc-btn {
+  background: var(--dc-accent-dim);
+  color: var(--dc-accent);
+  border: 1px solid var(--dc-accent);
+  border-radius: var(--dc-radius-sm);
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: background 150ms, color 150ms;
+}
+
+.dc-btn:hover {
+  background: var(--dc-accent);
+  color: #06201d;
+}
+
+.dc-btn.dc-btn-danger {
+  background: var(--dc-danger-dim);
+  color: var(--dc-danger);
+  border-color: var(--dc-danger);
+}
+
+.dc-btn.dc-btn-danger:hover {
+  background: var(--dc-danger);
+  color: #2a0a0a;
+}
+
+.dc-btn.dc-pressed {
+  opacity: 0.6;
+}
+
+/* --- Mobile: bottom tab bar instead of sidebar --- */
+
+@media (max-width: 720px) {
+  #dc-root {
+    flex-direction: column;
+  }
+
+  #dc-nav {
+    order: 2;
+    flex: 0 0 auto;
+    flex-direction: row;
+    justify-content: space-around;
+    border-right: none;
+    border-top: 1px solid var(--dc-border);
+    padding: 6px 4px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+
+  .dc-nav-item {
+    flex: 1 1 auto;
+  }
+
+  #dc-main {
+    order: 1;
+    padding: 18px 16px 24px;
+  }
+}

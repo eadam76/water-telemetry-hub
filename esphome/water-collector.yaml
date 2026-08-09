@@ -59,6 +59,12 @@ web_server:
   # oi.esphome.io on every page load - keeps the local UI usable with no
   # internet access, consistent with the ESP not depending on the network.
   local: true
+  # Our own dark, section-per-page dashboard (web/dashboard.{css,js}) - see
+  # the files themselves for how/why. Hides the stock <esp-app> UI and
+  # replaces it client-side; still uses ESPHome's normal REST/SSE API
+  # underneath, so nothing else here changes.
+  css_include: web/dashboard.css
+  js_include: web/dashboard.js
   auth:
     username: admin
     password: !secret web_server_password
