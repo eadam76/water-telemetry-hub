@@ -155,7 +155,7 @@
       }
       input.addEventListener("change", () => {
         const value = input.value;
-        fetch(`/number/${entity.objectId}/set?value=${encodeURIComponent(value)}`, { method: "POST" });
+        fetch(`${entity.namePath}/set?value=${encodeURIComponent(value)}`, { method: "POST" });
       });
       if (input.type === "range") {
         input.addEventListener("input", () => {
@@ -189,7 +189,7 @@
       );
       btn.addEventListener("click", () => {
         btn.classList.add("dc-pressed");
-        fetch(`/button/${entity.objectId}/press`, { method: "POST" }).finally(() => {
+        fetch(`${entity.namePath}/press`, { method: "POST" }).finally(() => {
           setTimeout(() => btn.classList.remove("dc-pressed"), 400);
         });
       });
@@ -209,27 +209,33 @@
     }
   }
 
-  // "domain-object_id", e.g. "text_sensor-ip_address" - domain names never
-  // contain a hyphen, object_id never does either (snake_case), so the
-  // first hyphen is an unambiguous split point. Unlike the separate
-  // `domain` JSON field (only present on ?detail=all payloads), `id` is
-  // always there, so this works for both bare `state` events and detail
-  // payloads alike.
-  function splitEntityId(id) {
-    const i = id.indexOf("-");
-    return { domain: id.slice(0, i), objectId: id.slice(i + 1) };
+  // `name_id` looks like "sensor/Wi-Fi Signal" - {domain}/{literal entity
+  // name}. This is the only URL form still supported for REST calls: the
+  // older /{domain}/{object_id} form (e.g. /sensor/wi-fi_signal) was
+  // removed as of ESPHome 2026.7.0 (confirmed against a real device on
+  // 2026.7.3 - those URLs now 404). Each segment needs its own
+  // encodeURIComponent since the name can contain spaces/slashes-worth of
+  // punctuation.
+  function pathFromNameId(nameId) {
+    return "/" + nameId.split("/").map(encodeURIComponent).join("/");
   }
 
-  function handleDetailAll(data) {
+  // Registers/refreshes everything about an entity. On this firmware
+  // (ESPHome 2026.7.3) there's no separate one-time "state_detail_all"
+  // dump - every entity's *first* `state` event already carries full
+  // detail (domain, sorting_group, min/max, ...); only later updates for
+  // an already-known entity are terse (just id/value/state). We treat
+  // "has a `domain` field" as "this is a full payload", regardless of
+  // which SSE event name it arrived under.
+  function handleFullPayload(data) {
     let entity = entities.get(data.id);
     if (!entity) {
       entity = { id: data.id };
       entities.set(data.id, entity);
     }
-    const { domain, objectId } = splitEntityId(data.id);
-    entity.domain = domain;
-    entity.objectId = objectId;
-    entity.name = data.name || entity.objectId;
+    entity.domain = data.domain;
+    entity.namePath = pathFromNameId(data.name_id);
+    entity.name = data.name || data.id;
     entity.uom = data.uom;
     entity.category = data.entity_category || 0;
     entity.groupName = data.sorting_group;
@@ -242,36 +248,15 @@
     render(entity);
   }
 
-  // Entities the client has learned about via a bare `state` event, before
-  // their full detail (min/max/group/...) has been fetched - guards
-  // against firing duplicate GET .../?detail=all requests when several
-  // `state` events for the same still-unknown entity arrive in a burst.
-  const pendingDetailFetch = new Set();
-
-  function handleState(data) {
-    const entity = entities.get(data.id);
-    if (entity) {
-      entity.value = coerceValue(entity.domain, data.value);
-      render(entity);
+  function handleStateEvent(data) {
+    if (data.domain !== undefined) {
+      handleFullPayload(data);
       return;
     }
-    // In principle `state_detail_all` should have registered every entity
-    // before any bare `state` event arrives (see web_server.cpp,
-    // deferrable_send_state's "allow all details_all through first"
-    // guard) - but that dump doesn't reliably fire for every ESPHome
-    // build/platform. Self-heal instead of just dropping the update:
-    // fetch this one entity's own detail directly over REST, which uses
-    // the exact same JSON shape (see e.g. WebServer::sensor_json_).
-    if (pendingDetailFetch.has(data.id)) return;
-    pendingDetailFetch.add(data.id);
-    const { domain, objectId } = splitEntityId(data.id);
-    fetch(`/${domain}/${objectId}?detail=all`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => {
-        if (json) handleDetailAll(json);
-      })
-      .catch(() => {})
-      .finally(() => pendingDetailFetch.delete(data.id));
+    const entity = entities.get(data.id);
+    if (!entity) return; // terse update for an entity we haven't seen a full payload for yet - drop it, the next full one will catch us up
+    entity.value = coerceValue(entity.domain, data.value);
+    render(entity);
   }
 
   // text_sensor values are genuinely strings (e.g. an IP address or the
@@ -310,8 +295,13 @@
       const data = JSON.parse(ev.data);
       ensureGroup(data.name, data.sorting_weight);
     });
-    source.addEventListener("state_detail_all", (ev) => handleDetailAll(JSON.parse(ev.data)));
-    source.addEventListener("state", (ev) => handleState(JSON.parse(ev.data)));
+    // Both names are wired to the same handler: some ESPHome versions send
+    // a one-time "state_detail_all" per entity before regular "state"
+    // events, others (e.g. 2026.7.3, what this was actually tested
+    // against) fold the full payload into the first "state" event
+    // instead. handleStateEvent() figures out which kind it got.
+    source.addEventListener("state_detail_all", (ev) => handleStateEvent(JSON.parse(ev.data)));
+    source.addEventListener("state", (ev) => handleStateEvent(JSON.parse(ev.data)));
     source.addEventListener("ping", () => setConnected(true));
     source.onopen = () => setConnected(true);
     source.onerror = () => setConnected(false);
