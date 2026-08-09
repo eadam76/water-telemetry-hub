@@ -18,7 +18,7 @@ ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rends
   - Csak a **fehér (1:1) vezetéket** kötjük az ESP GPIO-jára a legjobb felbontásért, + barna GND. Sárga/zöld nem kerül bekötésre.
   - Kimenet nyitott kollektoros → ESP oldali pull-up szükséges.
   - `liters_per_pulse = 1` (a fehér vezetékkel), a paraméter így is konfigurálható marad.
-  - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms – ezek irányadók az ESPHome `pulse_meter` szűrő/timeout beállításához (1:1 arány mellett ez max. ~480 l/perc pillanatnyi átfolyást jelent hibamentesen mérve).
+  - Max. impulzusfrekvencia: 8 Hz, impulzushossz: 50–500 ms.
   - Kompatibilis Diehl/MOM óracsalád (a gyártói lista kifejezetten tartalmazza a **Corona M**-et).
 - Vízóra: **MOM Corona D3 1"**.
 - Két mérési pont, azonos modulstruktúrával, egymástól függetlenül:
@@ -64,13 +64,13 @@ Ezzel a diagnosztikai impulzusszám törésmentes marad, a fogyasztás pedig azo
 ### Perzisztencia és hibakezelés
 
 - Az ESP az elsődleges adatforrás; a működés nem függhet HA/MQTT/API/Wi-Fi elérhetőségétől.
-- `pulse_count` RAM-ban él, checkpointként kerül NVS-be.
-- Checkpoint időköz konfigurálható HA `number` entitásként (javasolt tartomány: 10–600 s, alapértelmezett: 60 s).
+- `pulse_count` RAM-ban él, periodikusan checkpointként kerül NVS-be. Az `offset_m3` **nem** része a periodikus checkpointnak – csak szinkronkor változik, és akkor azonnal, önálló írással perzisztálódik, nincs mit rajta rendszeresen menteni.
+- Checkpoint időköz konfigurálható, **kizárólag az ESP saját webes felületéről** (javasolt tartomány: 10–600 s, alapértelmezett: 60 s), figyelmeztető szöveggel és az ajánlott értékkel a felületen – nem HA-entitás.
   - Rövidebb időköz → kevesebb elveszett impulzus tápvesztéskor, de több flash-írás.
   - Tipikus SPI flash élettartam ~100 000 törlési ciklus/szektor; NVS wear-leveling ezt szektorok közt szórja szét, de a checkpoint gyakorisága egyenesen arányos a kopással (pl. 60 s ≈ 1440 írás/nap, 10 s ≈ 8640 írás/nap).
-  - A `number` entitás leírásába kerüljön ez a kompromisszum, hogy a felhasználó tájékozottan állíthassa.
-- Kézi szinkron mindig azonnal perzisztál, checkpointtól függetlenül.
+- Kézi szinkron (`offset_m3`) mindig azonnal perzisztál, checkpointtól függetlenül.
 - Újraindítás után a számlálás az utolsó perzisztált `pulse_count`/`offset_m3` alapján folytatódik.
+  - Tápvesztéskor legfeljebb egy checkpoint-nyi impulzus veszhet el, emiatt újraindítás után az `Összes fogyasztás` a korábban HA által látott értéknél kisebb lehet egy pillanatra. A `total_increasing` HA-szemantika ezt korrekt módon számlálóresetként kezeli (nem negatív fogyasztásként) – ez elfogadott, dokumentált mellékhatása a checkpoint-alapú perzisztenciának, nem hiba.
 - Első implementáció nem igényel külső FRAM-ot vagy más kiegészítő nem felejtő memóriát.
 
 ### Hálózat és biztonság
@@ -95,8 +95,9 @@ Diagnosztikai entitások:
 Beállító/szerviz entitások:
 
 - fizikai vízóra állásának megadása (`m³`) + szinkronizálás
-- checkpoint időköz (`number`, s)
 - nulla-átfolyás timeout (`number`, s)
+
+Checkpoint időköz **nem** HA-entitás, kizárólag az ESP saját webes felületén állítható (lásd Perzisztencia és hibakezelés).
 
 ### Idősoros adatok és statisztikák
 
@@ -114,8 +115,9 @@ Beállító/szerviz entitások:
 
 - ESPHome `pulse_meter` az impulzusérzékeléshez, a pergésmentesítéshez (`internal_filter`) és a rátaszámításhoz (`timeout`).
 - Közös logika egy ESPHome csomagban, vízóránkénti példányosítás `substitutions`-szel (pl. `fomero`/`locsolo` id-prefix).
-- ESPHome `preferences`/NVS a `pulse_count` és `offset_m3` checkpointjaihoz.
-- Checkpoint gyakoriság konfigurálható `number` entitással, alapértelmezett 60 s.
+- ESPHome `preferences`/NVS a `pulse_count` (periodikus checkpoint) és `offset_m3` (szinkronkor, azonnali írás) tárolásához.
+  - A futásidőben állítható checkpoint-időköz miatt ez nem oldható meg a statikus `flash_write_interval` YAML-paraméterrel – saját ütemezés kell (pl. `interval:` komponens + lambda, ami az aktuálisan beállított időköz szerint hívja a `save()`-t).
+- Checkpoint időköz kizárólag az ESP saját webes felületén állítható, alapértelmezett 60 s, figyelmeztető szöveggel.
 
 ## Jelenleg nem követelmény
 
