@@ -295,7 +295,23 @@ button:
           // Own preference object, explicit save() + sync(): persists to
           // flash immediately in THIS call, independent of the globals:
           // restore_value polling cycle, on a single button press.
-          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          //
+          // static is load-bearing, not a style choice: make_preference()
+          // heap-allocates a new backend object every time it's called
+          // (confirmed from esp32/preferences.cpp - `new
+          // ESP32PreferenceBackend()`, with no matching delete anywhere -
+          // ESPPreferenceObject is a non-owning handle, designed be
+          // created *once* in setup() and reused, which is exactly what
+          // every built-in component - number/switch/text with
+          // restore_value - does). Without `static` here, every single
+          // Update press leaked one of these, permanently, for the rest
+          // of the device's uptime - death by a thousand cuts on both
+          // free heap and (worse) heap fragmentation, since a small
+          // permanent allocation can block the allocator from ever
+          // coalescing a large-enough contiguous block again. `static`
+          // makes this call happen exactly once, ever, matching the
+          // built-in components' own usage pattern.
+          static auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
           pref.save(&id(${id_prefix}_offset_m3));
           global_preferences->sync();
           id(${id_prefix}_total_consumption).publish_state(target);
@@ -325,8 +341,12 @@ esphome:
       # it - same preference key as the "Update" button's save. If there
       # was never a manual sync, load() returns false and it stays at its
       # 0 initial_value.
+      #
+      # on_boot only runs once, so the leak explained next to the Update
+      # button's own make_preference() call isn't really live here - but
+      # `static` costs nothing and keeps both call sites consistent.
       - lambda: |-
-          auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          static auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
           float loaded = 0;
           if (pref.load(&loaded)) {
             id(${id_prefix}_offset_m3) = loaded;
