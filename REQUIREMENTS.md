@@ -1,6 +1,6 @@
 # Vízellátó rendszer felügyelet – követelmények
 
-## Hatókör
+## Scope
 
 ESP32/ESPHome alapú felügyeleti rendszer az aknában lévő vízellátó rendszerhez. A Home Assistant biztosítja a historizálást, statisztikát és megjelenítést, de az ESP működése nem függhet a HA vagy a hálózat elérhetőségétől.
 
