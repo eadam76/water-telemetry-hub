@@ -7,10 +7,15 @@
 #
 # Instantiate per meter from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
-#   id_prefix                 - unique id prefix, e.g. main / garden
-#   friendly_name             - display name, e.g. "Main Meter"
-#   display_name_default      - initial value of the user-renameable
-#                                "Display Name" field, e.g. "Water Meter 1"
+#   id_prefix                 - unique internal id prefix, e.g. main / garden
+#                                (never shown anywhere - see the note next
+#                                to offset_m3 below before ever changing an
+#                                existing one)
+#   friendly_name             - display name, deliberately generic, e.g.
+#                                "Water Meter 1" - also the "Display Name"
+#                                field's starting value (see the text:
+#                                section below), which is what you'd
+#                                actually rename per-installation
 #   pulse_pin                 - GPIO number (int or string), the IZAR PULSE
 #                                white (pulse) wire
 #   liters_per_pulse          - liters/pulse, 1.0 on the white (1:1) wire
@@ -35,7 +40,12 @@ globals:
   # nothing queued yet: the sync button would only persist on a SECOND
   # press, one polling cycle later. Handled instead with our own
   # ESPPreferenceObject, saved explicitly and immediately (see the
-  # "Update" button and the boot-load lambdas below).
+  # "Update" button and the boot-load lambdas below) - keyed on
+  # fnv1a_hash("${id_prefix}_offset_m3"), so changing an *existing*
+  # meter's id_prefix loses its saved calibration (the new key just
+  # won't find the old flash entry) - a one-time re-sync after reflashing
+  # is the only consequence, not a functional problem, but worth knowing
+  # before renaming one.
   - id: ${id_prefix}_offset_m3
     type: float
     restore_value: false
@@ -179,9 +189,12 @@ switch:
 text:
   # Purely cosmetic label - shown on the dashboard's Home card and
   # Service section header instead of the fixed "${friendly_name}", so a
-  # meter can be called e.g. "Water Meter 1" without touching the YAML.
-  # The id_prefix/entity names/sorting_group stay fixed at compile time -
-  # only what's *displayed* changes.
+  # meter can be renamed per-installation (e.g. "Main Meter"/"Garden
+  # Meter", or anything else) without touching the YAML. Starts out equal
+  # to friendly_name (itself deliberately generic - "Water Meter 1/2",
+  # not "Main"/"Garden") until renamed. The id_prefix/entity names/
+  # sorting_group stay fixed at compile time either way - only what's
+  # *displayed* changes.
   - platform: template
     id: ${id_prefix}_display_name
     name: "${friendly_name} Display Name"
@@ -189,7 +202,7 @@ text:
     mode: text
     optimistic: true
     restore_value: true
-    initial_value: "${display_name_default}"
+    initial_value: "${friendly_name}"
     min_length: 0
     max_length: 32
     entity_category: config

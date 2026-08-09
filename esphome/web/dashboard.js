@@ -56,7 +56,6 @@
   // icon font/CDN, so the page renders with zero network access.
   const ICONS = {
     water: '<path d="M12 3c3.5 4 6 7.2 6 10.2A6 6 0 0 1 6 13.2C6 10.2 8.5 7 12 3Z"/>',
-    leaf: '<path d="M5 19c8 0 13-5 14-14-9 1-14 6-14 14Z"/><path d="M5 19c1-4 3.5-7 8-9"/>',
     wifi: '<path d="M3 8.5a15 15 0 0 1 18 0"/><path d="M6.3 12a10.5 10.5 0 0 1 11.4 0"/><path d="M9.5 15.5a6 6 0 0 1 5 0"/><circle cx="12" cy="18.5" r="1" fill="currentColor" stroke="none"/>',
     cog: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M4.6 7.5l1.9 1.1M17.5 15.4l1.9 1.1M3 12h2.2M18.8 12H21M4.6 16.5l1.9-1.1M17.5 8.6l1.9-1.1M7.5 4.6l1.1 1.9M15.4 17.5l1.1 1.9M7.5 19.4l1.1-1.9M15.4 6.5l1.1-1.9"/>',
     wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.8 2.8-2.8-2.8 2.8-2.8Z"/>',
@@ -64,9 +63,15 @@
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
   };
+  // Keyed on the group's real (compile-time) name, never on its
+  // renameable Display Name override (CR "generic naming") - so a rename
+  // never leaves a group without an icon. Both meters share the same
+  // icon: with generic naming there's no compile-time way to know which
+  // one might be "the garden one", so there's nothing left to visually
+  // distinguish them by beyond their (renameable) label.
   const GROUP_ICON_BY_NAME = {
-    "Main Meter": "water",
-    "Garden Meter": "leaf",
+    "Water Meter 1": "water",
+    "Water Meter 2": "water",
     "Network": "wifi",
     "System": "cog",
   };
