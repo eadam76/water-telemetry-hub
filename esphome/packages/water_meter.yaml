@@ -7,8 +7,10 @@
 #
 # Instantiate per meter from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
-#   id_prefix                 - unique id prefix, e.g. main / irrigation
+#   id_prefix                 - unique id prefix, e.g. main / garden
 #   friendly_name             - display name, e.g. "Main Meter"
+#   display_name_default      - initial value of the user-renameable
+#                                "Display Name" field, e.g. "Water Meter 1"
 #   pulse_pin                 - GPIO number (int or string), the IZAR PULSE
 #                                white (pulse) wire
 #   liters_per_pulse          - liters/pulse, 1.0 on the white (1:1) wire
@@ -158,6 +160,18 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: config
+    # optimistic:true alone would queue the flash write and leave it
+    # pending for up to flash_write_interval (60s, water-collector.yaml) -
+    # a toggle right before a crash/power loss in that window would be
+    # lost. `on_state` is the base switch component's generic trigger,
+    # fired from publish_state() *after* it has already saved the new
+    # value to the (still just queued, not yet flashed) preference - so
+    # by the time this lambda runs, sync() has something to actually
+    # flush. (The template platform's own turn_on/off_action fire earlier,
+    # before that save - confirmed from TemplateSwitch::write_state() -
+    # so they'd be a no-op here; this is why `on_state`, not those.)
+    on_state:
+      - lambda: global_preferences->sync();
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 5
@@ -165,8 +179,8 @@ switch:
 text:
   # Purely cosmetic label - shown on the dashboard's Home card and
   # Service section header instead of the fixed "${friendly_name}", so a
-  # meter can be called e.g. "Meter 1" without touching the YAML. The
-  # id_prefix/entity names/sorting_group stay fixed at compile time -
+  # meter can be called e.g. "Water Meter 1" without touching the YAML.
+  # The id_prefix/entity names/sorting_group stay fixed at compile time -
   # only what's *displayed* changes.
   - platform: template
     id: ${id_prefix}_display_name
@@ -175,10 +189,20 @@ text:
     mode: text
     optimistic: true
     restore_value: true
-    initial_value: "${friendly_name}"
+    initial_value: "${display_name_default}"
     min_length: 0
     max_length: 32
     entity_category: config
+    # Same immediate-flush reasoning as the Enabled switch above - but
+    # TemplateText::control() saves to the preference *after* firing
+    # set_action (unlike the switch base class), so sync()ing straight
+    # from set_action would flush too early and miss this exact change.
+    # A trivial delay is enough: control() is a single synchronous call,
+    # so by the time this resumes (a full scheduler tick later) the save
+    # has long since happened.
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 6
@@ -210,7 +234,10 @@ number:
 
   # Zero-flow timeout - runtime-adjustable, low-level parameter (see
   # REQUIREMENTS.md "Pillanatnyi átfolyás számítása"). restore_value: true
-  # -> survives a restart too.
+  # -> survives a restart too - and, same reasoning as Display Name above
+  # (TemplateNumber::control() also saves *after* firing set_action), a
+  # short delay before sync() forces that write to flash immediately
+  # instead of leaving it queued for up to flash_write_interval.
   - platform: template
     id: ${id_prefix}_zero_flow_timeout
     name: "${friendly_name} Zero-Flow Timeout"
@@ -224,6 +251,9 @@ number:
     restore_value: true
     initial_value: ${zero_flow_timeout_default}
     entity_category: config
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 70

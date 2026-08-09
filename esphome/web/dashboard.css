@@ -46,6 +46,7 @@ esp-app {
    * chrome live. */
   height: 100vh;
   height: 100dvh;
+  width: 100%;
   background: var(--dc-bg);
   color: var(--dc-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -112,7 +113,9 @@ esp-app {
 
 #dc-main {
   flex: 1 1 auto;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px 28px 80px;
 }
 
@@ -202,11 +205,16 @@ esp-app {
  * that actually matters day to day - shown big; everything else in the
  * card (Flow Rate) as a plain, secondary label/value line. */
 
+/* Value-above-label for every metric, headline or not (CR #4) - only the
+ * font size (below) tells the headline apart, so the card reads as one
+ * consistent stack rather than a big number with a sideways afterthought
+ * next to it. */
 .dc-metric {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
+  gap: 2px;
   padding: 7px 0;
   border-top: 1px solid var(--dc-border);
 }
@@ -246,9 +254,6 @@ esp-app {
 }
 
 .dc-metric.dc-metric-headline {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
   padding: 4px 0 14px;
   border-top: none;
 }
@@ -287,13 +292,22 @@ esp-app {
 }
 
 .dc-list-row .k {
+  flex: 0 1 auto;
   color: var(--dc-text-muted);
 }
 
+/* Some diagnostic values (e.g. Reset Reason's full device-info string)
+ * are long, unbroken text - nowrap forced the whole row (and the page
+ * with it - #dc-main had no overflow-x guard either) wider than the
+ * viewport (CR #1). min-width: 0 lets a flex item actually shrink below
+ * its content's natural width instead of only ever growing the row. */
 .dc-list-row .v {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 500;
   text-align: right;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* --- Service page: calibration + device actions --- */
@@ -511,8 +525,13 @@ esp-app {
   color: var(--dc-text-muted);
 }
 
+/* This is a live tail, not history - there's no way to fetch log lines
+ * from before this connection existed (ESPHome doesn't expose a log
+ * backlog over the API), so it's expected to start empty on every page
+ * load/reconnect and fill in as new activity happens (CR #13) - the
+ * wording says so, instead of just sitting blank looking broken. */
 #dc-log:empty::before {
-  content: "Waiting for log output…";
+  content: "Waiting for new log output (this is a live view, not history)…";
   opacity: 0.6;
 }
 

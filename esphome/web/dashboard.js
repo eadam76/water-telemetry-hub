@@ -33,13 +33,15 @@
   // covers the entity in every meter's group without repeating it.
   // Nothing here for an entity that isn't in this map - the "?" just
   // doesn't render, rather than showing an empty hint.
+  // Update/Restart deliberately have no entry here (CR #3 in the previous
+  // round): the confirm dialog they already show on press explains the
+  // consequence right when it matters - a permanent "?" next to them was
+  // redundant clutter, not help.
   const HELP_TEXT = {
     "Total Consumption": "Cumulative water use, calculated from the pulse count and the last calibration - not a live meter photograph.",
     "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
-    "Update": "Applies the Reading field above, overwriting the calculated total. Cannot be undone.",
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
-    "Restart": "Reboots the device. Calibration and other settings are kept.",
     "Enabled": "Shows or hides this meter on the Home page and its other Service fields below. Pulse counting keeps running either way.",
     "Display Name": "Shown instead of the fixed name above, on the Home page and here.",
   };
@@ -124,6 +126,44 @@
     if (diag) diag.section.querySelector(".dc-section-label").textContent = label;
   }
 
+  // ESPHome dumps every entity's full state right after connecting, but
+  // in a fixed, cross-domain order baked into its own entities_iterator
+  // (confirmed from source: sensor domain is always dumped before switch
+  // and text) - so a meter's Home card/label is unavoidably built from
+  // Flow Rate/Total Consumption *before* its Enabled/Display Name catch
+  // up, a beat later. Without this, that shows up as a real, visible
+  // flash: the raw group name and a visible-by-default card, correcting
+  // themselves a moment later (CR #5, #6). applyGroupVisibility()/
+  // applyGroupLabel() are the only things that ever touch dc-hidden/
+  // dc-meter-disabled/the header text - both are no-ops until this fires
+  // once, then settle the *final* state cleanly in one pass, and apply
+  // immediately (no more waiting) for everything from then on, including
+  // later reconnects.
+  let initialSettled = false;
+
+  function settleInitialBurst() {
+    initialSettled = true;
+    const names = new Set([...homeGroups.keys(), ...serviceGroups.keys(), ...diagGroups.keys()]);
+    for (const name of names) {
+      refreshGroupLabel(name);
+      applyGroupVisibility(name);
+    }
+  }
+
+  function applyGroupLabel(name) {
+    if (!initialSettled) return;
+    refreshGroupLabel(name);
+  }
+
+  function applyGroupVisibility(name) {
+    if (!initialSettled) return;
+    const enabled = groupEnabled.get(name) !== false;
+    const home = homeGroups.get(name);
+    if (home) home.card.classList.toggle("dc-hidden", !enabled);
+    const svc = serviceGroups.get(name);
+    if (svc) svc.section.classList.toggle("dc-meter-disabled", !enabled);
+  }
+
   // --- Home page: one card per meter's sorting_group ------------------
 
   const homeGroups = new Map(); // groupName -> { weight, card, body }
@@ -139,11 +179,11 @@
     );
     const body = el("div", "dc-meter-card-body");
     card.append(header, body);
-    if (groupEnabled.get(name) === false) card.classList.add("dc-hidden");
     g = { weight: groupWeights.get(name) ?? 500, card, body };
     homeGroups.set(name, g);
     document.getElementById("dc-page-home").appendChild(card);
     reorderHomeGroups();
+    applyGroupVisibility(name); // no-op until the initial SSE burst settles - see settleInitialBurst()
     return g;
   }
 
@@ -229,11 +269,11 @@
     const label = el("div", "dc-section-label", groupLabel(name));
     const fields = el("div", "dc-fields");
     section.append(label, fields);
-    if (groupEnabled.get(name) === false) section.classList.add("dc-meter-disabled");
     g = { weight: groupWeights.get(name) ?? 500, section, fields };
     serviceGroups.set(name, g);
     document.getElementById("dc-page-service").appendChild(section);
     reorderServiceGroups();
+    applyGroupVisibility(name); // no-op until the initial SSE burst settles - see settleInitialBurst()
     return g;
   }
 
@@ -347,7 +387,7 @@
     if (document.activeElement !== entity.inputEl) entity.inputEl.value = entity.value ?? "";
     if (label === "Display Name") {
       groupDisplayNames.set(entity.groupName, (entity.value || "").trim());
-      refreshGroupLabel(entity.groupName);
+      applyGroupLabel(entity.groupName);
     }
   }
 
@@ -381,10 +421,7 @@
     entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
     if (label === "Enabled") {
       groupEnabled.set(entity.groupName, on);
-      const home = homeGroups.get(entity.groupName);
-      if (home) home.card.classList.toggle("dc-hidden", !on);
-      const svc = serviceGroups.get(entity.groupName);
-      if (svc) svc.section.classList.toggle("dc-meter-disabled", !on);
+      applyGroupVisibility(entity.groupName);
     }
   }
 
@@ -652,6 +689,27 @@
     }
     document.getElementById("dc-title").textContent = PAGES.find((p) => p.id === id).label;
     if (id === "service") prefillReadingFields();
+    // CR #12: remembered across reloads (a plain refresh, not just
+    // switching tabs within the same load) - a page reload otherwise
+    // always dropped back to Home regardless of where you were.
+    try {
+      localStorage.setItem("dc-page", id);
+    } catch (e) {
+      // Private browsing / storage disabled - losing the remembered page
+      // isn't worth failing anything else over.
+    }
+  }
+
+  // Reads back CR #12's remembered page for the very first render - falls
+  // back to Home for a first-ever visit or an unrecognized/corrupt value.
+  function loadRememberedPage() {
+    let saved = null;
+    try {
+      saved = localStorage.getItem("dc-page");
+    } catch (e) {
+      // ignore, see selectPage()
+    }
+    return PAGES.some((p) => p.id === saved) ? saved : "home";
   }
 
   // CR #3: each time the Service page is opened, every Reading field is
@@ -755,10 +813,36 @@
     source.onerror = () => setConnected(false);
   }
 
+  // iOS Safari's toolbar overlays fixed-position content rather than
+  // resizing the layout viewport - 100dvh (dashboard.css) mostly tracks
+  // that, but only settles *after* an interactive scroll gesture ends, so
+  // the bottom nav can still be briefly covered mid-scroll (CR #2, a
+  // follow-up to CR #10). visualViewport reports the *actual* visible
+  // area continuously, so mirroring it into an inline height (which wins
+  // over the CSS dvh/vh rules regardless of specificity) keeps #dc-root
+  // correct live instead of only once the gesture settles.
+  function syncViewportHeight() {
+    const root = document.getElementById("dc-root");
+    if (!root) return;
+    const vv = window.visualViewport;
+    root.style.height = (vv ? vv.height : window.innerHeight) + "px";
+  }
+
   function start() {
     fixMobileMeta();
+    currentPage = loadRememberedPage();
     buildShell();
     connect();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewportHeight);
+      window.visualViewport.addEventListener("scroll", syncViewportHeight);
+    }
+    window.addEventListener("orientationchange", syncViewportHeight);
+    syncViewportHeight();
+    // See settleInitialBurst()'s own comment - there's no explicit
+    // "initial dump complete" signal in the SSE protocol to wait for
+    // instead, so this is a fixed, generous grace period.
+    setTimeout(settleInitialBurst, 1500);
   }
 
   if (document.readyState === "loading") {

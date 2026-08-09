@@ -79,9 +79,12 @@ web_server:
   # underneath, so nothing else here changes.
   css_include: web/dashboard.css
   js_include: web/dashboard.js
-  auth:
-    username: admin
-    password: !secret web_server_password
+  # No `auth:` - deliberate, see REQUIREMENTS.md "Hálózat és biztonság".
+  # This is a local-network-only dashboard, meant to also work as an iOS
+  # home-screen app; a login screen would only be friction, not a real
+  # security boundary (anyone already on the home Wi-Fi reaches it either
+  # way). api_encryption_key/ota_password (below) stay secret - those
+  # protect the native API and firmware flashing, unrelated to this.
   sorting_groups:
     - id: sorting_group_main_meter
       name: "Main Meter"
@@ -214,6 +217,11 @@ packages:
     vars:
       id_prefix: main
       friendly_name: "Main Meter"
+      # Shown on the dashboard until renamed via the "Display Name" field
+      # (see water_meter.yaml) - deliberately not "Main Meter" again, so
+      # it's obvious at a glance that it's an editable label, not a fixed
+      # technical name.
+      display_name_default: "Water Meter 1"
       pulse_pin: ${main_meter_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
@@ -224,6 +232,7 @@ packages:
     vars:
       id_prefix: garden
       friendly_name: "Garden Meter"
+      display_name_default: "Water Meter 2"
       pulse_pin: ${garden_meter_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
