@@ -45,6 +45,19 @@ logger:
 api:
   encryption:
     key: !secret api_encryption_key
+  # Default (15min, not the 5min the C++ member default alone would
+  # suggest - confirmed from api/__init__.py's schema) is: reboot if no
+  # *native API* client (HA, `esphome logs`, ...) has connected in that
+  # window. That's the right safety net once HA is actually the ongoing
+  # primary client - but nothing currently connects over this protocol
+  # at all (the custom web dashboard talks plain HTTP/SSE on port 80, a
+  # completely different thing) - which meant the device was rebooting
+  # itself, unconditionally, every 15 minutes, regardless of whether
+  # anything was actually wrong. Disabled for now; once HA is connected
+  # and stays connected, this would rarely if ever fire anyway (the
+  # countdown resets on every connection), so there's nothing to
+  # remember to revert later.
+  reboot_timeout: 0s
 
 ota:
   - platform: esphome
