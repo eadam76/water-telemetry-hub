@@ -55,10 +55,24 @@ debug:
 
 web_server:
   version: 3
-  # Bundles the dashboard JS into the firmware instead of fetching it from
-  # oi.esphome.io on every page load - keeps the local UI usable with no
-  # internet access, consistent with the ESP not depending on the network.
-  local: true
+  # IMPORTANT: do NOT set `local: true` here. With `local: true` ESPHome
+  # serves a fixed, pre-built index.html (baked into the esphome pip
+  # package at release time) that never references css_include/js_include
+  # at all - our dashboard would compile in fine but never actually load
+  # in the browser. css_include/js_include only get wired into the page
+  # (<link href=/0.css>, <script type=module src=/0.js>) in the
+  # *dynamically generated* index.html, which is what's used when `local`
+  # is left at its default (false). See build_index_html() in
+  # esphome/components/web_server/__init__.py if this ever needs
+  # re-verifying against a newer ESPHome version.
+  #
+  # That dynamic index.html would otherwise also add a
+  # <script src="https://oi.esphome.io/v3/www.js"> for the stock app -
+  # blanking js_url removes that tag entirely (falsy value == the
+  # generator skips it), so there's still no network dependency. css_url
+  # already defaults to empty for version 3.
+  js_url: ""
+  css_url: ""
   # Our own dark, section-per-page dashboard (web/dashboard.{css,js}) - see
   # the files themselves for how/why. Hides the stock <esp-app> UI and
   # replaces it client-side; still uses ESPHome's normal REST/SSE API
