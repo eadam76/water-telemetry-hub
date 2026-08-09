@@ -559,16 +559,70 @@ body {
   opacity: 0.6;
 }
 
-/* --- Mobile: bottom tab bar instead of sidebar --- */
+/* --- Mobile: bottom tab bar instead of sidebar ---
+ *
+ * This used to mirror the desktop layout - #dc-root pinned
+ * (position: fixed, its own height, overflow: hidden) with #dc-nav and
+ * #dc-main as flex children, #dc-main doing its own internal
+ * overflow-y: auto scrolling. On a real device, launched from the home
+ * screen, that produced a well-known class of WebKit/WKWebView bug: a
+ * position: fixed wrapper whose *own* document never scrolls, with all
+ * the actual scrolling happening on a div nested inside it, can leave
+ * fixed-positioned descendants (the nav) completely unresponsive to taps
+ * until something forces WebKit to resync its internal hit-testing
+ * viewport - which a scroll does, which is why the nav "healed" the
+ * moment scrolling started, and why an earlier attempt at fixing this
+ * with a JS-driven inline height on #dc-root (since reverted) didn't
+ * help: the wrapper was still fixed+non-scrolling either way.
+ *
+ * The standard fix, used here instead: don't fight it. Let the real
+ * document/body scroll, nothing pinned except the bottom nav itself
+ * (a plain position: fixed bar, not wrapped in a larger fixed shell) and
+ * the header (position: sticky - well-supported, and doesn't create the
+ * "wrapper that itself never scrolls" situation sticky's cousin, fixed,
+ * would).
+ */
 
 @media (max-width: 720px) {
   #dc-root {
-    flex-direction: column;
+    position: static;
+    display: block;
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  #dc-header {
+    position: sticky;
+    /* Stays clear of the standalone-mode system status bar even once
+     * stuck/pinned during a scroll, not just at the top of the page -
+     * see the general env(safe-area-inset-top) note on #dc-main below. */
+    top: env(safe-area-inset-top);
+    z-index: 2;
+    background: var(--dc-bg);
+  }
+
+  #dc-main {
+    overflow: visible;
+    /* Top: reserves space for the standalone-mode system status bar,
+     * which otherwise draws directly over the page (0 in an ordinary
+     * browser tab, a no-op there). Bottom: #dc-nav is now position:
+     * fixed, i.e. out of normal document flow - without this, the last
+     * bit of a page's content would scroll to underneath/behind it.
+     * ~76px is a deliberately generous estimate of the nav bar's real
+     * height (icon + label + its own padding); a little extra empty
+     * space at the bottom costs nothing, clipped content would. */
+    padding: calc(18px + env(safe-area-inset-top)) 16px
+      calc(24px + 76px + env(safe-area-inset-bottom));
   }
 
   #dc-nav {
-    order: 2;
-    flex: 0 0 auto;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
     flex-direction: row;
     justify-content: space-around;
     border-right: none;
@@ -579,10 +633,5 @@ body {
 
   .dc-nav-item {
     flex: 1 1 auto;
-  }
-
-  #dc-main {
-    order: 1;
-    padding: 18px 16px 24px;
   }
 }
