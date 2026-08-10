@@ -230,6 +230,29 @@ wifi:
     - ble.disable
   on_disconnect:
     - ble.enable
+  # Real-device root cause, confirmed from source (wifi_component.h/.cpp):
+  # while connected, ESPHome checks the current signal every 5 minutes
+  # (ROAMING_CHECK_INTERVAL) and, if it's below -49 dBm (ROAMING_GOOD_RSSI -
+  # not a total loss, just "not excellent"), proactively runs an active
+  # scan (the "Roam scan" log line) looking for a better BSSID of the same
+  # SSID - i.e. another node on this mesh. That scan itself involves
+  # channel-hopping, which can miss beacons from the AP actually in use -
+  # this matches a real captured cascade exactly: "Roam scan (-86 dBm...)"
+  # immediately followed by "Disconnected ... reason='Beacon Timeout'".
+  # On a well-behaved mesh this proactive roaming is the point (it's what
+  # makes "mesh" better than isolated APs); on this one it was plausibly
+  # self-inflicted instability - actively going looking for a better node
+  # made a marginal-but-working link worse, rather than staying put.
+  #
+  # post_connect_roaming: false only disables that proactive, still-
+  # connected background check - it does NOT touch the normal reconnect
+  # logic at all, which is a separate code path that already runs
+  # unconditionally on an actual disconnect (a real Beacon Timeout, the AP
+  # going away, etc.) regardless of this setting. So this is exactly
+  # "don't go looking for a better node while things still work; still
+  # reconnect immediately and fully if the link genuinely drops" - not a
+  # blanket "never roam".
+  post_connect_roaming: false
 
 captive_portal:
 
