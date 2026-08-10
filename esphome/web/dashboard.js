@@ -998,12 +998,47 @@
     }, WATCHDOG_INTERVAL_MS);
   }
 
+  // Standalone/home-screen mode (WKWebView) leaves the bottom nav
+  // untappable until the first scroll, even after dashboard.css stopped
+  // wrapping everything in a position: fixed, never-itself-scrolling
+  // shell (which fixed the white strip and the nav creeping up - real,
+  // confirmed progress, just not the whole thing). What's left points at
+  // a different, narrower cause: the <meta name=viewport> tag
+  // (fixMobileMeta(), below) can only be inserted *after* the page has
+  // already parsed - there's no way to get it into the server-sent HTML
+  // itself - and WebKit is known to apply a late viewport change to
+  // visual layout without necessarily re-syncing its internal touch
+  // hit-testing to match, until something - a real scroll gesture -
+  // forces that resync.
+  //
+  // nudgeViewportSync() tries to force that resync programmatically
+  // instead of waiting for the user to stumble into it: a 1px scroll and
+  // immediately back, right after the page is built.
+  //
+  // Confirmed load-bearing, not just unproven: removed for one round on
+  // suspicion of causing an unrelated header/content overlap bug - that
+  // bug turned out unaffected by it either way, but removing it brought
+  // the dead-nav-until-scroll bug straight back (real-device confirmed),
+  // so it is doing genuine work here even though the exact WebKit
+  // mechanism it's compensating for is still not fully pinned down.
+  function nudgeViewportSync() {
+    const root = document.documentElement;
+    const previousMinHeight = root.style.minHeight;
+    root.style.minHeight = "calc(100vh + 10px)";
+    window.scrollTo(0, 1);
+    requestAnimationFrame(() => {
+      window.scrollTo(0, 0);
+      root.style.minHeight = previousMinHeight;
+    });
+  }
+
   function start() {
     fixMobileMeta();
     currentPage = loadRememberedPage();
     buildShell();
     connect();
     startConnectionWatchdog();
+    nudgeViewportSync();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
