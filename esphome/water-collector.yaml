@@ -178,6 +178,42 @@ wifi:
   # mains/USB powered) for the radio never dropping into a sleep state
   # that can stall an in-progress send.
   power_save_mode: none
+  # Real-device symptom: once actually connected, ping to this device shows
+  # wide, erratic RTT swings (double-digit ms up to >1s, occasional outright
+  # timeouts) with *zero* corresponding wifi:-component log activity (no
+  # roam scan, no disconnect/reassociate) - i.e. this isn't a connection
+  # drop, it's happening below the level ESPHome's own Wi-Fi state machine
+  # would ever log anything about.
+  #
+  # Leading suspect: the ESP32 has a single 2.4GHz radio, time-shared
+  # between Wi-Fi and Bluetooth (BLE) via coexistence scheduling - and
+  # esp32_improv (below) leaves BLE running for the device's entire uptime,
+  # not just while unprovisioned, permanently competing with Wi-Fi for
+  # radio time. BLE is only actually needed while there's no working Wi-Fi
+  # connection to provision it over - once connected, it's pure overhead.
+  # Confirmed from source (esp32_ble/ble.cpp) that ble.disable/ble.enable
+  # actually tear down/reinit the BLE stack (not just stop advertising),
+  # and that esp32_improv's own stop() (called automatically once Wi-Fi
+  # connects - see esp32_improv_component.cpp's check_wifi_connection_())
+  # only stops its own GATT service, never the underlying BLE stack -
+  # explaining why BLE was confirmed still active (BLE Client connected
+  # seen in a real log) long after Wi-Fi provisioning was already done.
+  #
+  # Wired symmetrically so the BLE-based recovery path (fallback AP +
+  # esp32_improv, for if Wi-Fi credentials ever need to change again) stays
+  # fully intact: BLE only goes away while there's a working Wi-Fi
+  # connection to make it redundant, and comes back the instant that's no
+  # longer true.
+  #
+  # Flagged honestly: this is a plausible, source-supported hypothesis for
+  # the jitter, not a confirmed root cause - there's no way to prove BLE
+  # coexistence specifically (versus e.g. general 2.4GHz channel
+  # congestion) was the cause without comparing ping behavior before/after
+  # on the real device.
+  on_connect:
+    - ble.disable
+  on_disconnect:
+    - ble.enable
 
 captive_portal:
 
