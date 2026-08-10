@@ -856,9 +856,56 @@
     document.title = "Water Data Collector";
   }
 
+  // On an abrupt device reboot (crash, power cycle, Restart button - any
+  // path that isn't a clean TCP close) the browser's existing socket gets
+  // no FIN/RST at all, just silence - nothing tells the EventSource
+  // anything is wrong, so it never fires onerror and never auto-
+  // reconnects, and #dc-status is left stuck showing "Connected" forever.
+  // Confirmed reported behavior: reconnecting only ever happened after a
+  // manual full page reload.
+  //
+  // The fix is a client-side activity watchdog, since the browser's own
+  // error detection can't be relied on here: the server sends a "ping"
+  // event every 10s to every connected client regardless of any other
+  // traffic (confirmed from source, web_server.cpp's set_interval(10000,
+  // ...) call) purely so a client can tell a live-but-quiet connection
+  // apart from a dead one. lastActivityMs is touched on *any* inbound SSE
+  // event (not just ping - state/log/sorting_group all count too, so a
+  // burst of real activity doesn't need a ping in between to stay counted
+  // as alive); if nothing arrives for ACTIVITY_TIMEOUT_MS (well over 2x
+  // the ping interval, generous for normal network jitter), the
+  // connection is declared dead unilaterally: close it and open a fresh
+  // one, rather than waiting on onerror or the server's own `retry: 30000`
+  // hint (too slow for something that might not fire at all).
+  const ACTIVITY_TIMEOUT_MS = 25000;
+  const WATCHDOG_INTERVAL_MS = 5000;
+  const RECONNECT_DELAY_MS = 2000;
+  let eventSource = null;
+  let lastActivityMs = 0;
+  let reconnectTimer = null;
+
+  function touchActivity() {
+    lastActivityMs = Date.now();
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return; // already scheduled
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, RECONNECT_DELAY_MS);
+  }
+
   function connect() {
+    if (eventSource) eventSource.close();
     const source = new EventSource("/events");
+    eventSource = source;
+    // Reset the clock the moment a fresh attempt starts, so the watchdog
+    // doesn't immediately re-fire while this connection is still legitimately
+    // in the process of opening.
+    touchActivity();
     source.addEventListener("sorting_group", (ev) => {
+      touchActivity();
       const data = JSON.parse(ev.data);
       setGroupWeight(data.name, data.sorting_weight);
     });
@@ -867,14 +914,47 @@
     // events, others (e.g. 2026.7.3, what this was actually tested
     // against) fold the full payload into the first "state" event
     // instead. handleStateEvent() figures out which kind it got.
-    source.addEventListener("state_detail_all", (ev) => handleStateEvent(JSON.parse(ev.data)));
-    source.addEventListener("state", (ev) => handleStateEvent(JSON.parse(ev.data)));
+    source.addEventListener("state_detail_all", (ev) => {
+      touchActivity();
+      handleStateEvent(JSON.parse(ev.data));
+    });
+    source.addEventListener("state", (ev) => {
+      touchActivity();
+      handleStateEvent(JSON.parse(ev.data));
+    });
     // Raw logger output (web_server's default `log: true`) - plain text,
     // not JSON.
-    source.addEventListener("log", (ev) => appendLogLine(ev.data));
-    source.addEventListener("ping", () => setConnected(true));
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
+    source.addEventListener("log", (ev) => {
+      touchActivity();
+      appendLogLine(ev.data);
+    });
+    source.addEventListener("ping", () => {
+      touchActivity();
+      setConnected(true);
+    });
+    source.onopen = () => {
+      touchActivity();
+      setConnected(true);
+    };
+    source.onerror = () => {
+      // A real, browser-detected error (e.g. connection actively refused
+      // because the device is mid-reboot) - don't wait for the browser's
+      // own retry (delayed by the server's `retry: 30000` hint); take over
+      // and reconnect on our own faster schedule instead.
+      setConnected(false);
+      source.close();
+      if (eventSource === source) eventSource = null;
+      scheduleReconnect();
+    };
+  }
+
+  function startConnectionWatchdog() {
+    setInterval(() => {
+      if (Date.now() - lastActivityMs > ACTIVITY_TIMEOUT_MS) {
+        setConnected(false);
+        scheduleReconnect();
+      }
+    }, WATCHDOG_INTERVAL_MS);
   }
 
   // Standalone/home-screen mode (WKWebView) still leaves the bottom nav
@@ -919,6 +999,7 @@
     currentPage = loadRememberedPage();
     buildShell();
     connect();
+    startConnectionWatchdog();
     nudgeViewportSync();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from

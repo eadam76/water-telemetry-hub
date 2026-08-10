@@ -30,6 +30,12 @@ body {
   /* var(--dc-bg) works here even though :root is declared further down -
    * custom property resolution isn't parse-order-dependent. */
   background: var(--dc-bg);
+  /* Belt-and-suspenders alongside #dc-main's own overflow-x: hidden below:
+   * on mobile, body/html (not #dc-main) is the element that actually
+   * scrolls (see the @media block's comment for why) - if anything ever
+   * overflows horizontally, this is the level that would otherwise let the
+   * whole page pan sideways. */
+  overflow-x: hidden;
 }
 
 :root {
@@ -590,7 +596,15 @@ body {
     height: auto;
     min-height: 100vh;
     min-height: 100dvh;
-    overflow: visible;
+    /* NOT the `overflow: visible` shorthand - that would also reset
+     * overflow-x back to its default (visible), silently undoing CR #1's
+     * horizontal-scroll guard the moment this media query applies. Only
+     * the vertical axis needs to change here; body/html are what actually
+     * scrolls now (see the block comment above), so overflow-y barely
+     * matters either way, but overflow-x staying hidden here too is a
+     * second belt-and-suspenders layer alongside html/body's own. */
+    overflow-x: hidden;
+    overflow-y: visible;
   }
 
   #dc-header {
@@ -604,7 +618,11 @@ body {
   }
 
   #dc-main {
-    overflow: visible;
+    /* Same reasoning as #dc-root above: overflow-x: hidden, not the
+     * `overflow: visible` shorthand this used to be - CR #1 regressed
+     * silently because of exactly this shorthand-clobbering-x mistake. */
+    overflow-x: hidden;
+    overflow-y: visible;
     /* Top: reserves space for the standalone-mode system status bar,
      * which otherwise draws directly over the page (0 in an ordinary
      * browser tab, a no-op there). Bottom: #dc-nav is now position:
