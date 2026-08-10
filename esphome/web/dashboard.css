@@ -362,13 +362,6 @@ body {
   margin-bottom: 0;
 }
 
-/* CR #9: a disabled meter's fields collapse to just its "Enabled" toggle
- * (marked .dc-field-keep-visible when built - see upsertServiceSwitch()
- * in dashboard.js) - that one has to stay reachable to turn it back on. */
-.dc-service-group.dc-meter-disabled .dc-field:not(.dc-field-keep-visible) {
-  display: none;
-}
-
 .dc-fields {
   display: flex;
   flex-direction: column;
@@ -405,7 +398,17 @@ body {
   color: var(--dc-text);
   border-radius: var(--dc-radius-sm);
   padding: 9px 10px;
-  font-size: 15px;
+  /* 16px, not smaller: iOS Safari auto-zooms the page in on focus for any
+   * input whose computed font-size is under 16px (an accessibility
+   * behavior, not a bug, but with real fallout here) - the zoomed-in state
+   * this caused was the actual root of two separately-reported symptoms:
+   * horizontal scroll that only ever started once a text field was tapped
+   * and stayed scrollable afterwards, and the header/status row appearing
+   * to slide down and overlap the content below it (both are consistent
+   * with the whole page rendering at an unintended zoom level, not two
+   * independent bugs). This was 15px before - one pixel below the
+   * threshold that matters. */
+  font-size: 16px;
   min-width: 0;
 }
 
@@ -466,7 +469,7 @@ body {
   margin: -4px 0 10px;
 }
 
-/* CR #9: the pill toggle for an "Enabled" switch field. */
+/* CR #9: the pill toggle for a "Show on Dashboard" switch field. */
 .dc-toggle {
   position: relative;
   width: 44px;

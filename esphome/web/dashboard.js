@@ -42,14 +42,15 @@
     "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
-    "Enabled": "Shows or hides this meter on the Home page and its other Service fields below. Pulse counting keeps running either way.",
-    "Display Name": "Shown instead of the fixed name above, on the Home page and here.",
+    "Show on Dashboard": "Shows or hides this meter's card on the Dashboard page. Purely a display preference - pulse counting and every other setting stay in effect either way.",
+    "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
+    "Forget Wi-Fi": "Clears the saved Wi-Fi network and restarts into setup mode, ready to connect to a different one. Calibration and every other setting are kept.",
   };
 
   // Buttons/fields whose action isn't easily undone get an explicit
   // confirmation before firing (CR #4, #6) - matched by displayName(),
   // so it applies uniformly across meters without hardcoding names.
-  const CONFIRM_ON_PRESS = new Set(["Update", "Restart"]);
+  const CONFIRM_ON_PRESS = new Set(["Update", "Restart", "Forget Wi-Fi"]);
   const CONFIRM_ON_CHANGE = new Set(["Zero-Flow Timeout"]);
 
   // Small hand-drawn icon set (24x24, stroke-based) - deliberately not an
@@ -75,8 +76,12 @@
     "Network": "wifi",
     "System": "cog",
   };
+  // id stays "home" internally (localStorage key, #dc-page-home element id,
+  // routing throughout this file) - only the displayed label changed to
+  // "Dashboard" per the "Show on Dashboard" naming below, so the toggle's
+  // own name and the page it controls visibility on now match each other.
   const PAGES = [
-    { id: "home", label: "Home", icon: "water" },
+    { id: "home", label: "Dashboard", icon: "water" },
     { id: "service", label: "Service", icon: "wrench" },
     { id: "diagnostics", label: "Diagnostics", icon: "list" },
     { id: "log", label: "Log", icon: "terminal" },
@@ -101,10 +106,10 @@
   // per-entity sorting_weight, which only orders entities *within* a
   // group - these two are easy to conflate).
   const groupWeights = new Map();
-  // sorting_group name -> its "Enabled" switch's current state (CR #9).
-  // Missing entry == not yet known/no such switch -> treated as enabled,
-  // never as hidden, so groups without one (Network, System, ...) are
-  // unaffected and a not-yet-arrived switch state doesn't flash-hide
+  // sorting_group name -> its "Show on Dashboard" switch's current state
+  // (CR #9). Missing entry == not yet known/no such switch -> treated as
+  // enabled, never as hidden, so groups without one (Network, System, ...)
+  // are unaffected and a not-yet-arrived switch state doesn't flash-hide
   // anything.
   const groupEnabled = new Map();
   // sorting_group name -> its "Display Name" text's current value (CR
@@ -135,12 +140,12 @@
   // in a fixed, cross-domain order baked into its own entities_iterator
   // (confirmed from source: sensor domain is always dumped before switch
   // and text) - so a meter's Home card/label is unavoidably built from
-  // Flow Rate/Total Consumption *before* its Enabled/Display Name catch
-  // up, a beat later. Without this, that shows up as a real, visible
-  // flash: the raw group name and a visible-by-default card, correcting
-  // themselves a moment later (CR #5, #6). applyGroupVisibility()/
+  // Flow Rate/Total Consumption *before* its Show on Dashboard/Display
+  // Name catch up, a beat later. Without this, that shows up as a real,
+  // visible flash: the raw group name and a visible-by-default card,
+  // correcting themselves a moment later (CR #5, #6). applyGroupVisibility()/
   // applyGroupLabel() are the only things that ever touch dc-hidden/
-  // dc-meter-disabled/the header text - both are no-ops until this fires
+  // the header text - both are no-ops until this fires
   // once, then settle the *final* state cleanly in one pass, and apply
   // immediately (no more waiting) for everything from then on, including
   // later reconnects.
@@ -183,13 +188,18 @@
     refreshGroupLabel(name);
   }
 
+  // "Show on Dashboard" only ever hides this meter's own Dashboard card -
+  // its Service fields (Reading, Zero-Flow Timeout, Display Name, ...)
+  // stay fully visible/editable regardless, since everything they control
+  // stays in effect either way. Used to also collapse those down to just
+  // the toggle itself (dc-meter-disabled/dc-field-keep-visible) - removed:
+  // that made an already-configured meter harder to fix if it needed to
+  // come back, for a purely cosmetic Dashboard-visibility preference.
   function applyGroupVisibility(name) {
     if (!initialSettled) return;
     const enabled = groupEnabled.get(name) !== false;
     const home = homeGroups.get(name);
     if (home) home.card.classList.toggle("dc-hidden", !enabled);
-    const svc = serviceGroups.get(name);
-    if (svc) svc.section.classList.toggle("dc-meter-disabled", !enabled);
   }
 
   // --- Home page: one card per meter's sorting_group ------------------
@@ -312,6 +322,22 @@
     }
   }
 
+  // Unlike Home/Diagnostics (which have always done this), Service fields
+  // used to just render in SSE arrival order - not sorting_weight order -
+  // since nothing ever re-sorted group.fields's children. Harmless while
+  // every field's weight happened to already match arrival order, but
+  // moving "Show on Dashboard" to the end (see packages/water_meter.yaml)
+  // exposed it: arrival order (a fixed, per-domain sequence baked into
+  // ESPHome's own entities_iterator - see the note further up) doesn't
+  // actually track sorting_weight across domains. Same pattern as
+  // reorderHomeGroups()/reorderDiagGroups() - read the weight already
+  // stashed on each field by its own upsert*() call, sort, re-append.
+  function reorderServiceFields(group) {
+    for (const r of [...group.fields.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight))) {
+      group.fields.appendChild(r);
+    }
+  }
+
   // A number entity named "<Meter> Reading" (object_id ...maps to
   // "..._reading") and a button named "<Meter> Update" ("..._update")
   // are two ends of one calibration action - see the naming note next to
@@ -403,6 +429,8 @@
       const sibling = entities.get(`button-${base}_update`);
       if (sibling) mountComboButton(sibling, entity.el.querySelector(".dc-field-row"));
     }
+    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    reorderServiceFields(group);
   }
 
   // Display Name (CR #8) - a plain text field, styled like a number field
@@ -436,18 +464,21 @@
       groupDisplayNames.set(entity.groupName, (entity.value || "").trim());
       applyGroupLabel(entity.groupName);
     }
+    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    reorderServiceFields(group);
   }
 
-  // Enabled (CR #9) - a pill toggle. Purely a dashboard visibility
-  // switch (see the YAML comment next to it) - flipping it shows/hides
-  // this meter's Home card and its own other Service fields, nothing
-  // else.
+  // Show on Dashboard (CR #9) - a pill toggle. Purely a dashboard
+  // visibility preference (see the YAML comment next to it) - flipping it
+  // shows/hides this meter's Dashboard card, nothing else; its other
+  // Service fields stay visible/editable regardless (see the note on
+  // applyGroupVisibility() for why that changed).
   function upsertServiceSwitch(entity) {
     const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
       entity.el = el(
         "div",
-        "dc-field dc-field-keep-visible",
+        "dc-field",
         `<div class="label"><span class="label-text"></span></div><div class="dc-field-row"></div>`
       );
       const toggle = el("button", "dc-toggle", "");
@@ -466,10 +497,12 @@
     const on = entity.value === true;
     entity.toggleEl.classList.toggle("dc-toggle-on", on);
     entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
-    if (label === "Enabled") {
+    if (label === "Show on Dashboard") {
       groupEnabled.set(entity.groupName, on);
       applyGroupVisibility(entity.groupName);
     }
+    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    reorderServiceFields(group);
   }
 
   // Moves (or lazily creates) a paired Update button into a Reading
@@ -512,6 +545,8 @@
   // generic "are you sure?" - Restart just needs a plain yes/no.
   function confirmMessageForPress(entity, label) {
     if (label === "Restart") return "Restart the device now?";
+    if (label === "Forget Wi-Fi")
+      return "Forget the current Wi-Fi network and restart into setup mode? Calibration and other settings are kept - only the network changes.";
     if (label === "Update") {
       const base = comboBaseKey(entity.id);
       const numberEntity = base && entities.get(`number-${base}_reading`);
@@ -544,6 +579,8 @@
       entity.el.appendChild(row);
       group.fields.appendChild(entity.el);
     }
+    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    reorderServiceFields(group);
   }
 
   // --- Log page ----------------------------------------------------------

@@ -80,6 +80,12 @@ sensor:
     internal_filter: 10ms
     accuracy_decimals: 2
     entity_category: diagnostic
+    # disabled_by_default throughout this file (except Flow Rate/Total
+    # Consumption below - the device's actual job) - see the longer note
+    # next to the first sensor: in water-collector.yaml for why. Doesn't
+    # affect this custom dashboard at all, which never goes through HA's
+    # entity registry either way.
+    disabled_by_default: true
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 40
@@ -151,6 +157,7 @@ sensor:
     unit_of_measurement: "pulses"
     accuracy_decimals: 0
     entity_category: diagnostic
+    disabled_by_default: true
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 50
@@ -158,18 +165,29 @@ sensor:
 switch:
   # Dashboard-only visibility toggle (see web/dashboard.js) - flip off for
   # a meter that isn't physically installed on this deployment, to stop
-  # its Home card and other Service fields (Reading, Zero-Flow Timeout,
-  # Display Name) cluttering the UI. Deliberately does NOT stop pulse
+  # its Home card cluttering the UI. Deliberately does NOT stop pulse
   # counting: there's no cost to leaving that running on an unconnected
   # GPIO, and "disabled but still pulsing anyway" would itself be worth
-  # noticing, not something to hide.
+  # noticing, not something to hide. Also deliberately does NOT hide this
+  # meter's other Service fields (Reading, Zero-Flow Timeout, Display
+  # Name) anymore - they stay reachable/editable regardless, since
+  # everything they control stays in effect either way, hidden from Home
+  # or not; hiding them too just made an already-configured meter harder
+  # to fix if it needed to come back.
+  #
+  # Named "Show on Dashboard" (not "Enabled") and sorted last in this
+  # group - it's the least-used field day to day, purely a display
+  # preference for this custom dashboard, with literally no effect
+  # anywhere else (not on pulse counting, not in Home Assistant once
+  # connected there - see disabled_by_default below).
   - platform: template
     id: ${id_prefix}_enabled
-    name: "${friendly_name} Enabled"
+    name: "${friendly_name} Show on Dashboard"
     icon: "mdi:eye-outline"
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: config
+    disabled_by_default: true
     # optimistic:true alone would queue the flash write and leave it
     # pending for up to flash_write_interval (60s, water-collector.yaml) -
     # a toggle right before a crash/power loss in that window would be
@@ -184,7 +202,7 @@ switch:
       - lambda: global_preferences->sync();
     web_server:
       sorting_group_id: ${sorting_group_id}
-      sorting_weight: 5
+      sorting_weight: 90
 
 text:
   # Purely cosmetic label - shown on the dashboard's Home card and
@@ -206,7 +224,8 @@ text:
     min_length: 0
     max_length: 32
     entity_category: config
-    # Same immediate-flush reasoning as the Enabled switch above - but
+    disabled_by_default: true
+    # Same immediate-flush reasoning as the Show on Dashboard switch above - but
     # TemplateText::control() saves to the preference *after* firing
     # set_action (unlike the switch base class), so sync()ing straight
     # from set_action would flush too early and miss this exact change.
@@ -241,6 +260,7 @@ number:
     optimistic: true
     initial_value: 0
     entity_category: config
+    disabled_by_default: true
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 60
@@ -264,6 +284,7 @@ number:
     restore_value: true
     initial_value: ${zero_flow_timeout_default}
     entity_category: config
+    disabled_by_default: true
     set_action:
       - delay: 10ms
       - lambda: global_preferences->sync();
@@ -284,6 +305,7 @@ button:
     name: "${friendly_name} Update"
     icon: "mdi:sync"
     entity_category: config
+    disabled_by_default: true
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 80

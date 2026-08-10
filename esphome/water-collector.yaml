@@ -179,6 +179,9 @@ web_server:
 # portal. Whatever is entered there is saved to the ESP's own flash, not
 # to this build.
 wifi:
+  # Explicit id so the "Forget Wi-Fi" button below can call save_wifi_sta()
+  # directly - see the button for why that's the right API for this.
+  id: wifi_id
   ap:
     ssid: "${friendly_device_name} Setup"
   # ESPHome's own default on ESP32 is "light" (modem-sleep power saving) -
@@ -238,10 +241,27 @@ sensor:
   # these onto the dashboard's "Diagnostics" page (see web/dashboard.js:
   # pageFor()) instead of the primary "Home" page, which is reserved for
   # the meters' own readings.
+  #
+  # disabled_by_default: true throughout this file and water_meter.yaml
+  # (except each meter's own Flow Rate/Total Consumption - the device's
+  # actual job): Home Assistant registers every entity enabled by default
+  # on first discovery, regardless of ESPHome's own entity_category - HA
+  # has no concept of "diagnostic/config, so hide it", that's a purely
+  # ESPHome-side dashboard convention. Without this, connecting HA would
+  # surface two dozen entities at once, most of which either aren't
+  # useful there (this dashboard's own visibility toggles, timing knobs)
+  # or are actively misleading out of context (a "Firmware Version" with
+  # no HA-side update mechanism looks like it should mean something it
+  # doesn't). disabled_by_default doesn't remove or hide anything from
+  # THIS custom dashboard - it talks to the device directly over its own
+  # REST/SSE API, never through HA's entity registry, so it's completely
+  # unaffected either way. It only changes HA's own starting state; still
+  # a normal entity, one opt-in click away if ever needed there.
   - platform: wifi_signal
     name: "Wi-Fi Signal"
     update_interval: 60s
     entity_category: diagnostic
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_network
       sorting_weight: 10
@@ -249,6 +269,7 @@ sensor:
   - platform: uptime
     name: "Uptime"
     entity_category: diagnostic
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 10
@@ -256,6 +277,7 @@ sensor:
   - platform: internal_temperature
     name: "Unit Temperature"
     entity_category: diagnostic
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 20
@@ -264,6 +286,7 @@ sensor:
     free:
       name: "Free Heap"
       entity_category: diagnostic
+      disabled_by_default: true
       web_server:
         sorting_group_id: sorting_group_system
         sorting_weight: 30
@@ -273,19 +296,29 @@ text_sensor:
     ip_address:
       name: "IP Address"
       entity_category: diagnostic
+      disabled_by_default: true
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 20
     ssid:
       name: "Connected SSID"
       entity_category: diagnostic
+      disabled_by_default: true
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 30
 
+  # Kept, despite the fair "what's the point if you can't update from
+  # here" objection - this isn't meant to claim "you're up to date", just
+  # to report which build is actually flashed right now, which has been
+  # genuinely useful for real debugging in this project already (matching
+  # a crash log's timestamp to the exact source it was built from).
+  # disabled_by_default rather than removed: costs HA nothing while
+  # unused, still there to check on demand.
   - platform: version
     name: "Firmware Version"
     entity_category: diagnostic
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 40
@@ -294,6 +327,7 @@ text_sensor:
     device:
       name: "Reset Reason"
       entity_category: diagnostic
+      disabled_by_default: true
       web_server:
         sorting_group_id: sorting_group_system
         sorting_weight: 50
@@ -305,26 +339,65 @@ button:
   - platform: restart
     name: "Restart"
     entity_category: config
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 90
 
-  # Wipes ALL settings (Wi-Fi included, not just Wi-Fi) and reboots into
-  # provisioning mode. There is no ESPHome-native "forget Wi-Fi only"
-  # action; this is the closest equivalent to "switch to a different
-  # hotspot", at the cost of also clearing the other saved preferences
-  # (calibration offsets, zero-flow timeouts) - a rare, deliberate action.
+  # Clears *only* the saved Wi-Fi credentials and reboots into provisioning
+  # mode (fallback AP + BLE improv) - everything else (calibration offsets,
+  # zero-flow timeouts, display names, the Show on Dashboard toggles) stays
+  # exactly as it was. The actual, common need this answers: physically
+  # moving the device to a different Wi-Fi network.
+  #
+  # save_wifi_sta(ssid, password) (confirmed public in wifi_component.h) is
+  # the same call esp32_improv itself makes when new BLE-provisioned
+  # credentials come in - it writes to the wifi component's own,
+  # dedicated preference slot (SavedWifiSettings) and flushes immediately
+  # (global_preferences->sync() inside it already), never touching any of
+  # this project's own preference keys (offset_m3 etc - see
+  # water_meter.yaml). Calling it with empty strings clears that slot the
+  # same way; the reboot then finds no usable saved network, and (matching
+  # exactly what a truly first-boot/freshly-flashed device does today, per
+  # real captured logs) goes straight to the fallback AP + BLE improv,
+  # ready to be reprovisioned like new - without losing anything else.
+  #
+  # This is deliberately a *narrower* action than Factory Reset below, and
+  # covers the actual common case that one existed for ("switch to a
+  # different hotspot") without its side effect of wiping calibration too.
+  - platform: template
+    name: "Forget Wi-Fi"
+    icon: "mdi:wifi-off"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 91
+    on_press:
+      - lambda: |-
+          id(wifi_id).save_wifi_sta("", "");
+      - delay: 100ms
+      - lambda: App.safe_reboot();
+
+  # Wipes ALL settings (Wi-Fi included, calibration/timeouts/display names
+  # too) and reboots into provisioning mode - the "Forget Wi-Fi" button
+  # above now covers the actual common reason to do this (switching
+  # networks) without the side effect of losing calibration too; this
+  # stays as a genuine last-resort/stuck-state fallback, not the everyday
+  # tool for a network change.
   #
   # Deliberately left off the custom web UI entirely (dashboard.js skips
   # any button named "Factory Reset..." outright, not just a confirm
   # dialog) - stays reachable through the Home Assistant API/entity if
   # ever needed there, just not one accidental tap away on the device's
-  # own page.
+  # own page. disabled_by_default too, so it isn't even a default-visible
+  # HA entity - has to be deliberately opted into there as well.
   - platform: factory_reset
     name: "Factory Reset (incl. Wi-Fi)"
+    disabled_by_default: true
     web_server:
       sorting_group_id: sorting_group_system
-      sorting_weight: 91
+      sorting_weight: 92
 
 packages:
   # friendly_name is deliberately generic ("Water Meter 1/2", not "Main"/
