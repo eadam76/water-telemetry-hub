@@ -623,10 +623,26 @@ body {
 
   #dc-header {
     position: sticky;
-    /* Stays clear of the standalone-mode system status bar even once
-     * stuck/pinned during a scroll, not just at the top of the page -
-     * see the general env(safe-area-inset-top) note on #dc-main below. */
-    top: env(safe-area-inset-top);
+    /* top: 0, NOT env(safe-area-inset-top) - real-device measurement
+     * (getBoundingClientRect() via Safari's Web Inspector console, on an
+     * iPhone with a 59px safe-area-inset-top) confirmed a genuine WebKit
+     * bug: position: sticky with a non-zero, env()-based `top` applies
+     * that offset even in the *static*, not-yet-stuck state (scrolled
+     * position 0), adding it on top of the element's normal in-flow
+     * position instead of only using it as the stick threshold. Measured
+     * ~59px of unexplained extra offset above this header, exactly
+     * matching env(safe-area-inset-top) - i.e. it was being counted
+     * *twice*, once correctly (by #dc-main's own padding-top, below) and
+     * once more, erroneously, by this rule.
+     *
+     * Fix: reserve the safe area in exactly one place - this element's
+     * own padding-top instead of its sticky `top` offset. Sticking at a
+     * flat 0 sidesteps the bug outright (0 mis-applied is still 0), and
+     * padding-top here still keeps the header's content (and its
+     * background, which covers the full padding box) clear of the
+     * status bar, both before and after it's actually stuck. */
+    top: 0;
+    padding-top: env(safe-area-inset-top);
     z-index: 2;
     background: var(--dc-bg);
   }
@@ -637,16 +653,16 @@ body {
      * silently because of exactly this shorthand-clobbering-x mistake. */
     overflow-x: hidden;
     overflow-y: visible;
-    /* Top: reserves space for the standalone-mode system status bar,
-     * which otherwise draws directly over the page (0 in an ordinary
-     * browser tab, a no-op there). Bottom: #dc-nav is now position:
-     * fixed, i.e. out of normal document flow - without this, the last
-     * bit of a page's content would scroll to underneath/behind it.
-     * ~76px is a deliberately generous estimate of the nav bar's real
-     * height (icon + label + its own padding); a little extra empty
-     * space at the bottom costs nothing, clipped content would. */
-    padding: calc(18px + env(safe-area-inset-top)) 16px
-      calc(24px + 76px + env(safe-area-inset-bottom));
+    /* Top: just a small cosmetic gap now - the actual safe-area
+     * reservation moved onto #dc-header's own padding-top above (see its
+     * comment for why keeping it here too would double-reserve it, a
+     * second, different way). Bottom: #dc-nav is now position: fixed,
+     * i.e. out of normal document flow - without this, the last bit of a
+     * page's content would scroll to underneath/behind it. ~76px is a
+     * deliberately generous estimate of the nav bar's real height (icon +
+     * label + its own padding); a little extra empty space at the bottom
+     * costs nothing, clipped content would. */
+    padding: 18px 16px calc(24px + 76px + env(safe-area-inset-bottom));
   }
 
   #dc-nav {
