@@ -184,6 +184,18 @@ wifi:
   id: wifi_id
   ap:
     ssid: "${friendly_device_name} Setup"
+    # Default is 90s (confirmed from source, wifi/__init__.py's
+    # DEFAULT_AP_TIMEOUT) - how long to keep trying a configured network
+    # before falling back to this setup AP + BLE improv. This is the exact
+    # ~90s delay observed after "Forget Wi-Fi": that button intentionally
+    # saves an empty network, so the device is *always* going to end up
+    # here - there's nothing to gain from waiting the full default out.
+    # Trade-off: this is the same single timeout used for a genuine,
+    # temporary Wi-Fi outage (e.g. the router rebooting) - too short and a
+    # normal blip could bounce the device into setup mode instead of just
+    # waiting it out; too long and Forget Wi-Fi feels broken. 30s is a
+    # reasonable middle ground between the two.
+    ap_timeout: 30s
   # ESPHome's own default on ESP32 is "light" (modem-sleep power saving) -
   # a well-documented source of exactly the symptom seen on real hardware
   # (dashboard/ping unreachable for many seconds while the device is
