@@ -144,6 +144,23 @@ void AsyncWebServer::begin() {
   config.stack_size = config.stack_size + 256;
   config.server_port = this->port_;
   config.uri_match_fn = [](const char * /*unused*/, const char * /*unused*/, size_t /*unused*/) { return true; };
+  // Local fix (paired with esp32: sdkconfig_options: CONFIG_LWIP_MAX_SOCKETS in
+  // water-collector.yaml - that has to go up too, or this can't actually get the sockets
+  // it's now asking for): HTTPD_DEFAULT_CONFIG()'s own default is 7, of which ESP-IDF's own
+  // docs say 3 are reserved for the server's internal use - only 4 actually usable for
+  // clients. Real-device symptom this caused: repeated "Closing stuck EventSource connection
+  // after 2500 failed sends" even with Wi-Fi power-save off, BLE disabled while connected,
+  // and a decent signal - i.e. not a radio problem. Everything this device serves (the SSE
+  // /events stream AND every REST call - /toggle, /set, /press, the static dashboard
+  // assets) shares this one httpd instance's socket pool: one open browser tab's persistent
+  // SSE connection already uses one of only 4 usable slots, and each concurrent fetch() (the
+  // Service page's prefill-on-entry POST, a toggle, a number/set) needs one of the few that
+  // are left - a second tab/device, or just a slightly slow REST call landing while the SSE
+  // stream is active, was plausibly enough to exhaust it, especially once something (e.g. a
+  // congested link) makes any one connection linger longer than usual before its socket is
+  // freed. Raised generously - each additional socket is cheap relative to this device's
+  // normal ~100KB free heap.
+  config.max_open_sockets = 12;
   // Always enable LRU purging to handle socket exhaustion gracefully.
   // When max sockets is reached, the oldest connection is closed to make room for new ones.
   // This prevents "httpd_accept_conn: error in accept (23)" errors.

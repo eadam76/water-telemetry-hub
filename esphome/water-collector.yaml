@@ -33,6 +33,19 @@ esp32:
   board: ${board_type}
   framework:
     type: esp-idf
+    # Paired with the raised httpd max_open_sockets in the local
+    # web_server_idf override below (components/web_server_idf/
+    # web_server_idf.cpp) - that value can't actually be used if the
+    # system-wide LWIP socket pool doesn't have room for it too. ESPHome
+    # auto-sizes this from each component's own declared socket needs, but
+    # has no visibility into a value hardcoded directly in our forked .cpp
+    # (it's not exposed through Python config), so it has to be set
+    # explicitly here instead of trusting the auto-calc. Comfortably above
+    # web_server_idf's own new max_open_sockets (12) plus headroom for the
+    # native api: connection, mDNS, and OTA - cheap relative to the ~100KB
+    # free heap this device normally runs with.
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "20"
 
 # Local override of ESPHome's built-in web_server_idf component (components/web_server_idf/,
 # a full copy of the upstream 2026.7.3 source with one fix applied) - works around a genuine,

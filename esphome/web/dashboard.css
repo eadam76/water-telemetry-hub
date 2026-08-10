@@ -262,10 +262,21 @@ body {
   border-top: none;
 }
 
+/* CR #1 regression, missed the first time around: this rule got the same
+ * white-space: nowrap treatment .dc-list-row .v had before CR #1's fix,
+ * but only the diagnostics one was ever corrected - a long headline number
+ * (a multi-digit Total Consumption reading, 32px font on the headline
+ * metric) could still force the card - and the page - wider than the
+ * viewport, exactly like Reset Reason did before. Same fix: let it wrap
+ * instead of pushing the layout wider. min-width: 0 on the parent .v
+ * flex item is needed for that wrapping to actually take effect, same
+ * reasoning as .dc-list-row .v. */
 .dc-metric .v {
   font-size: 16px;
   font-weight: 500;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .dc-metric .v .unit {
