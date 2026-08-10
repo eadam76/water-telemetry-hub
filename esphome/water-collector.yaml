@@ -34,6 +34,44 @@ esp32:
   framework:
     type: esp-idf
 
+# Local override of ESPHome's built-in web_server_idf component (components/web_server_idf/,
+# a full copy of the upstream 2026.7.3 source with one fix applied) - works around a genuine,
+# confirmed use-after-free in web_server_idf.cpp still present upstream as of 2026.7.3 and the
+# current esphome/esphome main branch as of 2026-08-10.
+#
+# Root cause, confirmed by decoding a real crash's backtrace (xtensa-esp32-elf-addr2line
+# against the build's own .elf) and reading the actual upstream source:
+#   - process_buffer_()'s "stuck EventSource connection" path (fires after ~20s of failed
+#     sends - the same symptom power_save_mode: none above was meant to reduce, but doesn't
+#     eliminate outright, e.g. a client that goes to sleep/loses network without a clean TCP
+#     close can still trigger it) used to call `this->fd_.store(0)` directly.
+#   - That makes the very next main-loop tick `delete` the C++ session object - but the
+#     underlying httpd session (req->sess_ctx) still points at it, and httpd hasn't actually
+#     closed the socket yet.
+#   - When httpd later retires that socket for real (its own idle/error handling), it invokes
+#     free_ctx (destroy()) on what is by then a dangling pointer - a use-after-free write into
+#     already-freed/reused heap memory.
+#   - That corruption gets detected later, elsewhere, by an unrelated free() - which is
+#     exactly what was observed: `assert failed: block_merge_prev ... "prev block is not free
+#     though marked as such"` inside lwIP's own tcpip_thread housekeeping (sys_check_timeouts
+#     -> memp_free), a few seconds after a "Closing stuck EventSource connection" log line and
+#     the fd's own (already-dangling) "Event source connection closed" log line.
+#
+# Fix applied in components/web_server_idf/web_server_idf.cpp: that path now only calls the
+# proper ESP-IDF API, httpd_sess_trigger_close(), and leaves fd_/deletion to the same safe
+# close_fn -> free_ctx path a normal client-initiated disconnect already goes through -
+# instead of racing ahead of httpd itself. See the comment at the call site for the full
+# writeup. Not yet reported upstream.
+#
+# If/when this is fixed in a released ESPHome version, this whole external_components block
+# (and the components/web_server_idf/ copy) can be deleted again - it's a temporary override,
+# not a fork to maintain long-term.
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [web_server_idf]
+
 # Checkpoint mechanism: every restore_value: true global/number persists
 # through this. flash_write_interval already defaults to 60s, spelled out
 # explicitly here to keep it traceable against REQUIREMENTS.md.
