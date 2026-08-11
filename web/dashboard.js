@@ -781,17 +781,20 @@
     if (!connected) updateSignalBars(NaN);
   }
 
-  // Header Wi-Fi signal readout (bars + dBm), fed by the device's own
-  // "Wi-Fi Signal" sensor entity through the exact same SSE pipeline as
-  // every other entity - see the hook in render() below. Deliberately a
-  // separate thing from #dc-status/setConnected() above: that tracks
-  // whether *this browser's* SSE link to the device is currently open,
-  // this tracks the *device's own* upstream Wi-Fi RSSI - two different
-  // links, independently healthy or not. Paired with the sensor's 2s
-  // update_interval (water-collector.yaml - was 60s, far too slow to
-  // watch anything happen live), this is what makes something like "does
-  // a hand near the board tank the signal" actually visible in real time,
-  // instead of only inferable after the fact from a disconnect reason.
+  // Header Wi-Fi signal readout (bars only - the dBm number was tried and
+  // pulled again, bars alone read cleaner at a glance), fed by the
+  // device's own "Wi-Fi Signal" sensor entity through the exact same SSE
+  // pipeline as every other entity - see the hook in render() below.
+  // Deliberately a separate thing from #dc-status/setConnected() above:
+  // that tracks whether *this browser's* SSE link to the device is
+  // currently open, this tracks the *device's own* upstream Wi-Fi RSSI -
+  // two different links, independently healthy or not. Paired with the
+  // sensor's 2s update_interval (water-collector.yaml - was 60s, far too
+  // slow to watch anything happen live), this is what makes something
+  // like "does a hand near the board tank the signal" actually visible in
+  // real time, instead of only inferable after the fact from a disconnect
+  // reason. The exact dBm is still available as a hover/long-press tooltip
+  // (title attribute) and on the Diagnostics page's own "Wi-Fi Signal" row.
   //
   // Thresholds are the common phone-style dBm convention (less negative =
   // stronger); tier 0 (unknown/no reading yet) and the gap below -85 both
@@ -807,17 +810,14 @@
   function updateSignalBars(dbm) {
     const wrap = document.getElementById("dc-wifi-signal");
     if (!wrap) return;
-    const label = wrap.querySelector(".dc-signal-dbm");
     if (typeof dbm !== "number" || Number.isNaN(dbm)) {
       wrap.dataset.tier = "0";
-      label.textContent = "";
       wrap.title = "Wi-Fi signal: unknown";
       return;
     }
     const found = SIGNAL_TIERS.find((t) => dbm >= t.min);
     wrap.dataset.tier = String(found ? found.tier : 0);
     const text = `${Math.round(dbm)} dBm`;
-    label.textContent = text;
     wrap.title = `Wi-Fi signal: ${text}`;
   }
 
@@ -914,7 +914,6 @@
                 <rect class="bar bar-3" x="11" y="4" width="3" height="12" rx="1"/>
                 <rect class="bar bar-4" x="16.5" y="1" width="3" height="15" rx="1"/>
               </svg>
-              <span class="dc-signal-dbm"></span>
             </div>
             <div id="dc-status"><span class="dot"></span><span class="label">Connecting…</span></div>
           </div>

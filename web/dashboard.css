@@ -193,20 +193,19 @@ body {
   background: var(--dc-accent);
 }
 
-/* Header Wi-Fi signal bars + dBm readout - see updateSignalBars() in
- * dashboard.js for what drives this and why it's a separate thing from
- * #dc-status above (browser<->device link vs. the device's own upstream
- * Wi-Fi RSSI). Bars default to --dc-border (unfilled/grey) and only pick
+/* Header Wi-Fi signal bars - see updateSignalBars() in dashboard.js for
+ * what drives this and why it's a separate thing from #dc-status above
+ * (browser<->device link vs. the device's own upstream Wi-Fi RSSI). Exact
+ * dBm is a hover/long-press tooltip (title attribute) plus its own
+ * Diagnostics-page row, not shown as text here - bars alone read cleaner
+ * at a glance. Bars default to --dc-border (unfilled/grey) and only pick
  * up a tier color via the [data-tier] attribute selectors below, so an
  * unknown/no-reading-yet state (tier 0, set on load and whenever the SSE
  * link itself drops) reads as "no bars", not as an error color. */
 #dc-wifi-signal {
   display: flex;
   align-items: center;
-  gap: 5px;
   margin-right: 10px;
-  font-size: 11px;
-  color: var(--dc-text-muted);
 }
 
 #dc-wifi-signal svg {
@@ -239,10 +238,6 @@ body {
 
 #dc-wifi-signal[data-tier="4"] .bar {
   fill: var(--dc-accent);
-}
-
-.dc-signal-dbm {
-  font-variant-numeric: tabular-nums;
 }
 
 .dc-page {
