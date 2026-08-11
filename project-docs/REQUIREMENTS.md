@@ -126,7 +126,11 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
   - **A beszerzett/tervezett kivitel**: RS485/Modbus RTU kimenet (az adatlap alapváltozata 4-20mA áramhurok, de a Modbus-kimenet is dokumentált kivitel, 4-vezetékes bekötéssel – **ezt a variánst rendeljük**), táp `24V DC`, mérési tartomány `0–10 bar` (`0–1.0 MPa`).
   - `G1/4` menetes csatlakozás, pontosság `±0.2% F.S.`, védettség `IP65`.
   - Kommunikáció a végleges **Waveshare ESP32-S3-RS485-CAN** board saját, galvanikusan leválasztott RS485 illesztőjén keresztül (lásd [`esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md)) – a jelenlegi tesztboardon (`esp32dev`) nincs RS485 illesztő, ezért a **tényleges Modbus-kommunikáció megvalósítása a végleges hardver megérkezéséig szándékosan várat magára** (ld. Architekturális megfontolás – Státusz).
-  - Darabszám: kezdetben **3 mérési pont** tervezve, egy közös RS485 buszon (daisy-chain, a busz két végén lezáró ellenállással). Melyik fizikai pont mit mér (pl. bemenet/kimenet/szűrő előtt-után), az telepítésfüggő – ugyanúgy, mint a vízmérőknél, ez nem kerül a kódba égetve, futásidőben (Display Name) nevesíthető.
+  - Darabszám: kezdetben **3 mérési pont** tervezve. Melyik fizikai pont mit mér (pl. bemenet/kimenet/szűrő előtt-után), az telepítésfüggő – ugyanúgy, mint a vízmérőknél, ez nem kerül a kódba égetve, futásidőben (Display Name) nevesíthető.
+- **RS485 hub: CDEBYTE E810-R14** (1→4 irányú, opto-izolált RS485 repeater/hub) – a telepítés fizikai adottságai miatt a szenzorok nem köthetők egy szál kábelre daisy-chain-nel, csak csillag-topológiában; ez az eszköz oldja meg a csillag-kábelezést anélkül, hogy protokoll-szinten bármit is módosítana.
+  - **Fontos**: teljesen protokoll-átlátszó ("transparent data transmission, no configuration required") – nem multiplexer, nem ismeri a Modbust. Mind a 4 kimeneti port **ugyanazt az egy logikai RS485 buszt** hordozza tovább, közös baud rate-tel – a ráakasztott szenzoroknak emiatt továbbra is **egyedi Modbus-címre van szükségük** (ld. lent, "betanítás"), ez a hub bevezetésével nem változik.
+  - Saját táp: `DC 9–40V`, a buszról galvanikusan leválasztva (`1.5kV` izoláció) – ezt külön be kell tervezni a kábelezésbe. Baud tartomány `300–230400` – a szenzor `1200–115200` tartományát bőven lefedi.
+  - Gyártói infó: [cdebyte.com/products/E810-R14](https://www.cdebyte.com/products/E810-R14).
 - **Modbus regisztertérkép** – ⚠️ **nem hivatalos forrásból, közösségi/kompatibilitási dokumentációból (TapHome kompatibilitási oldal, Home Assistant közösségi fórum – ugyanerre a `QDW90A-3`, 0–10 bar variánsra vonatkozó, egymástól független bejegyzések) összeállítva, a ténylegesen beszerzett egységen még nincs leellenőrizve**:
   - Slave cím: `H:0` (holding regiszter), írható, alapértelmezett `1`.
   - Baud rate: `H:1`, alapértelmezett `9600 8N1`, választható `1200`–`115200` közül.
@@ -143,7 +147,7 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 ### Architekturális megfontolás: "dinamikus" nyomásmérő-hozzáadás
 
 - Az ESPHome **fordításidőben rögzített, statikus entitásmodellt** használ – nincs natív támogatás arra, hogy futásidőben, újraflashelés nélkül vadonatúj entitás (pl. egy negyedik nyomásmérő) jöjjön létre a semmiből.
-- **Javasolt kompromisszum** (a vízmérő-modul mintájára, ott is bevált): fix számú, előre bekötött "slot" (a fizikai RS485-kapacitás/telepítési terv által meghatározva, pl. 3–5 db – *hány slot legyen, azt érdemes véglegesíteni, mielőtt implementálunk*), mindegyik:
+- **Javasolt kompromisszum** (a vízmérő-modul mintájára, ott is bevált): fix számú, előre bekötött "slot" – **8 db** (döntés: a jelenleg tervezett E810-R14 hub 4 fizikai portot ad, a dupla ráhagyás fedezi egy jövőbeli második hub/bővítés esetét is, anélkül hogy akkor újra kellene flash-elni – mivel a hub protokoll-átlátszó, a fizikai portszám amúgy sem kemény korlát a busz eszközszámára). Mindegyik slot:
   - alapból inaktív/rejtett a dashboard "Home" oldalán, amíg nincs hozzá betanított (Modbus-címmel ellátott) szenzor,
   - futásidőben be/kikapcsolható (a vízmérők "Show on Dashboard" kapcsolójának mintájára),
   - saját, futásidőben állítható Modbus slave címmel (a fenti "betanítás"),
