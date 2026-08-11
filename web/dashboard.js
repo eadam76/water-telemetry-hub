@@ -1115,10 +1115,15 @@
   // Debounced since standalone launches can fire this more than once in
   // quick succession while settling.
   //
-  // Not yet real-device confirmed against the specific floating-nav
-  // symptom (unlike nudgeViewportSync() above) - flagged honestly as a
-  // plausible, source-reasoned fix for the same quirk family, not a
-  // proven one. Report back whether the gap is actually gone.
+  // UPDATE: real-device tested, does NOT fix the floating-nav gap (unlike
+  // nudgeViewportSync() above, which is confirmed load-bearing for the
+  // touch-hit-testing symptom). Left in - it's harmless, and re-syncing on
+  // an actual late viewport settle is still correct behavior in general -
+  // but it's now confirmed NOT the mechanism behind this particular
+  // symptom. Whatever's actually holding #dc-nav short of the true edge
+  // isn't a stale-viewport-at-load-time problem; see the debug overlay in
+  // watchViewportSettle()'s caller below, added to get real numbers
+  // instead of guessing again.
   function watchViewportSettle() {
     if (!window.visualViewport) return;
     let timer = null;
@@ -1126,6 +1131,47 @@
       clearTimeout(timer);
       timer = setTimeout(nudgeViewportSync, 50);
     });
+  }
+
+  // TEMPORARY - remove once the standalone-mode #dc-nav gap above is
+  // actually diagnosed. Small on-screen readout (not the console - the
+  // point is not needing a Mac/Web Inspector session to get real numbers
+  // off the actual phone) of exactly the values needed to tell apart the
+  // remaining candidate causes: is #dc-nav's own rendered position wrong
+  // relative to the viewport WebKit itself reports (a real CSS/positioning
+  // bug), or does WebKit's reported viewport height itself already fall
+  // short of the true screen (nothing left for CSS to fix, a platform
+  // quirk needing a different workaround)? Screenshot this from the
+  // standalone app and report the numbers back.
+  function addViewportDebugOverlay() {
+    const box = el("pre", null);
+    box.id = "dc-viewport-debug";
+    box.style.cssText =
+      "position:fixed;top:0;left:0;z-index:9999999;margin:0;padding:6px 8px;" +
+      "background:rgba(0,0,0,0.75);color:#0f0;font:10px/1.4 monospace;" +
+      "white-space:pre;pointer-events:none;";
+    document.body.appendChild(box);
+    function update() {
+      const nav = document.getElementById("dc-nav");
+      const navRect = nav ? nav.getBoundingClientRect() : null;
+      const vv = window.visualViewport;
+      const lines = [
+        `innerHeight: ${window.innerHeight}`,
+        `docClientH: ${document.documentElement.clientHeight}`,
+        `docRectH: ${document.documentElement.getBoundingClientRect().height.toFixed(1)}`,
+        `vv.height: ${vv ? vv.height.toFixed(1) : "n/a"}`,
+        `vv.offsetTop: ${vv ? vv.offsetTop.toFixed(1) : "n/a"}`,
+        `screen.height: ${window.screen.height}`,
+        `nav.top: ${navRect ? navRect.top.toFixed(1) : "n/a"}`,
+        `nav.bottom: ${navRect ? navRect.bottom.toFixed(1) : "n/a"}`,
+        `gap below nav: ${navRect ? (window.innerHeight - navRect.bottom).toFixed(1) : "n/a"}`,
+      ];
+      box.textContent = lines.join("\n");
+    }
+    update();
+    window.addEventListener("resize", update);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", update);
+    setInterval(update, 1000);
   }
 
   function start() {
@@ -1136,6 +1182,7 @@
     startConnectionWatchdog();
     nudgeViewportSync();
     watchViewportSettle();
+    addViewportDebugOverlay();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
