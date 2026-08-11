@@ -1094,52 +1094,20 @@
     });
   }
 
-  // Standalone-mode #dc-nav gap - diagnosed from a real on-device debug
-  // readout (a temporary on-screen overlay, since removed), not guessed:
-  // innerHeight, visualViewport.height AND document.documentElement's own
-  // clientHeight/getBoundingClientRect().height all independently agreed
-  // on the same figure (e.g. 793 on one real device), and #dc-nav's own
-  // getBoundingClientRect().bottom landed exactly on that figure too (a
-  // measured "gap below nav" of 0.0) - i.e. #dc-nav was never
-  // mispositioned relative to what WebKit itself calls the viewport. The
-  // two watchViewportSettle()/nudgeViewportSync() candidates above (a
-  // stale/late-settling viewport size) are consistent with that: neither
-  // fixed this, because there was nothing stale to settle.
-  //
-  // The actual gap is between that WebKit-reported figure and the true
-  // physical screen (window.screen.height - 852 on the same device, a
-  // confirmed ~59px shortfall) - a real iOS standalone-mode quirk:
-  // WebKit excludes that band from every viewport metric it reports
-  // (not merely an inset within a full-height viewport, which env()
-  // could have handled), so nothing expressed in vh/dvh/fixed-positioning
-  // terms can ever reach it - CSS has no way to describe a region the
-  // engine itself won't admit is part of the viewport.
-  //
-  // window.screen.height is unaffected by this - it reports the true
-  // physical resolution regardless. Only in standalone mode (gated on
-  // navigator.standalone, iOS's own "launched from Home Screen" flag) is
-  // a shortfall against it illegitimate: in a regular Safari tab,
-  // innerHeight is *supposed* to be shorter than screen.height (the
-  // browser's own address bar/toolbar genuinely occupies the rest) -
-  // compensating there would shove #dc-nav underneath that toolbar.
-  function fixStandaloneNavGap() {
-    if (!window.navigator.standalone) return;
-    const nav = document.getElementById("dc-nav");
-    if (!nav) return;
-    function apply() {
-      const shortfall = window.screen.height - window.innerHeight;
-      // Negative `bottom` pushes a position: fixed element below its
-      // containing block's own bottom edge, by exactly that much - into
-      // the band WebKit excludes from innerHeight but still actually
-      // renders on screen (confirmed from the same real-device readout:
-      // the physical display is 852px, the missing 59px isn't unusable
-      // dead space, it's simply unreported).
-      nav.style.bottom = shortfall > 0 ? `${-shortfall}px` : "";
-    }
-    apply();
-    window.addEventListener("resize", apply);
-    if (window.visualViewport) window.visualViewport.addEventListener("resize", apply);
-  }
+  // Standalone-mode #dc-nav gap - still unsolved, see REQUIREMENTS.md/
+  // commit history for the failed attempts and why. Real-device confirmed
+  // WRONG (made it worse - clipped the nav under an opaque bar instead of
+  // just leaving a gap above it): pushing #dc-nav down via a negative
+  // `bottom` sized from window.screen.height - window.innerHeight. A
+  // same-device comparison (another, unrelated site added to the Home
+  // Screen) genuinely achieves true edge-to-edge rendering with no dead
+  // zone at all, so this isn't an unreachable WebKit reservation as
+  // first assumed - something about *this* page's setup, most likely the
+  // lack of a real Web App Manifest (this project only sets the legacy
+  // apple-mobile-web-app-* meta tags via fixMobileMeta() below, no
+  // manifest.json/`display: standalone`) is the more likely next lead,
+  // not yet attempted. Left alone (plain CSS bottom: 0) rather than
+  // guessing a fourth time at real device cost.
 
   function start() {
     fixMobileMeta();
@@ -1148,7 +1116,6 @@
     connect();
     startConnectionWatchdog();
     nudgeViewportSync();
-    fixStandaloneNavGap();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
