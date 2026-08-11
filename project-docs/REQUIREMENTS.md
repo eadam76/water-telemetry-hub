@@ -116,6 +116,57 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 - Az impulzus–térfogat átváltás (`liters_per_pulse`) vízóránként konfigurálható.
 - Az impulzusbemenet pergésmentesítése konfigurálható (ESPHome `pulse_meter` `internal_filter` paramétere, nem külön logika).
 
+**Javasolt kiegészítés (még nem eldöntött)**: `liters_per_pulse` jelenleg fordításidőben rögzített (`substitutions`) – tegyük futásidőben is állíthatóvá (pl. `number` entitás, hasonlóan a Nulla-átfolyás timeout-hoz), hogy egy más arányú vezeték bekötése (pl. a fehér 1:1 helyett sárga 10:1/zöld 100:1, lásd Hardver) vagy más gyártmányú impulzusadó ne igényeljen újraflashelést. Kockázat, amit kezelni kell: mivel `Összes fogyasztás = offset_m3 + pulse_count × liters_per_pulse / 1000`, egy futásidejű váltás a már felhalmozott `pulse_count`-ra visszamenőleg hatna – a váltáskor az `offset_m3`-at automatikusan újra kell számolni úgy, hogy az `Összes fogyasztás` ne ugorjon (hasonlóan a kézi szinkronhoz, csak automatikusan, a régi/új arány különbségére).
+
+## Nyomásmérő modul
+
+### Hardver
+
+- Érzékelő: **QDW90A** (Anhui Qidian Automation Technology), diffúz szilícium piezorezisztív nyomás-távadó. Dokumentáció: [`docs/hardver/qdw90a-nyomastavado-adatlap.pdf`](docs/hardver/qdw90a-nyomastavado-adatlap.pdf).
+  - **A beszerzett/tervezett kivitel**: RS485/Modbus RTU kimenet (az adatlap alapváltozata 4-20mA áramhurok, de a Modbus-kimenet is dokumentált kivitel, 4-vezetékes bekötéssel – **ezt a variánst rendeljük**), táp `24V DC`, mérési tartomány `0–10 bar` (`0–1.0 MPa`).
+  - `G1/4` menetes csatlakozás, pontosság `±0.2% F.S.`, védettség `IP65`.
+  - Kommunikáció a végleges **Waveshare ESP32-S3-RS485-CAN** board saját, galvanikusan leválasztott RS485 illesztőjén keresztül (lásd [`esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md)) – a jelenlegi tesztboardon (`esp32dev`) nincs RS485 illesztő, ezért a **tényleges Modbus-kommunikáció megvalósítása a végleges hardver megérkezéséig szándékosan várat magára** (ld. Architekturális megfontolás – Státusz).
+  - Darabszám: kezdetben **3 mérési pont** tervezve, egy közös RS485 buszon (daisy-chain, a busz két végén lezáró ellenállással). Melyik fizikai pont mit mér (pl. bemenet/kimenet/szűrő előtt-után), az telepítésfüggő – ugyanúgy, mint a vízmérőknél, ez nem kerül a kódba égetve, futásidőben (Display Name) nevesíthető.
+- **Modbus regisztertérkép** – ⚠️ **nem hivatalos forrásból, közösségi/kompatibilitási dokumentációból (TapHome kompatibilitási oldal, Home Assistant közösségi fórum – ugyanerre a `QDW90A-3`, 0–10 bar variánsra vonatkozó, egymástól független bejegyzések) összeállítva, a ténylegesen beszerzett egységen még nincs leellenőrizve**:
+  - Slave cím: `H:0` (holding regiszter), írható, alapértelmezett `1`.
+  - Baud rate: `H:1`, alapértelmezett `9600 8N1`, választható `1200`–`115200` közül.
+  - Nyomásérték: `4`-es regiszter, 2 tizedesjegy skálázással (pl. `1000` → `10.00 bar`, `123` → `1.23 bar`).
+  - Range Full Point: `H:6` (Int16). Zero Bit Offset: `H:12` (Int16).
+  - **Mielőtt erre firmware-kódot építünk, egy Modbus-scannerrel (pl. `modpoll`, vagy "Modbus Poll" – USB-RS485 adapterrel) a valós eszközön ellenőrizni kell** a fenti címeket/regisztereket.
+
+### Funkcionális követelmények
+
+- A dashboard "Home" oldalán megjeleníti az aktuális nyomásértéket (`bar`), a vízmérők kártyáihoz hasonló elrendezésben.
+- Minden nyomásmérő pont átnevezhető (Display Name), futásidőben – ugyanaz a minta, mint a vízmérőknél.
+- **Szerviz/"betanítás" folyamat**: a Modbus slave cím (és opcionálisan a baud rate, ha a gyári alapértelmezett nem egyezik egységeknél) az ESP saját webes felületéről, futásidőben állítható/módosítható, méterenként – ez a mechanizmus teszi lehetővé, hogy 3 azonos gyári címről induló egységet egy közös buszon egyedileg meg lehessen különböztetni felszereléskor, újraflashelés nélkül.
+
+### Architekturális megfontolás: "dinamikus" nyomásmérő-hozzáadás
+
+- Az ESPHome **fordításidőben rögzített, statikus entitásmodellt** használ – nincs natív támogatás arra, hogy futásidőben, újraflashelés nélkül vadonatúj entitás (pl. egy negyedik nyomásmérő) jöjjön létre a semmiből.
+- **Javasolt kompromisszum** (a vízmérő-modul mintájára, ott is bevált): fix számú, előre bekötött "slot" (a fizikai RS485-kapacitás/telepítési terv által meghatározva, pl. 3–5 db – *hány slot legyen, azt érdemes véglegesíteni, mielőtt implementálunk*), mindegyik:
+  - alapból inaktív/rejtett a dashboard "Home" oldalán, amíg nincs hozzá betanított (Modbus-címmel ellátott) szenzor,
+  - futásidőben be/kikapcsolható (a vízmérők "Show on Dashboard" kapcsolójának mintájára),
+  - saját, futásidőben állítható Modbus slave címmel (a fenti "betanítás"),
+  - saját Display Name-mel.
+- Ez **nem korlátlan dinamikus bővítés**, hanem "N előre definiált, egyenként konfigurálható slot" – ez pontosan a jelenlegi vízmérő-modul mintája is (2 fix slot, futásidőben nevesíthető/kapcsolható). Ha a cél valódi, darabszám-korlát nélküli bővíthetőség, az egy jelentősen nagyobb architekturális váltás lenne (pl. egy generikus "N felhasználó által megadott Modbus-címmel/skálázással rendelkező regiszter" sablonrendszer) – erről külön kell dönteni, ha ez ténylegesen cél, mert alapvetően más tervezést igényel, mint a jelenlegi, ESPHome-natív entitásmodell.
+- **Státusz**: a fenti slot-modell és a Modbus-kommunikáció tényleges implementációja a végleges Waveshare board megérkezéséig várat magára – ezen a ponton csak a követelmények/architektúra tisztázása a cél.
+
+### Kalibráció
+
+- A nyers regiszterérték a fenti (nem hivatalos) térkép szerint már eleve `bar`, 2 tizedesjegy skálázással érkezik – feltehetően elég `/100`-zal osztani, külön finomskálázás valószínűleg nem szükséges. Ezt a valódi hardveren kell megerősíteni.
+- **Nyitott kérdés**: kell-e finomkalibrációs eltolás (pl. ha a gyári nullázás/kalibráció telepítés után nem elég pontos)? Javaslat: igen, egy egyszerű, futásidőben állítható additív offset (`bar`), a vízmérők "Reading" mezőjéhez hasonló UX-szel – de csak ha a gyakorlatban indokolttá válik, elsőre elhagyható.
+
+### Diagnosztika
+
+- Kommunikációs állapot méterenként (Modbus timeout/hiba) – egy busz-osztott szenzor hibája **nem befolyásolhatja** a többi szenzor működését (a busz maga megosztott, de a hibakezelés méterenként független legyen).
+- Utolsó sikeres olvasás időbélyege / "elavult" (stale) jelzés, ha egy adott szenzor tartósan nem válaszol – hasonló szerepű, mint a vízmérők Nulla-átfolyás timeout-ja, csak itt kommunikációs hibát, nem mérési állapotot jelez.
+- **Javasolt védelem**: a fizikai szenzor kalibrált tartományán (`0–10 bar`, kis toleranciával) kívül eső érték inkább szenzor-/kommunikációs hibaként kezelendő, nem valós mérésként (hasonló elv, mint a nulla-átfolyás timeout: egy nyilvánvalóan érvénytelen érték explicit jelzése jobb, mint csendben megjeleníteni).
+
+### Perzisztencia
+
+- A slave cím (betanítás eredménye) és a Display Name futásidőben, azonnal perzisztálódjon (NVS) – a vízmérők `offset_m3`-ához hasonlóan, nem várja meg a checkpointot.
+- A pillanatnyi nyomásérték maga **nem** perzisztens állapot (nincs "felhalmozás", mint a vízmérőknél) – újraindítás után egyszerűen az első sikeres Modbus-olvasás adja az aktuális értéket.
+
 ## Kezdeti implementációs döntések
 
 - A `pulse_meter` végzi az impulzusérzékelést, pergésmentesítést és periódusidő-alapú rátamérést. A futásidőben állítható nulla-átfolyás timeout külön ESPHome logikával történik, mert a `pulse_meter.timeout` nem futásidőben konfigurálható.
@@ -129,3 +180,5 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 
 - Hibaészlelés/riasztás (szivárgás, csőtörés, tartós nulla fogyasztás stb.) – később, HA oldalon kerül definiálásra. A szükséges nyers adat (historizált `Összes fogyasztás`) már rendelkezésre áll ehhez, a jelenlegi adatmodell emiatt nem igényel bővítést. Felbontási korlát: `liters_per_pulse`-nál (1 l) kisebb szivárgás egy impulzusköznyi időn belül nem észlelhető.
 - Fizikai/környezeti kialakítás (ház, védettség, tápellátás) – nem szoftverkövetelmény.
+- **Nyomásmérő modul**: riasztás/küszöbérték-figyelés (alacsony/magas nyomás, pl. szivattyú-védelem) – ugyanúgy HA oldalon, később, ugyanazon elv szerint, mint a vízmérőknél. Historizáció szintén HA feladata (Scope szerint amúgy is általános elv).
+- **Nyomásmérő modul**: tényleges Modbus RTU kommunikáció megvalósítása – a végleges Waveshare ESP32-S3-RS485-CAN board megérkezéséig szándékosan várat magára (a jelenlegi tesztboardon nincs RS485 illesztő). Addig csak a követelmények/architektúra tisztázása zajlik.
