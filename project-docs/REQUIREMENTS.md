@@ -146,15 +146,19 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 - A dashboard "Home" oldalán megjeleníti az aktuális nyomásértéket (`bar`), a vízmérők kártyáihoz hasonló elrendezésben.
 - Minden nyomásmérő pont átnevezhető (Display Name), futásidőben – ugyanaz a minta, mint a vízmérőknél.
 - **Szerviz/"betanítás" folyamat**: a Modbus slave cím (és opcionálisan a baud rate, ha a gyári alapértelmezett nem egyezik egységeknél) az ESP saját webes felületéről, futásidőben állítható/módosítható, méterenként – ez a mechanizmus teszi lehetővé, hogy 3 azonos gyári címről induló egységet egy közös buszon egyedileg meg lehessen különböztetni felszereléskor, újraflashelés nélkül.
+- **Betanítási előfeltétel**: egyszerre csak **1, még gyári alapcímen lévő** eszköz lehet a buszon – ha több egyforma című egység van fent egyszerre, mindegyik válaszolna a lekérdezésre, a cím nem állítható be egyértelműen. Gyakorlatban: az új szenzort a hub adott csatornáján egyedül (a többi lekötve, vagy még be sem kötve) kell címezni, csak utána köthető rá a közös buszra a többihez.
 
 ### Architekturális megfontolás: "dinamikus" nyomásmérő-hozzáadás
 
 - Az ESPHome **fordításidőben rögzített, statikus entitásmodellt** használ – nincs natív támogatás arra, hogy futásidőben, újraflashelés nélkül vadonatúj entitás (pl. egy negyedik nyomásmérő) jöjjön létre a semmiből.
 - **Javasolt kompromisszum** (a vízmérő-modul mintájára, ott is bevált): fix számú, előre bekötött "slot" – **8 db** (döntés: a jelenleg tervezett E810-R14 hub 4 fizikai portot ad, a dupla ráhagyás fedezi egy jövőbeli második hub/bővítés esetét is, anélkül hogy akkor újra kellene flash-elni – mivel a hub protokoll-átlátszó, a fizikai portszám amúgy sem kemény korlát a busz eszközszámára). Mindegyik slot:
   - alapból inaktív/rejtett a dashboard "Home" oldalán, amíg nincs hozzá betanított (Modbus-címmel ellátott) szenzor,
-  - futásidőben be/kikapcsolható (a vízmérők "Show on Dashboard" kapcsolójának mintájára),
   - saját, futásidőben állítható Modbus slave címmel (a fenti "betanítás"),
   - saját Display Name-mel.
+- **Konfigurációs UX**: nem egyszerű be/kikapcsoló kapcsoló, hanem **Hozzáadás/Törlés** – ez **HA Lovelace-szintű** prezentáció a natív ESPHome-entitások (8 fix slot cím/Display Name/on-off) fölött, nem külön firmware-oldali UI-munka (a meglévő, kézzel javított `web_server_idf` override-ot szándékosan nem terheljük tovább egyedi kezelőfelület-logikával):
+  - "Hozzáadás" a soron következő szabad slotot nyitja meg beviteli mezőkkel (progresszív – nem mutatja mind a 8-at egyszerre, csak a már betanítottakat, plusz egy "Hozzáadás" sort a következő üres helyhez),
+  - "Törlés" visszakérdez (megerősítés), utána a slot adatait (cím, Display Name, kalibráció) véglegesen törli, és a slot eltűnik a listából (visszaáll "nincs betanítva" alapállapotba – az alatta lévő entitás fizikailag megmarad, csak üresre/inaktívra áll),
+  - a betanított slotok táblázatos elrendezésben, egymás alatt jelennek meg (cím, Display Name, státusz oszlopokkal).
 - Ez **nem korlátlan dinamikus bővítés**, hanem "N előre definiált, egyenként konfigurálható slot" – ez pontosan a jelenlegi vízmérő-modul mintája is (2 fix slot, futásidőben nevesíthető/kapcsolható). Ha a cél valódi, darabszám-korlát nélküli bővíthetőség, az egy jelentősen nagyobb architekturális váltás lenne (pl. egy generikus "N felhasználó által megadott Modbus-címmel/skálázással rendelkező regiszter" sablonrendszer) – erről külön kell dönteni, ha ez ténylegesen cél, mert alapvetően más tervezést igényel, mint a jelenlegi, ESPHome-natív entitásmodell.
 - **Státusz**: a fenti slot-modell és a Modbus-kommunikáció tényleges implementációja a végleges Waveshare board megérkezéséig várat magára – ezen a ponton csak a követelmények/architektúra tisztázása a cél.
 
