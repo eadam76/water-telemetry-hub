@@ -161,11 +161,34 @@ web_server:
     - id: sorting_group_meter2
       name: "Water Meter 2"
       sorting_weight: 20
-    # Reserved for the planned pressure sensors (x3) - uncomment and wire
-    # up their sorting_group_id once that hardware exists.
-    # - id: sorting_group_pressure
-    #   name: "Pressure Sensors"
-    #   sorting_weight: 30
+    # 8 fixed pressure sensor slots (packages/pressure_sensor.yaml) - see
+    # REQUIREMENTS.md "Architekturális megfontolás: dinamikus
+    # nyomásmérő-hozzáadás" for why 8, and the package file's own header
+    # for the commissioning-UX status (skeleton/mock only so far).
+    - id: sorting_group_pressure1
+      name: "Pressure Sensor 1"
+      sorting_weight: 30
+    - id: sorting_group_pressure2
+      name: "Pressure Sensor 2"
+      sorting_weight: 31
+    - id: sorting_group_pressure3
+      name: "Pressure Sensor 3"
+      sorting_weight: 32
+    - id: sorting_group_pressure4
+      name: "Pressure Sensor 4"
+      sorting_weight: 33
+    - id: sorting_group_pressure5
+      name: "Pressure Sensor 5"
+      sorting_weight: 34
+    - id: sorting_group_pressure6
+      name: "Pressure Sensor 6"
+      sorting_weight: 35
+    - id: sorting_group_pressure7
+      name: "Pressure Sensor 7"
+      sorting_weight: 36
+    - id: sorting_group_pressure8
+      name: "Pressure Sensor 8"
+      sorting_weight: 37
     - id: sorting_group_network
       name: "Network"
       sorting_weight: 80
@@ -503,3 +526,62 @@ packages:
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
       sorting_group_id: sorting_group_meter2
+
+  # 8 fixed pressure sensor slots - see packages/pressure_sensor.yaml's own
+  # header for the id_prefix/friendly_name rename caveat and the current
+  # (mock-data, no real Modbus yet) status.
+  pressure_slot1: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot1
+      friendly_name: "Pressure Sensor 1"
+      sorting_group_id: sorting_group_pressure1
+
+  pressure_slot2: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot2
+      friendly_name: "Pressure Sensor 2"
+      sorting_group_id: sorting_group_pressure2
+
+  pressure_slot3: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot3
+      friendly_name: "Pressure Sensor 3"
+      sorting_group_id: sorting_group_pressure3
+
+  pressure_slot4: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot4
+      friendly_name: "Pressure Sensor 4"
+      sorting_group_id: sorting_group_pressure4
+
+  pressure_slot5: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot5
+      friendly_name: "Pressure Sensor 5"
+      sorting_group_id: sorting_group_pressure5
+
+  pressure_slot6: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot6
+      friendly_name: "Pressure Sensor 6"
+      sorting_group_id: sorting_group_pressure6
+
+  pressure_slot7: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot7
+      friendly_name: "Pressure Sensor 7"
+      sorting_group_id: sorting_group_pressure7
+
+  pressure_slot8: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot8
+      friendly_name: "Pressure Sensor 8"
+      sorting_group_id: sorting_group_pressure8

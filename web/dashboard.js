@@ -44,6 +44,8 @@
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Show on Dashboard": "Shows or hides this meter's card on the Dashboard page. Purely a display preference - pulse counting and every other setting stay in effect either way.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
+    "Modbus Address": "The sensor's Modbus slave address, set during commissioning. 0 means this slot isn't commissioned yet - its Dashboard card stays hidden until a real address (1-247) is set here.",
+    "Mock Pressure (Test)": "Temporary stand-in for a real sensor reading, until Modbus polling is wired up - moving this publishes straight to this slot's Pressure reading.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Restart (CR #3, previous round): its confirm dialog already
     // explains the consequence when it matters - a permanent "?" would
@@ -54,7 +56,7 @@
   // Buttons/fields whose action isn't easily undone get an explicit
   // confirmation before firing (CR #4, #6) - matched by displayName(),
   // so it applies uniformly across meters without hardcoding names.
-  const CONFIRM_ON_PRESS = new Set(["Update", "Restart", "Forget Wi-Fi"]);
+  const CONFIRM_ON_PRESS = new Set(["Update", "Restart", "Forget Wi-Fi", "Delete"]);
   const CONFIRM_ON_CHANGE = new Set(["Zero-Flow Timeout"]);
 
   // Small hand-drawn icon set (24x24, stroke-based) - deliberately not an
@@ -66,6 +68,7 @@
     wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.8 2.8-2.8-2.8 2.8-2.8Z"/>',
     list: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
+    gauge: '<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1" fill="currentColor" stroke="none"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
   };
   // Keyed on the group's real (compile-time) name, never on its
@@ -80,6 +83,15 @@
     "Network": "wifi",
     "System": "cog",
   };
+  // All 8 pressure sensor slots ("Pressure Sensor 1".."8" - see
+  // packages/pressure_sensor.yaml) share one icon too, same reasoning as
+  // the water meters above - matched by prefix instead of 8 literal map
+  // entries, since which slot number is used isn't meaningful by itself.
+  function groupIcon(name) {
+    if (GROUP_ICON_BY_NAME[name]) return GROUP_ICON_BY_NAME[name];
+    if (name.startsWith("Pressure Sensor")) return "gauge";
+    return "dot";
+  }
   // id stays "home" internally (localStorage key, #dc-page-home element id,
   // routing throughout this file) - only the displayed label changed to
   // "Dashboard" per the "Show on Dashboard" naming below, so the toggle's
@@ -192,6 +204,21 @@
     refreshGroupLabel(name);
   }
 
+  // A group counts as "commissioned" if it has a "Modbus Address" number
+  // entity (the pressure sensor slots - see packages/pressure_sensor.yaml)
+  // and that address is a real one (not 0, the "not commissioned yet"
+  // sentinel documented there). Groups with no such entity (the water
+  // meters) are always considered commissioned - this only ever narrows
+  // Home visibility for slot-style groups, never affects anything else.
+  function isSlotCommissioned(name) {
+    for (const e of entities.values()) {
+      if (e.groupName === name && displayName(e) === "Modbus Address") {
+        return typeof e.value === "number" && e.value > 0;
+      }
+    }
+    return true;
+  }
+
   // "Show on Dashboard" only ever hides this meter's own Dashboard card -
   // its Service fields (Reading, Zero-Flow Timeout, Display Name, ...)
   // stay fully visible/editable regardless, since everything they control
@@ -199,11 +226,17 @@
   // the toggle itself (dc-meter-disabled/dc-field-keep-visible) - removed:
   // that made an already-configured meter harder to fix if it needed to
   // come back, for a purely cosmetic Dashboard-visibility preference.
+  //
+  // A pressure sensor slot's card is additionally gated on isSlotCommissioned()
+  // (no matching "Show on Dashboard" switch exists for those groups at all,
+  // so groupEnabled stays at its "not yet known -> enabled" default for
+  // them - see the Map's own comment above).
   function applyGroupVisibility(name) {
     if (!initialSettled) return;
     const enabled = groupEnabled.get(name) !== false;
+    const commissioned = isSlotCommissioned(name);
     const home = homeGroups.get(name);
-    if (home) home.card.classList.toggle("dc-hidden", !enabled);
+    if (home) home.card.classList.toggle("dc-hidden", !enabled || !commissioned);
   }
 
   // --- Home page: one card per meter's sorting_group ------------------
@@ -217,7 +250,7 @@
     const header = el(
       "div",
       "dc-meter-card-header",
-      `${svgIcon(GROUP_ICON_BY_NAME[name] || "dot")}<span>${groupLabel(name)}</span>`
+      `${svgIcon(groupIcon(name))}<span>${groupLabel(name)}</span>`
     );
     const body = el("div", "dc-meter-card-body");
     card.append(header, body);
@@ -433,6 +466,11 @@
       const sibling = entities.get(`button-${base}_update`);
       if (sibling) mountComboButton(sibling, entity.el.querySelector(".dc-field-row"));
     }
+    // A slot's commissioned state (isSlotCommissioned()) hinges on this
+    // exact entity when it's the "Modbus Address" one - re-check its
+    // group's Home card visibility right away, both when a slot is first
+    // commissioned (0 -> a real address) and when Delete resets it back to 0.
+    if (label === "Modbus Address") applyGroupVisibility(entity.groupName);
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
   }
@@ -557,6 +595,9 @@
       const value = numberEntity && numberEntity.inputEl ? numberEntity.inputEl.value : "the entered value";
       const unit = numberEntity && numberEntity.uom ? " " + numberEntity.uom : "";
       return `Set ${entity.groupName} Reading to ${value}${unit}? This overwrites the accumulated total and cannot be undone.`;
+    }
+    if (label === "Delete") {
+      return `Delete ${entity.groupName}'s commissioning (Modbus Address, Display Name)? Its Dashboard card disappears until re-commissioned.`;
     }
     return "Are you sure?";
   }
