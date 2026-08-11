@@ -950,7 +950,28 @@ void AsyncEventSourceResponse::process_buffer_() {
     return;
   }
   if (bytes_sent == HTTPD_SOCK_ERR_FAIL) {
-    // Real socket error - connection will be closed by httpd and destroy callback will be called
+    // Real, fatal socket error (e.g. errno 128/ENOTCONN - the peer already closed/reset
+    // the connection) - unlike HTTPD_SOCK_ERR_TIMEOUT above, retrying this is never going
+    // to succeed. The comment this replaced ("connection will be closed by httpd and
+    // destroy callback will be called") assumed httpd notices and cleans up on its own in
+    // reasonable time - on real hardware it didn't: this branch doesn't touch
+    // consecutive_send_failures_, so it never reaches the bounded MAX_CONSECUTIVE_SEND_FAILURES
+    // close-trigger below, and instead just returns, unchanged, for the *next* loop() tick to
+    // call httpd_socket_send() again on the same already-dead fd - which logs another
+    // "send error: errno %d" (in httpd_socket_send() above) and returns HTTPD_SOCK_ERR_FAIL
+    // again. Captured on a real device: hundreds of these lines in a tight burst, sustained
+    // over close to a minute, before httpd's own unrelated housekeeping eventually noticed
+    // and tore the session down - all wasted loop() time and log noise for a connection that
+    // was already known-dead on the very first HTTPD_SOCK_ERR_FAIL.
+    //
+    // Fix: trigger the same safe close path used above once the retry budget is exhausted,
+    // immediately, since here there's nothing to retry in the first place. Safe to set
+    // closing_requested_ unconditionally - the guard at the top of this function already
+    // returned early if it were already true, so reaching here means it's still false.
+    ESP_LOGW(TAG, "Closing EventSource connection after fatal send error");
+    this->closing_requested_ = true;
+    this->deferred_queue_.clear();
+    httpd_sess_trigger_close(this->hd_, this->fd_.load());
     return;
   }
   if (bytes_sent <= 0) {
