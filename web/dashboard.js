@@ -669,6 +669,12 @@
 
   function render(entity) {
     if (isHiddenFromUi(entity)) return;
+    // Header signal-bars widget - see updateSignalBars() above. Matched on
+    // the entity's real (compile-time) name, same as everywhere else in
+    // this file - independent of pageFor()/Diagnostics placement below,
+    // this entity still renders there too, this is purely an additional
+    // header shortcut for it.
+    if (entity.domain === "sensor" && entity.name === "Wi-Fi Signal") updateSignalBars(entity.value);
     const page = pageFor(entity);
     if (page === "home") upsertHomeMetric(entity);
     else if (page === "diagnostics") upsertDiagRow(entity);
@@ -767,6 +773,52 @@
     const statusEl = document.getElementById("dc-status");
     statusEl.classList.toggle("connected", connected);
     statusEl.querySelector(".label").textContent = connected ? "Connected" : "Reconnecting…";
+    // While this browser's own SSE link is down, no further entity updates
+    // can arrive at all - freezing the signal-bars widget on whatever RSSI
+    // it last saw would look live but not be, which is worse than showing
+    // nothing. updateSignalBars() itself only gets called back with a real
+    // number once a fresh "Wi-Fi Signal" state event actually arrives.
+    if (!connected) updateSignalBars(NaN);
+  }
+
+  // Header Wi-Fi signal readout (bars + dBm), fed by the device's own
+  // "Wi-Fi Signal" sensor entity through the exact same SSE pipeline as
+  // every other entity - see the hook in render() below. Deliberately a
+  // separate thing from #dc-status/setConnected() above: that tracks
+  // whether *this browser's* SSE link to the device is currently open,
+  // this tracks the *device's own* upstream Wi-Fi RSSI - two different
+  // links, independently healthy or not. Paired with the sensor's 2s
+  // update_interval (water-collector.yaml - was 60s, far too slow to
+  // watch anything happen live), this is what makes something like "does
+  // a hand near the board tank the signal" actually visible in real time,
+  // instead of only inferable after the fact from a disconnect reason.
+  //
+  // Thresholds are the common phone-style dBm convention (less negative =
+  // stronger); tier 0 (unknown/no reading yet) and the gap below -85 both
+  // render as all-grey, deliberately not treated as an error state here -
+  // #dc-status already owns "something is wrong", this widget only ever
+  // says how strong the signal is when there is one.
+  const SIGNAL_TIERS = [
+    { min: -55, tier: 4 },
+    { min: -65, tier: 3 },
+    { min: -75, tier: 2 },
+    { min: -85, tier: 1 },
+  ];
+  function updateSignalBars(dbm) {
+    const wrap = document.getElementById("dc-wifi-signal");
+    if (!wrap) return;
+    const label = wrap.querySelector(".dc-signal-dbm");
+    if (typeof dbm !== "number" || Number.isNaN(dbm)) {
+      wrap.dataset.tier = "0";
+      label.textContent = "";
+      wrap.title = "Wi-Fi signal: unknown";
+      return;
+    }
+    const found = SIGNAL_TIERS.find((t) => dbm >= t.min);
+    wrap.dataset.tier = String(found ? found.tier : 0);
+    const text = `${Math.round(dbm)} dBm`;
+    label.textContent = text;
+    wrap.title = `Wi-Fi signal: ${text}`;
   }
 
   function selectPage(id) {
@@ -854,7 +906,18 @@
       <main id="dc-main">
         <div id="dc-header">
           <h1 id="dc-title">Home</h1>
-          <div id="dc-status"><span class="dot"></span><span class="label">Connecting…</span></div>
+          <div id="dc-header-right">
+            <div id="dc-wifi-signal" data-tier="0">
+              <svg viewBox="0 0 20 16" aria-hidden="true">
+                <rect class="bar bar-1" x="0" y="10" width="3" height="6" rx="1"/>
+                <rect class="bar bar-2" x="5.5" y="7" width="3" height="9" rx="1"/>
+                <rect class="bar bar-3" x="11" y="4" width="3" height="12" rx="1"/>
+                <rect class="bar bar-4" x="16.5" y="1" width="3" height="15" rx="1"/>
+              </svg>
+              <span class="dc-signal-dbm"></span>
+            </div>
+            <div id="dc-status"><span class="dot"></span><span class="label">Connecting…</span></div>
+          </div>
         </div>
         <section id="dc-page-home" class="dc-page"></section>
         <section id="dc-page-service" class="dc-page"></section>

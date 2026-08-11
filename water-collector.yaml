@@ -320,7 +320,17 @@ sensor:
   # a normal entity, one opt-in click away if ever needed there.
   - platform: wifi_signal
     name: "Wi-Fi Signal"
-    update_interval: 60s
+    # Was 60s - far too slow to actually see anything with (found live: a
+    # hand placed near the board dropped the connection immediately, but
+    # the dashboard's own signal reading was up to a minute stale, so it
+    # never showed the drop happening - just silence, then a reconnect).
+    # This reads already-known radio state (esp_wifi_sta_get_ap_info()) -
+    # no scan, no extra airtime, effectively free - so there's no real cost
+    # to polling it this often. Paired with the header signal-bars readout
+    # in web/dashboard.js/.css, this is what makes an antenna-sensitivity
+    # theory like that actually visible and testable live, instead of
+    # something you can only infer after the fact from a disconnect reason.
+    update_interval: 2s
     entity_category: diagnostic
     disabled_by_default: true
     web_server:

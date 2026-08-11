@@ -47,6 +47,8 @@ body {
   --dc-text-muted: #8b93a1;
   --dc-accent: #2dd4bf;
   --dc-accent-dim: #205f58;
+  --dc-danger: #f87171;
+  --dc-warning: #fbbf24;
   --dc-radius: 14px;
   --dc-radius-sm: 9px;
 }
@@ -162,6 +164,16 @@ body {
   margin: 0;
 }
 
+/* Groups the signal widget and the connection dot into one flex item, so
+ * #dc-header's justify-content: space-between (title vs. this) still only
+ * ever splits into two slots regardless of how many things live on the
+ * right - without this they'd space themselves apart from each other too,
+ * which falls apart fast on a narrow phone screen. */
+#dc-header-right {
+  display: flex;
+  align-items: center;
+}
+
 #dc-status {
   display: flex;
   align-items: center;
@@ -174,11 +186,63 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--dc-danger, #f87171);
+  background: var(--dc-danger);
 }
 
 #dc-status.connected .dot {
   background: var(--dc-accent);
+}
+
+/* Header Wi-Fi signal bars + dBm readout - see updateSignalBars() in
+ * dashboard.js for what drives this and why it's a separate thing from
+ * #dc-status above (browser<->device link vs. the device's own upstream
+ * Wi-Fi RSSI). Bars default to --dc-border (unfilled/grey) and only pick
+ * up a tier color via the [data-tier] attribute selectors below, so an
+ * unknown/no-reading-yet state (tier 0, set on load and whenever the SSE
+ * link itself drops) reads as "no bars", not as an error color. */
+#dc-wifi-signal {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 10px;
+  font-size: 11px;
+  color: var(--dc-text-muted);
+}
+
+#dc-wifi-signal svg {
+  width: 18px;
+  height: 15px;
+}
+
+#dc-wifi-signal .bar {
+  fill: var(--dc-border);
+  transition: fill 0.2s;
+}
+
+/* Weak (tier 1): red. Fair (tier 2): amber. Good/excellent (tier 3-4): the
+ * app's own accent color - reusing it here doubles as "this is a healthy
+ * state" rather than introducing a third, unrelated green. */
+#dc-wifi-signal[data-tier="1"] .bar-1 {
+  fill: var(--dc-danger);
+}
+
+#dc-wifi-signal[data-tier="2"] .bar-1,
+#dc-wifi-signal[data-tier="2"] .bar-2 {
+  fill: var(--dc-warning);
+}
+
+#dc-wifi-signal[data-tier="3"] .bar-1,
+#dc-wifi-signal[data-tier="3"] .bar-2,
+#dc-wifi-signal[data-tier="3"] .bar-3 {
+  fill: var(--dc-accent);
+}
+
+#dc-wifi-signal[data-tier="4"] .bar {
+  fill: var(--dc-accent);
+}
+
+.dc-signal-dbm {
+  font-variant-numeric: tabular-nums;
 }
 
 .dc-page {
