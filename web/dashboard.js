@@ -1094,6 +1094,40 @@
     });
   }
 
+  // Same underlying WebKit quirk as nudgeViewportSync() above, a visual
+  // symptom instead of a touch one: on a fresh standalone/home-screen
+  // launch, the fixed-position bottom nav (#dc-nav, bottom: 0) has been
+  // seen floating well above the true screen edge - the *positioning*
+  // viewport WebKit resolves `position: fixed` against hasn't settled to
+  // the real, full-screen, chrome-free standalone size yet at the point
+  // start() runs nudgeViewportSync() once. Regular in-Safari-tab mode
+  // (screenshot-confirmed) is unaffected - there the layout viewport
+  // legitimately is shorter than the full screen (the browser's own
+  // address-bar/toolbar occupies the rest), so there's no settling left
+  // to do.
+  //
+  // window.visualViewport's own "resize" event fires whenever that
+  // settling actually happens - including, on real devices, some time
+  // after the single load-time nudge above already ran too early to
+  // catch it - so re-running the same nudge each time it fires (not just
+  // once at load) should keep #dc-nav pinned to the real edge once
+  // WebKit's own geometry catches up, whenever that ends up being.
+  // Debounced since standalone launches can fire this more than once in
+  // quick succession while settling.
+  //
+  // Not yet real-device confirmed against the specific floating-nav
+  // symptom (unlike nudgeViewportSync() above) - flagged honestly as a
+  // plausible, source-reasoned fix for the same quirk family, not a
+  // proven one. Report back whether the gap is actually gone.
+  function watchViewportSettle() {
+    if (!window.visualViewport) return;
+    let timer = null;
+    window.visualViewport.addEventListener("resize", () => {
+      clearTimeout(timer);
+      timer = setTimeout(nudgeViewportSync, 50);
+    });
+  }
+
   function start() {
     fixMobileMeta();
     currentPage = loadRememberedPage();
@@ -1101,6 +1135,7 @@
     connect();
     startConnectionWatchdog();
     nudgeViewportSync();
+    watchViewportSettle();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters
