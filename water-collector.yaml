@@ -213,8 +213,8 @@ wifi:
   # drop, it's happening below the level ESPHome's own Wi-Fi state machine
   # would ever log anything about.
   #
-  # Leading suspect: the ESP32 has a single 2.4GHz radio, time-shared
-  # between Wi-Fi and Bluetooth (BLE) via coexistence scheduling - and
+  # Root cause: the ESP32 has a single 2.4GHz radio, time-shared between
+  # Wi-Fi and Bluetooth (BLE) via coexistence scheduling - and
   # esp32_improv (below) leaves BLE running for the device's entire uptime,
   # not just while unprovisioned, permanently competing with Wi-Fi for
   # radio time. BLE is only actually needed while there's no working Wi-Fi
@@ -227,21 +227,33 @@ wifi:
   # explaining why BLE was confirmed still active (BLE Client connected
   # seen in a real log) long after Wi-Fi provisioning was already done.
   #
-  # Wired symmetrically so the BLE-based recovery path (fallback AP +
-  # esp32_improv, for if Wi-Fi credentials ever need to change again) stays
-  # fully intact: BLE only goes away while there's a working Wi-Fi
-  # connection to make it redundant, and comes back the instant that's no
-  # longer true.
+  # Confirmed (not just plausible) by a real captured log: during a mesh
+  # roaming/auth-storm episode (repeated "Auth Expired"/"Association
+  # Expired" across every BSSID for close to an hour), BLE advertising
+  # writes (BTM_BleWriteAdvData/BTM_BleWriteScanRsp) were seen firing
+  # seconds apart from failed reconnect attempts - because naive
+  # on_disconnect: ble.enable turns BLE back on *immediately* on every
+  # single disconnect, including the ones in the middle of that storm,
+  # so the radio is contending with itself for the whole duration. Every
+  # failed auth attempt keeps the link down, which keeps BLE on, which
+  # keeps contending - a self-sustaining feedback loop, not just jitter.
   #
-  # Flagged honestly: this is a plausible, source-supported hypothesis for
-  # the jitter, not a confirmed root cause - there's no way to prove BLE
-  # coexistence specifically (versus e.g. general 2.4GHz channel
-  # congestion) was the cause without comparing ping behavior before/after
-  # on the real device.
+  # Fix: re-enable BLE through a restart-mode script with a grace delay
+  # instead of instantly. A single, isolated disconnect (the common case -
+  # reconnects in seconds) never actually turns BLE on at all, since
+  # on_connect cancels the pending script before the delay elapses. Only
+  # a disconnection that's still ongoing after the full grace period
+  # actually enables BLE - by which point a normal reconnect would already
+  # have succeeded, so it's a genuine extended outage where local BLE
+  # recovery access is worth the radio contention. The original
+  # "BLE only goes away while there's a working Wi-Fi connection, comes
+  # back the instant that's no longer true" intent is preserved, just
+  # debounced against the reconnect storm actively sabotaging itself.
   on_connect:
+    - script.stop: reenable_ble_after_disconnect
     - ble.disable
   on_disconnect:
-    - ble.enable
+    - script.execute: reenable_ble_after_disconnect
   # Real-device root cause, confirmed from source (wifi_component.h/.cpp):
   # while connected, ESPHome checks the current signal every 5 minutes
   # (ROAMING_CHECK_INTERVAL) and, if it's below -49 dBm (ROAMING_GOOD_RSSI -
@@ -265,6 +277,20 @@ wifi:
   # reconnect immediately and fully if the link genuinely drops" - not a
   # blanket "never roam".
   post_connect_roaming: false
+
+# Backs the wifi: on_disconnect/on_connect BLE debounce above - see the
+# comment there for why this exists (grace period before turning BLE back
+# on, so it doesn't contend with Wi-Fi during a fast/self-resolving
+# reconnect). mode: restart so a fresh disconnect always gets the full
+# delay again, and on_connect's script.stop cleanly cancels a pending
+# enable if Wi-Fi comes back before the delay elapses - it's a no-op if
+# the script isn't running.
+script:
+  - id: reenable_ble_after_disconnect
+    mode: restart
+    then:
+      - delay: 2min
+      - ble.enable
 
 captive_portal:
 
