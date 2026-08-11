@@ -1094,84 +1094,51 @@
     });
   }
 
-  // Same underlying WebKit quirk as nudgeViewportSync() above, a visual
-  // symptom instead of a touch one: on a fresh standalone/home-screen
-  // launch, the fixed-position bottom nav (#dc-nav, bottom: 0) has been
-  // seen floating well above the true screen edge - the *positioning*
-  // viewport WebKit resolves `position: fixed` against hasn't settled to
-  // the real, full-screen, chrome-free standalone size yet at the point
-  // start() runs nudgeViewportSync() once. Regular in-Safari-tab mode
-  // (screenshot-confirmed) is unaffected - there the layout viewport
-  // legitimately is shorter than the full screen (the browser's own
-  // address-bar/toolbar occupies the rest), so there's no settling left
-  // to do.
+  // Standalone-mode #dc-nav gap - diagnosed from a real on-device debug
+  // readout (a temporary on-screen overlay, since removed), not guessed:
+  // innerHeight, visualViewport.height AND document.documentElement's own
+  // clientHeight/getBoundingClientRect().height all independently agreed
+  // on the same figure (e.g. 793 on one real device), and #dc-nav's own
+  // getBoundingClientRect().bottom landed exactly on that figure too (a
+  // measured "gap below nav" of 0.0) - i.e. #dc-nav was never
+  // mispositioned relative to what WebKit itself calls the viewport. The
+  // two watchViewportSettle()/nudgeViewportSync() candidates above (a
+  // stale/late-settling viewport size) are consistent with that: neither
+  // fixed this, because there was nothing stale to settle.
   //
-  // window.visualViewport's own "resize" event fires whenever that
-  // settling actually happens - including, on real devices, some time
-  // after the single load-time nudge above already ran too early to
-  // catch it - so re-running the same nudge each time it fires (not just
-  // once at load) should keep #dc-nav pinned to the real edge once
-  // WebKit's own geometry catches up, whenever that ends up being.
-  // Debounced since standalone launches can fire this more than once in
-  // quick succession while settling.
+  // The actual gap is between that WebKit-reported figure and the true
+  // physical screen (window.screen.height - 852 on the same device, a
+  // confirmed ~59px shortfall) - a real iOS standalone-mode quirk:
+  // WebKit excludes that band from every viewport metric it reports
+  // (not merely an inset within a full-height viewport, which env()
+  // could have handled), so nothing expressed in vh/dvh/fixed-positioning
+  // terms can ever reach it - CSS has no way to describe a region the
+  // engine itself won't admit is part of the viewport.
   //
-  // UPDATE: real-device tested, does NOT fix the floating-nav gap (unlike
-  // nudgeViewportSync() above, which is confirmed load-bearing for the
-  // touch-hit-testing symptom). Left in - it's harmless, and re-syncing on
-  // an actual late viewport settle is still correct behavior in general -
-  // but it's now confirmed NOT the mechanism behind this particular
-  // symptom. Whatever's actually holding #dc-nav short of the true edge
-  // isn't a stale-viewport-at-load-time problem; see the debug overlay in
-  // watchViewportSettle()'s caller below, added to get real numbers
-  // instead of guessing again.
-  function watchViewportSettle() {
-    if (!window.visualViewport) return;
-    let timer = null;
-    window.visualViewport.addEventListener("resize", () => {
-      clearTimeout(timer);
-      timer = setTimeout(nudgeViewportSync, 50);
-    });
-  }
-
-  // TEMPORARY - remove once the standalone-mode #dc-nav gap above is
-  // actually diagnosed. Small on-screen readout (not the console - the
-  // point is not needing a Mac/Web Inspector session to get real numbers
-  // off the actual phone) of exactly the values needed to tell apart the
-  // remaining candidate causes: is #dc-nav's own rendered position wrong
-  // relative to the viewport WebKit itself reports (a real CSS/positioning
-  // bug), or does WebKit's reported viewport height itself already fall
-  // short of the true screen (nothing left for CSS to fix, a platform
-  // quirk needing a different workaround)? Screenshot this from the
-  // standalone app and report the numbers back.
-  function addViewportDebugOverlay() {
-    const box = el("pre", null);
-    box.id = "dc-viewport-debug";
-    box.style.cssText =
-      "position:fixed;top:0;left:0;z-index:9999999;margin:0;padding:6px 8px;" +
-      "background:rgba(0,0,0,0.75);color:#0f0;font:10px/1.4 monospace;" +
-      "white-space:pre;pointer-events:none;";
-    document.body.appendChild(box);
-    function update() {
-      const nav = document.getElementById("dc-nav");
-      const navRect = nav ? nav.getBoundingClientRect() : null;
-      const vv = window.visualViewport;
-      const lines = [
-        `innerHeight: ${window.innerHeight}`,
-        `docClientH: ${document.documentElement.clientHeight}`,
-        `docRectH: ${document.documentElement.getBoundingClientRect().height.toFixed(1)}`,
-        `vv.height: ${vv ? vv.height.toFixed(1) : "n/a"}`,
-        `vv.offsetTop: ${vv ? vv.offsetTop.toFixed(1) : "n/a"}`,
-        `screen.height: ${window.screen.height}`,
-        `nav.top: ${navRect ? navRect.top.toFixed(1) : "n/a"}`,
-        `nav.bottom: ${navRect ? navRect.bottom.toFixed(1) : "n/a"}`,
-        `gap below nav: ${navRect ? (window.innerHeight - navRect.bottom).toFixed(1) : "n/a"}`,
-      ];
-      box.textContent = lines.join("\n");
+  // window.screen.height is unaffected by this - it reports the true
+  // physical resolution regardless. Only in standalone mode (gated on
+  // navigator.standalone, iOS's own "launched from Home Screen" flag) is
+  // a shortfall against it illegitimate: in a regular Safari tab,
+  // innerHeight is *supposed* to be shorter than screen.height (the
+  // browser's own address bar/toolbar genuinely occupies the rest) -
+  // compensating there would shove #dc-nav underneath that toolbar.
+  function fixStandaloneNavGap() {
+    if (!window.navigator.standalone) return;
+    const nav = document.getElementById("dc-nav");
+    if (!nav) return;
+    function apply() {
+      const shortfall = window.screen.height - window.innerHeight;
+      // Negative `bottom` pushes a position: fixed element below its
+      // containing block's own bottom edge, by exactly that much - into
+      // the band WebKit excludes from innerHeight but still actually
+      // renders on screen (confirmed from the same real-device readout:
+      // the physical display is 852px, the missing 59px isn't unusable
+      // dead space, it's simply unreported).
+      nav.style.bottom = shortfall > 0 ? `${-shortfall}px` : "";
     }
-    update();
-    window.addEventListener("resize", update);
-    if (window.visualViewport) window.visualViewport.addEventListener("resize", update);
-    setInterval(update, 1000);
+    apply();
+    window.addEventListener("resize", apply);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", apply);
   }
 
   function start() {
@@ -1181,8 +1148,7 @@
     connect();
     startConnectionWatchdog();
     nudgeViewportSync();
-    watchViewportSettle();
-    addViewportDebugOverlay();
+    fixStandaloneNavGap();
     // Backstop for settleInitialBurst() - see its own comment. Normally
     // scheduleSettle()'s per-entity debounce (called from
     // handleFullPayload()) fires it sooner than this; this only matters

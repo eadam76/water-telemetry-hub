@@ -15,11 +15,11 @@ esp-app {
 }
 
 /* Belt-and-suspenders for the standalone-webapp bottom white strip: if
- * #dc-root's computed height (100dvh, nudged back into sync with the real
- * settled viewport by nudgeViewportSync()/watchViewportSettle() in
- * dashboard.js) ever falls even a pixel short of the true bottom edge in
- * standalone mode, this is
- * what would otherwise show through underneath it - the page's own
+ * #dc-root's computed height (100dvh - see fixStandaloneNavGap() in
+ * dashboard.js for the separate, confirmed cause of the actual #dc-nav
+ * gap, a WebKit viewport-reporting shortfall no CSS unit can reach) ever
+ * falls even a pixel short of the true bottom edge in standalone mode,
+ * this is what would otherwise show through underneath it - the page's own
  * default (white) background, not ours. Set on html/body directly so
  * there's no gap left to show anything else, regardless of the exact
  * pixel cause. margin: 0 also rules out the default <body> margin as a
