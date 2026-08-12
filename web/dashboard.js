@@ -462,8 +462,16 @@
   // nothing on the device, same principle as the meters' own Reading
   // field, until Add is actually pressed.
   function showPressureAddForm(addRow, addBtn) {
-    const nameEntity = entities.get("text-pressure_new_name");
-    const addEntity = entities.get("button-pressure_add");
+    // NOT entities.get("text-pressure_new_name") - that guessed key was
+    // built from the YAML `id:` (an internal, compile-time-only C++
+    // name), but the server's real SSE/API id is derived from the
+    // entity's *name*, slugified ("text-pressure_sensors_new_sensor_name").
+    // Guessing it wrong here meant this always returned undefined and
+    // silently no-opped - the "+" button not responding at all. Look it
+    // up the same way pressureSlotEntity() already does everywhere else
+    // in this file: by groupName + displayName(), never a hardcoded id.
+    const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "New Sensor Name");
+    const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
     if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected, harmless no-op if it does
     addBtn.hidden = true;
     const form = el("div", "dc-pressure-add-form");

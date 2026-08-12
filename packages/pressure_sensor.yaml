@@ -1,6 +1,6 @@
 # Pressure sensor slot - reusable ESPHome package.
 #
-# One of 8 fixed "slots" for a QDW90A RS485/Modbus pressure sensor - see
+# One of 4 fixed "slots" for a QDW90A RS485/Modbus pressure sensor - see
 # REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" for the full rationale.
 #
 # STATUS: commissioning-UX skeleton only, still mock data (see "Mock
@@ -25,7 +25,7 @@
 # card and Service-page table row - see isCommissioned()/syncPressureSlot()
 # there. Home Assistant, by contrast, has no equivalent client-side logic
 # of our own to lean on - it will always be able to see (a disabled-by-
-# default) entity for every one of the 8 slots, regardless of whether
+# default) entity for every one of the 4 slots, regardless of whether
 # they're actually commissioned. That's a real, accepted gap against
 # "only visible sensors go to HA" - ESPHome doesn't support anything
 # stronger without abandoning its native API integration for something
@@ -86,8 +86,8 @@ sensor:
   # project's usual "the device's actual job is enabled by default" rule:
   # since Home Assistant can't be kept from seeing an uncommissioned
   # slot's entities at all (see file header), the least-surprising
-  # default is for a fresh HA connection to show 8 disabled pressure
-  # sensors rather than 8 enabled-but-meaningless ones - opt in per slot
+  # default is for a fresh HA connection to show 4 disabled pressure
+  # sensors rather than 4 enabled-but-meaningless ones - opt in per slot
   # once it's actually commissioned.
   - platform: template
     id: ${id_prefix}_pressure
