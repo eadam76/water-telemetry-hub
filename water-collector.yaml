@@ -161,34 +161,41 @@ web_server:
     - id: sorting_group_meter2
       name: "Water Meter 2"
       sorting_weight: 20
-    # 8 fixed pressure sensor slots (packages/pressure_sensor.yaml) - see
-    # REQUIREMENTS.md "Architekturális megfontolás: dinamikus
-    # nyomásmérő-hozzáadás" for why 8, and the package file's own header
-    # for the commissioning-UX status (skeleton/mock only so far).
+    # Pressure sensors: one umbrella group (houses only the top-level "Add
+    # Pressure Sensor" name field + button) plus 8 fixed per-slot groups
+    # (packages/pressure_sensor.yaml) - see REQUIREMENTS.md "Architekturális
+    # megfontolás: dinamikus nyomásmérő-hozzáadás" for why 8. All of this
+    # is intercepted client-side into one compact table (web/dashboard.js) -
+    # these sorting_group names/weights only matter as internal grouping
+    # keys, never shown as literal labels (see pressure_sensor.yaml's own
+    # header on why slot numbering is otherwise meaningless).
+    - id: sorting_group_pressure
+      name: "Pressure Sensors"
+      sorting_weight: 30
     - id: sorting_group_pressure1
       name: "Pressure Sensor 1"
-      sorting_weight: 30
+      sorting_weight: 31
     - id: sorting_group_pressure2
       name: "Pressure Sensor 2"
-      sorting_weight: 31
+      sorting_weight: 32
     - id: sorting_group_pressure3
       name: "Pressure Sensor 3"
-      sorting_weight: 32
+      sorting_weight: 33
     - id: sorting_group_pressure4
       name: "Pressure Sensor 4"
-      sorting_weight: 33
+      sorting_weight: 34
     - id: sorting_group_pressure5
       name: "Pressure Sensor 5"
-      sorting_weight: 34
+      sorting_weight: 35
     - id: sorting_group_pressure6
       name: "Pressure Sensor 6"
-      sorting_weight: 35
+      sorting_weight: 36
     - id: sorting_group_pressure7
       name: "Pressure Sensor 7"
-      sorting_weight: 36
+      sorting_weight: 37
     - id: sorting_group_pressure8
       name: "Pressure Sensor 8"
-      sorting_weight: 37
+      sorting_weight: 38
     - id: sorting_group_network
       name: "Network"
       sorting_weight: 80
@@ -492,6 +499,77 @@ button:
     web_server:
       sorting_group_id: sorting_group_system
       sorting_weight: 92
+
+  # Commissions the first still-free pressure sensor slot (out of the 8
+  # in packages/pressure_sensor.yaml) with the name typed into "Pressure
+  # Sensors New Sensor Name" below - see that field's own comment, and
+  # each slot's own try_commission script for why trying all 8 in a fixed
+  # sequence (rather than picking one directly) is safe and correct: the
+  # first slot whose ${idN}_commissioned is still false is the one that
+  # actually claims the name, every other call in this list is a no-op.
+  # Slot order itself is never shown anywhere - see pressure_sensor.yaml's
+  # header.
+  #
+  # On the dashboard (web/dashboard.js) this and the name field below are
+  # rendered together as the pressure table's own "+" row, not as two
+  # separate Service-page fields - see ensurePressureTable() there.
+  - platform: template
+    id: pressure_add
+    name: "Pressure Sensors Add"
+    icon: "mdi:plus"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 20
+    on_press:
+      - script.execute:
+          id: slot1_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot2_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot3_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot4_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot5_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot6_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot7_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - script.execute:
+          id: slot8_try_commission
+          name: !lambda 'return id(pressure_new_name).state;'
+      - text.set:
+          id: pressure_new_name
+          value: ""
+
+text:
+  # The name for the *next* pressure sensor to be commissioned - read by
+  # "Pressure Sensors Add" above when pressed, then cleared back to empty
+  # so the next Add starts fresh. Not itself persisted (restore_value
+  # unset/false - default): this is a transient scratch field, not a
+  # setting, nothing meaningful to restore after a restart.
+  - platform: template
+    id: pressure_new_name
+    name: "Pressure Sensors New Sensor Name"
+    icon: "mdi:form-textbox"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 10
 
 packages:
   # friendly_name is deliberately generic ("Water Meter 1/2", not "Main"/

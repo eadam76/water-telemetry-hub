@@ -598,6 +598,153 @@ body {
   padding: 9px 16px;
 }
 
+/* --- Pressure sensor table (Service page) - see dashboard.js's own
+ * "Pressure sensor table" section for why this is a compact table
+ * (Name | Address) instead of a .dc-fields block per slot like every
+ * other Service section above. */
+
+.dc-pressure-group {
+  max-width: 480px;
+}
+
+.dc-pressure-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.dc-pressure-table thead th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dc-text-muted);
+  font-weight: 500;
+  padding: 0 8px 6px;
+}
+
+.dc-pressure-table thead th:nth-child(2) {
+  text-align: right;
+}
+
+.dc-pressure-table tbody tr {
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+}
+
+.dc-pressure-table tbody tr:not(:last-child) {
+  border-bottom: none;
+}
+
+.dc-pressure-table tbody tr:first-child td:first-child {
+  border-top-left-radius: var(--dc-radius-sm);
+}
+
+.dc-pressure-table tbody tr:first-child td:last-child {
+  border-top-right-radius: var(--dc-radius-sm);
+}
+
+.dc-pressure-table tbody tr:last-child td:first-child {
+  border-bottom-left-radius: var(--dc-radius-sm);
+}
+
+.dc-pressure-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: var(--dc-radius-sm);
+}
+
+.dc-pressure-table td {
+  padding: 8px;
+}
+
+.dc-pressure-table input[type="text"],
+.dc-pressure-table input[type="number"] {
+  width: 100%;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 7px 9px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input above */
+  min-width: 0;
+}
+
+.dc-pressure-table td.dc-pressure-addr {
+  width: 6em;
+}
+
+.dc-pressure-table input[type="number"] {
+  text-align: right;
+}
+
+.dc-pressure-table input:focus {
+  outline: none;
+  border-color: var(--dc-accent);
+}
+
+.dc-pressure-table td.dc-pressure-del {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.dc-pressure-del-btn {
+  background: none;
+  border: none;
+  color: var(--dc-text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+}
+
+.dc-pressure-del-btn:hover {
+  color: var(--dc-danger);
+}
+
+.dc-pressure-add-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.dc-pressure-add-btn {
+  background: var(--dc-accent-dim);
+  color: var(--dc-accent);
+  border: 1px solid var(--dc-accent);
+  border-radius: var(--dc-radius-sm);
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dc-pressure-add-btn:hover {
+  background: var(--dc-accent);
+  color: #06201d;
+}
+
+.dc-pressure-add-form {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.dc-pressure-add-form input[type="text"] {
+  flex: 1 1 auto;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 9px 10px;
+  font-size: 16px;
+  min-width: 0;
+}
+
+.dc-pressure-add-form input[type="text"]:focus {
+  outline: none;
+  border-color: var(--dc-accent);
+}
+
 /* --- Log page --- */
 
 #dc-log-toolbar {

@@ -44,7 +44,6 @@
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Show on Dashboard": "Shows or hides this meter's card on the Dashboard page. Purely a display preference - pulse counting and every other setting stay in effect either way.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
-    "Modbus Address": "The sensor's Modbus slave address, set during commissioning. 0 means this slot isn't commissioned yet - its Dashboard card stays hidden until a real address (1-247) is set here.",
     "Mock Pressure (Test)": "Temporary stand-in for a real sensor reading, until Modbus polling is wired up - moving this publishes straight to this slot's Pressure reading.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Restart (CR #3, previous round): its confirm dialog already
@@ -204,21 +203,6 @@
     refreshGroupLabel(name);
   }
 
-  // A group counts as "commissioned" if it has a "Modbus Address" number
-  // entity (the pressure sensor slots - see packages/pressure_sensor.yaml)
-  // and that address is a real one (not 0, the "not commissioned yet"
-  // sentinel documented there). Groups with no such entity (the water
-  // meters) are always considered commissioned - this only ever narrows
-  // Home visibility for slot-style groups, never affects anything else.
-  function isSlotCommissioned(name) {
-    for (const e of entities.values()) {
-      if (e.groupName === name && displayName(e) === "Modbus Address") {
-        return typeof e.value === "number" && e.value > 0;
-      }
-    }
-    return true;
-  }
-
   // "Show on Dashboard" only ever hides this meter's own Dashboard card -
   // its Service fields (Reading, Zero-Flow Timeout, Display Name, ...)
   // stay fully visible/editable regardless, since everything they control
@@ -227,16 +211,15 @@
   // that made an already-configured meter harder to fix if it needed to
   // come back, for a purely cosmetic Dashboard-visibility preference.
   //
-  // A pressure sensor slot's card is additionally gated on isSlotCommissioned()
-  // (no matching "Show on Dashboard" switch exists for those groups at all,
-  // so groupEnabled stays at its "not yet known -> enabled" default for
-  // them - see the Map's own comment above).
+  // Pressure sensor slots don't go through this at all - their Home card
+  // existence is gated by syncPressureHomeCard() below (never created
+  // until commissioned, not created-then-hidden here) - see that
+  // function's own comment for why.
   function applyGroupVisibility(name) {
     if (!initialSettled) return;
     const enabled = groupEnabled.get(name) !== false;
-    const commissioned = isSlotCommissioned(name);
     const home = homeGroups.get(name);
-    if (home) home.card.classList.toggle("dc-hidden", !enabled || !commissioned);
+    if (home) home.card.classList.toggle("dc-hidden", !enabled);
   }
 
   // --- Home page: one card per meter's sorting_group ------------------
@@ -375,6 +358,254 @@
     }
   }
 
+  // --- Pressure sensor table (Service + Home pages) ---------------------
+  //
+  // A dedicated, compact renderer for the 8 pressure sensor slots
+  // (packages/pressure_sensor.yaml) - Name (editable) | Address (editable)
+  // columns, one row per *commissioned* slot, growing/shrinking live as
+  // slots are added/deleted. Entirely separate from the generic
+  // per-sorting_group Service rendering above: every entity belonging to
+  // a "Pressure Sensor N" slot group, or the umbrella "Pressure Sensors"
+  // group (home of the Add name field/button), is intercepted in
+  // render() before it ever reaches ensureServiceGroup()/ensureHomeGroup().
+  //
+  // "Commissioned or not" comes from each slot's own Commissioned
+  // binary_sensor - a plain, always-live-updating VALUE, not an
+  // existence/visibility trick. An earlier version of this tried hiding
+  // the underlying entities themselves via ESPHome's `internal` flag,
+  // toggled at runtime - reverted after finding that's explicitly
+  // deprecated/undefined behavior in current ESPHome (confirmed from the
+  // installed package's own esphome/core/entity_base.h). Every pressure
+  // entity here always exists/is always sent to every client from the
+  // first connection onward - only whether a *row* gets built from that
+  // data is conditional, which is what actually avoids the old
+  // create-then-hide flash (a card/row is now simply never created until
+  // its slot's Commissioned value is known to be true, instead of being
+  // created immediately and hidden a moment later).
+
+  const PRESSURE_SLOT_RE = /^Pressure Sensor \d+$/;
+  const PRESSURE_ADD_GROUP = "Pressure Sensors";
+
+  function isPressureGroup(name) {
+    return name === PRESSURE_ADD_GROUP || PRESSURE_SLOT_RE.test(name);
+  }
+
+  // undefined (not yet known - the value hasn't arrived over SSE yet) is
+  // deliberately distinct from false (known, not commissioned) - callers
+  // compare `=== true`, never just truthiness, so "unknown" is always
+  // treated the same as "not commissioned" (never rendered) rather than
+  // ever being mistaken for "commissioned".
+  function pressureCommissioned(groupName) {
+    for (const e of entities.values()) {
+      if (e.groupName === groupName && e.domain === "binary_sensor" && displayName(e) === "Commissioned") {
+        return e.value === true;
+      }
+    }
+    return undefined;
+  }
+
+  function pressureSlotEntity(groupName, label) {
+    for (const e of entities.values()) {
+      if (e.groupName === groupName && displayName(e) === label) return e;
+    }
+    return null;
+  }
+
+  // Cross-slot duplicate check, purely against sensors already in *this*
+  // list - not a real electrical bus collision check (that needs actually
+  // talking Modbus over the real hardware, not available yet - see
+  // REQUIREMENTS.md). Returns the display name of whichever other
+  // commissioned slot already holds `address`, or null.
+  function findPressureAddressOwner(address, excludeGroup) {
+    for (const [groupName, row] of pressureRows) {
+      if (groupName === excludeGroup) continue;
+      const addr = pressureSlotEntity(groupName, "Modbus Address");
+      if (addr && addr.value === address) return row._nameInput.value || groupName;
+    }
+    return null;
+  }
+
+  let pressureTableBody = null;
+
+  // Registers the umbrella "Pressure Sensors" group as a normal
+  // serviceGroups entry (reusing reorderServiceGroups()'s existing
+  // weight-based interleaving with the meter/system sections, for free)
+  // but with a bespoke body - a table instead of the generic .dc-fields
+  // list - built once, on first use.
+  function ensurePressureTable() {
+    let g = serviceGroups.get(PRESSURE_ADD_GROUP);
+    if (g) return pressureTableBody;
+    const section = el("div", "dc-service-group dc-pressure-group");
+    const label = el("div", "dc-section-label", "Pressure Sensors");
+    const table = el(
+      "table",
+      "dc-pressure-table",
+      `<thead><tr><th>Name</th><th>Address</th><th></th></tr></thead><tbody></tbody>`
+    );
+    const addRow = el("div", "dc-pressure-add-row");
+    const addBtn = el("button", "dc-pressure-add-btn", "+");
+    addBtn.type = "button";
+    addRow.appendChild(addBtn);
+    addBtn.addEventListener("click", () => showPressureAddForm(addRow, addBtn));
+    section.append(label, table, addRow);
+    g = { weight: groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
+    serviceGroups.set(PRESSURE_ADD_GROUP, g);
+    document.getElementById("dc-page-service").appendChild(section);
+    reorderServiceGroups();
+    pressureTableBody = table.querySelector("tbody");
+    return pressureTableBody;
+  }
+
+  // Morphs the "+" button into a name input + confirm, backed by the
+  // "Pressure Sensors New Sensor Name" text entity and "Pressure Sensors
+  // Add" button (water-collector.yaml) - typing here alone changes
+  // nothing on the device, same principle as the meters' own Reading
+  // field, until Add is actually pressed.
+  function showPressureAddForm(addRow, addBtn) {
+    const nameEntity = entities.get("text-pressure_new_name");
+    const addEntity = entities.get("button-pressure_add");
+    if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected, harmless no-op if it does
+    addBtn.hidden = true;
+    const form = el("div", "dc-pressure-add-form");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 32;
+    input.placeholder = "Sensor name";
+    const confirmBtn = el("button", "dc-btn dc-btn-compact", "Add");
+    confirmBtn.type = "button";
+    form.append(input, confirmBtn);
+    addRow.appendChild(form);
+    input.focus();
+    const cancel = () => {
+      form.remove();
+      addBtn.hidden = false;
+    };
+    confirmBtn.addEventListener("click", () => {
+      fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" }).then(() =>
+        fetch(`${addEntity.namePath}/press`, { method: "POST" })
+      );
+      cancel();
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") confirmBtn.click();
+      else if (ev.key === "Escape") cancel();
+    });
+  }
+
+  const pressureRows = new Map(); // groupName -> <tr> (with ._nameInput/._addrInput/._delBtn stashed on it)
+
+  function syncPressureRow(groupName) {
+    const tbody = ensurePressureTable();
+    if (pressureCommissioned(groupName) !== true) {
+      const row = pressureRows.get(groupName);
+      if (row) {
+        row.remove();
+        pressureRows.delete(groupName);
+      }
+      return;
+    }
+    const nameEntity = pressureSlotEntity(groupName, "Display Name");
+    const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
+    const delEntity = pressureSlotEntity(groupName, "Delete");
+    let row = pressureRows.get(groupName);
+    if (!row) {
+      row = el(
+        "tr",
+        "",
+        `<td class="dc-pressure-name"></td><td class="dc-pressure-addr"></td><td class="dc-pressure-del"></td>`
+      );
+      pressureRows.set(groupName, row);
+      tbody.appendChild(row);
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.maxLength = 32;
+      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      nameInput.addEventListener("change", () => {
+        const e = pressureSlotEntity(groupName, "Display Name");
+        if (e) fetch(`${e.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" });
+      });
+      row._nameInput = nameInput;
+
+      const addrInput = document.createElement("input");
+      addrInput.type = "number";
+      addrInput.min = 0;
+      addrInput.max = 247;
+      addrInput.step = 1;
+      row.querySelector(".dc-pressure-addr").appendChild(addrInput);
+      addrInput.addEventListener("change", () => {
+        const e = pressureSlotEntity(groupName, "Modbus Address");
+        if (!e) return;
+        const parsed = parseInt(addrInput.value, 10);
+        if (Number.isNaN(parsed) || parsed < 0 || parsed > 247) {
+          addrInput.value = e.value ?? "";
+          return;
+        }
+        if (parsed > 0) {
+          const dupe = findPressureAddressOwner(parsed, groupName);
+          if (
+            dupe &&
+            !confirm(
+              `Address ${parsed} is already used by "${dupe}" in this list. This only checks sensors already commissioned here, not the physical bus - set it anyway?`
+            )
+          ) {
+            addrInput.value = e.value ?? "";
+            return;
+          }
+        }
+        fetch(`${e.namePath}/set?value=${encodeURIComponent(parsed)}`, { method: "POST" });
+      });
+      row._addrInput = addrInput;
+
+      const delBtn = el("button", "dc-pressure-del-btn", "✕");
+      delBtn.type = "button";
+      row.querySelector(".dc-pressure-del").appendChild(delBtn);
+      row._delBtn = delBtn;
+    }
+    if (nameEntity) {
+      row._delBtn.onclick = () => pressButton(delEntity);
+      if (document.activeElement !== row._nameInput) row._nameInput.value = nameEntity.value ?? "";
+      // Mirrors what upsertServiceText() does for the water meters (CR
+      // #8) - this slot's Home card header/icon uses the same shared
+      // groupLabel()/refreshGroupLabel() machinery, which otherwise has
+      // no other way to learn this group's renamed Display Name, since
+      // pressure entities never reach upsertServiceText() at all.
+      groupDisplayNames.set(groupName, (nameEntity.value || "").trim());
+      applyGroupLabel(groupName);
+    }
+    if (addrEntity && document.activeElement !== row._addrInput) {
+      row._addrInput.value = addrEntity.value || "";
+    }
+  }
+
+  // Home card existence, gated purely on Commissioned - see this
+  // section's own header comment for why this (not create-then-hide)
+  // is what actually avoids a flash. Reuses upsertHomeMetric()/
+  // ensureHomeGroup() as-is once commissioned; on the way back to
+  // uncommissioned (Delete), removes the card outright rather than just
+  // hiding it - a deleted slot has genuinely nothing left to show.
+  function syncPressureHomeCard(groupName) {
+    if (pressureCommissioned(groupName) !== true) {
+      const home = homeGroups.get(groupName);
+      if (home) {
+        home.card.remove();
+        homeGroups.delete(groupName);
+      }
+      return;
+    }
+    const pressureEntity = pressureSlotEntity(groupName, "Pressure");
+    if (pressureEntity) upsertHomeMetric(pressureEntity);
+  }
+
+  function renderPressureEntity(entity) {
+    if (entity.groupName === PRESSURE_ADD_GROUP) {
+      ensurePressureTable(); // make sure the table + "+" row exist even with zero slots commissioned yet
+      return;
+    }
+    syncPressureRow(entity.groupName);
+    syncPressureHomeCard(entity.groupName);
+  }
+
   // A number entity named "<Meter> Reading" (object_id ...maps to
   // "..._reading") and a button named "<Meter> Update" ("..._update")
   // are two ends of one calibration action - see the naming note next to
@@ -466,11 +697,6 @@
       const sibling = entities.get(`button-${base}_update`);
       if (sibling) mountComboButton(sibling, entity.el.querySelector(".dc-field-row"));
     }
-    // A slot's commissioned state (isSlotCommissioned()) hinges on this
-    // exact entity when it's the "Modbus Address" one - re-check its
-    // group's Home card visibility right away, both when a slot is first
-    // commissioned (0 -> a real address) and when Delete resets it back to 0.
-    if (label === "Modbus Address") applyGroupVisibility(entity.groupName);
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
   }
@@ -716,6 +942,26 @@
     // this entity still renders there too, this is purely an additional
     // header shortcut for it.
     if (entity.domain === "sensor" && entity.name === "Wi-Fi Signal") updateSignalBars(entity.value);
+    // Pressure sensor slots (and their "Pressure Sensors" umbrella group)
+    // bypass the generic Home/Service/Diagnostics dispatch entirely - see
+    // the "Pressure sensor table" section above for why. Two exceptions
+    // still ALSO fall through below, unlike every other pressure entity:
+    //  - Commissioned itself (entity_category: diagnostic routes it to
+    //    the Diagnostics page as a plain row too - harmless, useful for
+    //    debugging).
+    //  - Mock Pressure (Test), the temporary stand-in for a real Modbus
+    //    read (packages/pressure_sensor.yaml) - the compact table only
+    //    has Name/Address/Delete columns, nowhere to put this, so it
+    //    falls through to a normal (generic, one-off) Service field
+    //    instead, same as before this table existed. Delete this
+    //    exception together with the rest of the Mock Pressure scaffold
+    //    once real Modbus polling replaces it.
+    if (entity.groupName && isPressureGroup(entity.groupName)) {
+      renderPressureEntity(entity);
+      const label = displayName(entity);
+      const passThrough = (entity.domain === "binary_sensor" && label === "Commissioned") || label === "Mock Pressure (Test)";
+      if (!passThrough) return;
+    }
     const page = pageFor(entity);
     if (page === "home") upsertHomeMetric(entity);
     else if (page === "diagnostics") upsertDiagRow(entity);

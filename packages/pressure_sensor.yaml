@@ -1,52 +1,94 @@
 # Pressure sensor slot - reusable ESPHome package.
 #
 # One of 8 fixed "slots" for a QDW90A RS485/Modbus pressure sensor - see
-# REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" / "Architekturális
-# megfontolás: dinamikus nyomásmérő-hozzáadás" for the full rationale.
-# ESPHome has no runtime entity creation, so this is the same workaround
-# already used for the water meters (packages/water_meter.yaml): N
-# pre-wired, individually configurable slots instead of true dynamic
-# add/remove.
+# REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" for the full rationale.
 #
-# STATUS: this is the commissioning-UX skeleton only, built to be tried
-# out for usability before the real thing exists. Real Modbus polling
-# (reading the actual sensor over RS485 through the E810-R14 hub) isn't
-# implemented yet - it waits for the Waveshare ESP32-S3-RS485-CAN board to
-# physically arrive (see REQUIREMENTS.md, "Státusz"). Until then, "Mock
-# Pressure (Test)" below is a manual stand-in so the Modbus Address/
-# Display Name/Delete flow can be built and clicked through on the
-# current esp32dev test board. DELETE the Mock Pressure number once real
-# Modbus polling replaces it - everything else in this file (address/name
-# persistence, Delete) stays as-is.
+# STATUS: commissioning-UX skeleton only, still mock data (see "Mock
+# Pressure (Test)" below) - real Modbus polling waits for the Waveshare
+# board (REQUIREMENTS.md "Státusz").
 #
-# "Commissioned"/"empty" is a value convention, not a separate flag:
-# Modbus Address == 0 means "this slot has never been commissioned, or was
-# just deleted" - 1-247 means "commissioned, holds this Modbus slave
-# address". web/dashboard.js reads this same sentinel (isSlotCommissioned())
-# to decide whether a slot's Home card should exist at all.
+# EXISTENCE MODEL (v2): every entity below is a normal, always-compiled-in,
+# never-`internal` entity - NOT hidden via ESPHome's `internal`/
+# `set_internal()` mechanism. That was the first design tried here, and
+# was reverted after reading ESPHome's own current source
+# (esphome/core/entity_base.h, the installed package): calling
+# set_internal() at runtime is explicitly documented as deprecated/
+# undefined behavior since 2026.3.0 ("components and Home Assistant are
+# NOT notified... Use the 'internal:' YAML key instead" - i.e. compile-time
+# only), due to be removed in 2027.3.0. Not a viable foundation.
+#
+# Instead, "commissioned or not" is a plain VALUE - the
+# ${id_prefix}_commissioned binary_sensor below - which every client
+# (this project's own dashboard, Home Assistant) receives like any other
+# entity's state, live, through fully-supported means. web/dashboard.js
+# reads this value to decide whether to build/remove this slot's Home
+# card and Service-page table row - see isCommissioned()/syncPressureSlot()
+# there. Home Assistant, by contrast, has no equivalent client-side logic
+# of our own to lean on - it will always be able to see (a disabled-by-
+# default) entity for every one of the 8 slots, regardless of whether
+# they're actually commissioned. That's a real, accepted gap against
+# "only visible sensors go to HA" - ESPHome doesn't support anything
+# stronger without abandoning its native API integration for something
+# else entirely (e.g. MQTT discovery, a much bigger change, not done here).
 #
 # Instantiate per slot from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
 #   id_prefix         - unique internal id prefix, e.g. slot1 / slot2 / ...
-#                        (never shown anywhere - same caveat as
-#                        water_meter.yaml's id_prefix: renaming an
-#                        *already-commissioned* slot's id_prefix loses its
-#                        saved Modbus address/Display Name, since both are
-#                        keyed on it in flash)
-#   friendly_name     - display name, deliberately generic, e.g.
-#                        "Pressure Sensor 1" - also the "Display Name"
-#                        field's starting value, and what Delete resets it
-#                        back to
-#   sorting_group_id  - web_server sorting group id for this slot's own
-#                        Service-page section (declared in
-#                        water-collector.yaml)
+#                        (never shown anywhere - which physical slot
+#                        number a sensor happens to occupy is deliberately
+#                        meaningless; only its Display Name is ever shown -
+#                        see water-collector.yaml's Add Pressure Sensor
+#                        button for why slot order otherwise doesn't matter)
+#   friendly_name     - fallback Display Name if a sensor is commissioned
+#                        with an empty name; also this slot's compiled-in
+#                        entity name prefix (never shown in the custom
+#                        dashboard UI, which always renders the Display
+#                        Name instead - could still appear in Home
+#                        Assistant's own entity IDs)
+#   sorting_group_id  - web_server sorting group id for this slot
+#                        (declared in water-collector.yaml) - purely an
+#                        internal grouping key, never shown as a label
+#                        (the dashboard's own pressure table renders from
+#                        each entity's Display Name, not group names)
+
+globals:
+  # Persisted explicitly (own ESPPreferenceObject, load on_boot below,
+  # save in try_commission/Delete) rather than the `globals:`
+  # restore_value:true mechanism - same reasoning as water_meter.yaml's
+  # offset_m3: that mechanism only flushes via the globals component's
+  # own 1s polling, so an immediate sync() right after assigning it could
+  # miss the write, and this has to survive a power loss the instant it
+  # changes.
+  - id: ${id_prefix}_commissioned
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+binary_sensor:
+  # Read-only signal, not a user-facing setting - see the file header.
+  # Published explicitly (on_boot below, try_commission, Delete), never
+  # polled - same "manual publish, no update schedule" pattern as the
+  # Pressure sensor below.
+  - platform: template
+    id: ${id_prefix}_commissioned_sensor
+    name: "${friendly_name} Commissioned"
+    icon: "mdi:check-decagram-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 5
 
 sensor:
-  # The actual reading shown on the Home page - unset entity_category (not
-  # disabled_by_default), same as the meters' Flow Rate/Total Consumption:
-  # this is the device's actual job, not a diagnostic. Only published from
-  # the Mock Pressure number for now (see the file header) - a real Modbus
-  # read will call the same publish_state() once that's wired up.
+  # The actual reading, shown on the Home page once commissioned - see
+  # dashboard.js. disabled_by_default here (unlike the water meters' own
+  # Flow Rate/Total Consumption) is a deliberate exception to this
+  # project's usual "the device's actual job is enabled by default" rule:
+  # since Home Assistant can't be kept from seeing an uncommissioned
+  # slot's entities at all (see file header), the least-surprising
+  # default is for a fresh HA connection to show 8 disabled pressure
+  # sensors rather than 8 enabled-but-meaningless ones - opt in per slot
+  # once it's actually commissioned.
   - platform: template
     id: ${id_prefix}_pressure
     name: "${friendly_name} Pressure"
@@ -55,16 +97,12 @@ sensor:
     device_class: pressure
     state_class: measurement
     accuracy_decimals: 2
+    disabled_by_default: true
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 10
 
 number:
-  # The "betanítás" field - Modbus slave address for this slot's sensor.
-  # 0 is the "not commissioned" sentinel (see file header), 1-247 is a
-  # real address. restore_value: true + the delay/sync set_action is the
-  # same immediate-flash-write pattern as water_meter.yaml's Zero-Flow
-  # Timeout - survives a restart, and doesn't wait for flash_write_interval.
   - platform: template
     id: ${id_prefix}_modbus_address
     name: "${friendly_name} Modbus Address"
@@ -85,12 +123,9 @@ number:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 20
 
-  # TEMPORARY test scaffold - see the file header. Stands in for a real
-  # Modbus read: move/type a value here and it publishes straight to the
-  # Pressure sensor above, so the commissioning UX and Home page rendering
-  # can be tried out without the RS485 hardware in hand. Delete this whole
-  # entity (and the matching line in the Delete button below) once real
-  # Modbus polling is wired up.
+  # TEMPORARY test scaffold - see the status note in the file header.
+  # Delete this whole entity (and the matching line in try_commission's
+  # reset/Delete's reset) once real Modbus polling replaces it.
   - platform: template
     id: ${id_prefix}_mock_pressure
     name: "${friendly_name} Mock Pressure (Test)"
@@ -112,9 +147,6 @@ number:
       sorting_weight: 90
 
 text:
-  # Same pattern/purpose as water_meter.yaml's Display Name - renameable
-  # per-installation label, shown on this slot's Home card and Service/
-  # Diagnostics section header instead of the fixed "${friendly_name}".
   - platform: template
     id: ${id_prefix}_display_name
     name: "${friendly_name} Display Name"
@@ -135,16 +167,10 @@ text:
       sorting_weight: 30
 
 button:
-  # Resets this slot back to its uncommissioned state - Modbus Address ->
-  # 0 (the sentinel, see file header), Display Name/Mock Pressure back to
-  # their defaults. Goes through number.set/text.set (not a direct field
-  # assignment) specifically so each entity's own set_action fires exactly
-  # like a UI-driven change would - the delay+sync immediate-persist logic
-  # above isn't duplicated here, it's just triggered the normal way.
-  #
-  # Confirmed before firing on the dashboard itself (see CONFIRM_ON_PRESS
-  # in web/dashboard.js) - same pattern as Update/Restart/Forget Wi-Fi, no
-  # separate YAML-side confirmation step needed.
+  # Un-commissions this slot: resets Modbus Address/Display Name/Mock
+  # Pressure to their defaults and publishes Commissioned -> false.
+  # Confirmed before firing on the dashboard itself (CONFIRM_ON_PRESS in
+  # web/dashboard.js), same pattern as Update/Restart/Forget Wi-Fi.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -164,4 +190,53 @@ button:
       - number.set:
           id: ${id_prefix}_mock_pressure
           value: 0
-      - lambda: id(${id_prefix}_pressure).publish_state(NAN);
+      - lambda: |-
+          id(${id_prefix}_pressure).publish_state(NAN);
+          id(${id_prefix}_commissioned) = false;
+          static auto pref = global_preferences->make_preference<bool>(fnv1a_hash("${id_prefix}_commissioned"));
+          pref.save(&id(${id_prefix}_commissioned));
+          global_preferences->sync();
+      - binary_sensor.template.publish:
+          id: ${id_prefix}_commissioned_sensor
+          state: false
+
+script:
+  # Called (unconditionally, on every press) from water-collector.yaml's
+  # top-level "Add Pressure Sensor" button, once per slot in sequence - a
+  # no-op if this slot is already commissioned, so whichever slot is
+  # first still-free in that sequence is the one that actually claims the
+  # given name. Which slot number ends up claimed is otherwise never
+  # shown/meaningful - see the id_prefix note in the file header.
+  - id: ${id_prefix}_try_commission
+    mode: single
+    parameters:
+      name: string
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(${id_prefix}_commissioned);'
+          then:
+            - text.set:
+                id: ${id_prefix}_display_name
+                value: !lambda 'return name.empty() ? std::string("${friendly_name}") : name;'
+            - lambda: |-
+                id(${id_prefix}_commissioned) = true;
+                static auto pref = global_preferences->make_preference<bool>(fnv1a_hash("${id_prefix}_commissioned"));
+                pref.save(&id(${id_prefix}_commissioned));
+                global_preferences->sync();
+            - binary_sensor.template.publish:
+                id: ${id_prefix}_commissioned_sensor
+                state: true
+
+esphome:
+  on_boot:
+    then:
+      - lambda: |-
+          static auto pref = global_preferences->make_preference<bool>(fnv1a_hash("${id_prefix}_commissioned"));
+          bool loaded = false;
+          if (pref.load(&loaded)) {
+            id(${id_prefix}_commissioned) = loaded;
+          }
+      - binary_sensor.template.publish:
+          id: ${id_prefix}_commissioned_sensor
+          state: !lambda 'return id(${id_prefix}_commissioned);'
