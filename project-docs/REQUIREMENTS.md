@@ -134,12 +134,11 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
   - Baud tartomány `300–230400` (egyéni baud is támogatott) – a szenzor `1200–115200` tartományát bőven lefedi. A busz össz-eszközszám korlátja `32` – ez az általunk tervezett 4 slot-nak bőven elég tartalékot ad.
   - Gyártói infó: [cdebyte.com/products/E810-R14](https://www.cdebyte.com/products/E810-R14).
   - **Miért kell a hub akkor is, ha a master board (ESP32-S3-RS485-CAN) RS485 illesztője már eleve izolált, és a kábelek csak pár méteresek?** Mert a master-oldali izoláció a masztert védi a buszról, nem a szenzorokat egymástól – hub nélkül csillagba kötve mind ugyanazon a közös, nem izolált buszszakaszon lennének, így egy eltérő földpotenciálú (más gépházban lévő) szenzor közös módusú feszültsége simán túlmehetne a driver tartományán. A hub csatornánként külön izolál, ez oldja meg ezt – a topológia (csillag vs. daisy-chain) önmagában, pár méteres kábellel és `9600` baudon valószínűleg amúgy sem okozna gondot.
-- **Modbus regisztertérkép** – ⚠️ **nem hivatalos forrásból, közösségi/kompatibilitási dokumentációból (TapHome kompatibilitási oldal, Home Assistant közösségi fórum – ugyanerre a `QDW90A-3`, 0–10 bar variánsra vonatkozó, egymástól független bejegyzések) összeállítva, a ténylegesen beszerzett egységen még nincs leellenőrizve**:
-  - Slave cím: `H:0` (holding regiszter), írható, alapértelmezett `1`.
-  - Baud rate: `H:1`, alapértelmezett `9600 8N1`, választható `1200`–`115200` közül.
-  - Nyomásérték: `4`-es regiszter, 2 tizedesjegy skálázással (pl. `1000` → `10.00 bar`, `123` → `1.23 bar`).
-  - Range Full Point: `H:6` (Int16). Zero Bit Offset: `H:12` (Int16).
-  - **Mielőtt erre firmware-kódot építünk, egy Modbus-scannerrel (pl. `modpoll`, vagy "Modbus Poll" – USB-RS485 adapterrel) a valós eszközön ellenőrizni kell** a fenti címeket/regisztereket.
+- **Modbus regisztertérkép** – ⚠️ eredetileg **nem hivatalos forrásból, közösségi/kompatibilitási dokumentációból (TapHome kompatibilitási oldal, Home Assistant közösségi fórum – ugyanerre a `QDW90A-3`, 0–10 bar variánsra vonatkozó, egymástól független bejegyzések) összeállítva** – az alábbi pontok közül a **slave cím már megerősítve valós hardveren** (ld. lent), a többi még nem:
+  - **Slave cím: `H:0` (holding regiszter), alapértelmezett `1` – ✅ megerősítve valós QDW90A egységen**, 2026-08-12, kézi Modbus RTU kerettel (FTDI USB-RS485 adapter, `9600 8N1`, közvetlenül a szenzorra kötve, hub nélkül): `01 03 00 00 00 01 84 0A` kérésre `01 03 02 00 01 79 84` érkezett vissza (érték `0x0001` = `1`). A bekötés a gyári kábelszínezés szerint `Piros=24V+`, `Fekete=24V-`, `Kék=PC-A`, `Sárga=PC-B` (a "Ground Wire" felirat a csatlakozó silkscreen-jén félrevezető ezen a kivitelen – nincs külön föld-ér, csak a táp `Fekete` vezetéke). Külön GND-vezeték az FTDI és a szenzor közt **nem** kellett hozzá (rövid, asztali teszt).
+  - Baud rate: `H:1`, alapértelmezett `9600 8N1` (ez már közvetve is megerősítve, hiszen a fenti kérés így ment át), választható `1200`–`115200` közül.
+  - Nyomásérték: `4`-es regiszter, 2 tizedesjegy skálázással (pl. `1000` → `10.00 bar`, `123` → `1.23 bar`) – **még nincs megerősítve**, következő teszt lépés.
+  - Range Full Point: `H:6` (Int16). Zero Bit Offset: `H:12` (Int16) – **még nincs megerősítve**.
 
 ### Funkcionális követelmények
 
