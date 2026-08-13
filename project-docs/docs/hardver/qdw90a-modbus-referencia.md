@@ -57,6 +57,17 @@ nálunk ez mindig `3` (bar), a többivel nem foglalkozunk.
 4. A címírásra adott Modbus-válasz még a **régi** címről érkezik – a
    távadó csak ez után vált át.
 
+## Kérésméret-korlát ⚠️
+
+**Egy `0x03` (Read Holding Registers) kérésben legfeljebb 20 regiszter
+kérhető le egyszerre.** 21 vagy több regiszterre a szenzor a szabványostól
+eltérő `Illegal Function` Modbus-kivétellel utasítja el a **teljes**
+kérést (nem csak a 20. fölötti részt). Mért, reprodukált: `H:1–H:20`
+(20 regiszter, `-r 1 -c 20`) sikeres volt, `H:0–H:20` (21 regiszter,
+`-r 0 -c 21`) teljesen elbukott. **Firmware-ben ezt figyelembe kell
+venni** – nagyobb tartományt csak több, egyenként max. 20 regiszteres
+kérésre darabolva szabad lekérni.
+
 ## Nem használt / nem megerősített részletek
 
 - `H:24–H:29` körül egy valószínűsíthetően valódi, de nem dokumentált
