@@ -189,7 +189,25 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
   - **Ennek ára – korlát, amit el kell fogadni**: mivel nincs megbízható, támogatott mód egy entitás valódi eltüntetésére HA elől futásidőben, a **"csak a látható szenzorokat engedjük HA felé" nem valósul meg 100%-osan** – HA mindig látni fogja mind a 4 slot entitásait, csak `disabled_by_default: true`-val, alapból kikapcsolt állapotban (a meglévő konvenció). Ez a gyakorlati plafon ESPHome natív API-val, MQTT discovery-alapú, teljesen más architektúra nélkül.
   - Korábbi, elvetett "kétlépéses gomb-megerősítés" ötlet (JS `confirm()` helyett) szintén okafogyottá vált – a meglévő `CONFIRM_ON_PRESS` JS-mechanizmus (amit már Update/Restart/Forget Wi-Fi is használ) pont erre való, nem kellett hozzá semmi új.
 - Ez **nem korlátlan dinamikus bővítés**, hanem "4 előre definiált, egyenként konfigurálható slot" – ez pontosan a jelenlegi vízmérő-modul mintája is (2 fix slot, futásidőben nevesíthető/kapcsolható). Ha a cél valódi, darabszám-korlát nélküli bővíthetőség, az egy jelentősen nagyobb architekturális váltás lenne – erről külön kell dönteni, ha ez ténylegesen cél.
-- **Státusz**: a fenti slot-modell és kommissziós UX (mock adattal) implementálva van, tesztelésre vár a valós eszközön. A tényleges Modbus-kommunikáció a végleges Waveshare board megérkezéséig várat magára.
+- **Státusz (a fenti, v2 leírás)**: implementálva volt, de a lenti v3-as tervezés **felülírja/kibővíti** – a v2 "+" folyamata (üres névmező, cím utólag kézzel) helyébe a scan-alapú, cím-előre-ismert hozzáadás lép. Újraírás szükséges, még nincs implementálva.
+
+### Architekturális megfontolás v3 (2026-08-13): scan-alapú, "dinamikus DB-nek tűnő" tábla
+
+Hosszabb tervezési beszélgetés eredménye – a cél egy olyan felület, ami úgy **viselkedik**, mintha egy tetszőleges méretű, dinamikus adatbázis-táblát mutatna (sorok jönnek-mennek, nincs látható "slot 3/8" sorszámozás), miközben a valóságban **8 fix, fordításidőben rögzített slot** van mögötte (ESPHome-korlát, ld. fent – ezt "elfedni" lehet a felületen, de megszüntetni nem).
+
+- **Döntés: `N` vissza `8`-ra** (a korábbi, "elég a 4" döntés felülírva) – a hub ténylegesen `32` node-ot bír a buszon, a `4` önkényesen a hub fizikai portszámához lett igazítva. A `8` olcsó tartalék, jelentősen csökkenti annak esélyét, hogy a plafon ténylegesen elő is jöjjön.
+- **Szigorú szétválasztás: perzisztens vs. élő/efemer adat** – ez a kulcs-felismerés, ami az egész tervet meghatározza:
+  - **Perzisztens, slotonként**: kizárólag **cím + Display Name**. Semmi más (nincs külön "betanítva" flag – ld. lent, ez már a címből következik).
+  - **Élő/efemer, soha nem tárolt, mindig frissülő**: busz-scan jelenléte, folyamatos pollozás online/offline állapota (`modbus_controller` `on_online`/`on_offline`, ld. Diagnosztika) – ezekből **kliens-oldalon (JS) számolt, sosem flash-be írt** állapot.
+- **A táblázat sorai egy JOIN eredménye** (busz-scan találatai × a 8 slot jelenlegi címei, cím szerint):
+  - **"Regisztrált, elérhető"** – van slotunk erre a címre, ÉS a legutóbbi scan/pollozás válaszolt rá.
+  - **"Regisztrált, nem elérhető"** (LOST/ERROR) – van slotunk erre a címre, de a legutóbbi scan/pollozás **nem** kapott választ – ez pontosan az eredeti "3 eszköz van bekötve, csak 2 válaszol" jelzés, a JOIN természetes mellékterméke, nem külön funkció.
+  - **"Új eszköz"** – a scan talált egy választó címet, de egyik slotunk sem regisztrálja – ide kerülnek a még nem betanított eszközök.
+- **Hozzáadás – soronként, nem egy közös folyamat**: ha egyszerre több "Új eszköz" sor is látszik, mindegyiknél **saját "Hozzáadás" gomb** van (nem egy általános "+", ami kétértelmű lenne, melyik eszközre vonatkozik). A hozzáadás a scan-ből már ismert címet azonnal felveszi, csak nevet kell hozzá kérni – ezzel a v2-es "előbb név, aztán kézzel beírt cím" folyamata feleslegessé válik.
+- **Plafon, őszintén kezelve**: ha mind a 8 slot foglalt, és a scan egy 9. (vagy további) választó, nem regisztrált címet is talál, az a sor **továbbra is megjelenik "Új eszköz"-ként**, de a "Hozzáadás" gombja **inaktív, egyértelmű üzenettel** ("nincs szabad hely – firmware-bővítés kell hozzá") – soha nem egy csendben semmit sem csináló gomb.
+- **Cím módosítása regisztrált eszközön**: ez **ténylegesen újraprogramozza a fizikai eszközt is** (a dokumentált kétlépéses Modbus írás+mentés szekvenciával, ld. `docs/hardver/qdw90a-modbus-referencia.md`), nem csak a mi rekordunkat írja át – utána a rekord frissül, hogy kövesse az új címet.
+- **Ez nem egy külön "Sensor Config" oldal** (ahogy korábban felmerült) – egyetlen, egységesített nézet, ami kiváltja a jelenlegi "Pressure Sensors" táblázatot.
+- **Státusz**: terv lezárva, 2026-08-13. **Nincs implementálva** – ez egy érdemi újraírás a jelenlegi (v2) megvalósításhoz képest: kell hozzá a busz-scan rutin (ld. Diagnosztika – gyors busz-scan), az `N` visszaállítása `4`→`8`-ra, és a `web/dashboard.js` táblázat-renderelő logikájának cseréje a JOIN-alapú, három-állapotú modellre.
 
 ### Jövőbeli, hardverfüggő ötletek (nincs implementálva – valós RS485/Modbus hardver kell a kipróbálásukhoz)
 
