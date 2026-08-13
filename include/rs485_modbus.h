@@ -353,11 +353,21 @@ inline bool read_pressure_bar(UARTComponent *bus, uint8_t address, float &out, u
 // so a caller never has to guess whether a partial failure left the
 // device in an inconsistent (address changed, not yet saved - or vice
 // versa) state.
+//
+// The delay after the SAVE write is load-bearing, not just after the
+// address write - confirmed on real hardware, 2026-08-13: both writes
+// echoed back successfully (address really did move), but an immediate
+// read-back right after the save got no reply at all, while normal
+// polling picked the new address up cleanly moments later. H:15=0 is a
+// flash write on the sensor's own MCU - it plausibly can't answer
+// anything for a few ms while that's in flight. Without this delay the
+// whole reprogram was reported as FAILED despite genuinely succeeding.
 inline bool change_address_and_save(UARTComponent *bus, uint8_t old_address, uint8_t new_address,
                                      uint32_t timeout_ms = 200) {
   if (!write_single_register(bus, old_address, 0, new_address, timeout_ms)) return false;
   esphome::delay(20);  // give the device a moment to actually switch over
   if (!write_single_register(bus, new_address, 15, 0, timeout_ms)) return false;
+  esphome::delay(50);  // give the device a moment to finish its flash write
   std::vector<uint16_t> readback;
   if (!read_holding_registers(bus, new_address, 0, 1, readback, timeout_ms)) return false;
   return !readback.empty() && readback[0] == new_address;

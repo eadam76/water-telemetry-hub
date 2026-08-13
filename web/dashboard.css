@@ -649,13 +649,30 @@ body {
   text-align: center;
 }
 
-.dc-pressure-table tbody tr {
+/* Borders live on the <td>s, not the <tr> - a <tr>-level border (the
+ * earlier version) doesn't reliably wrap content that pushes a cell
+ * wider than its "shrink-to-fit" column width (dc-pressure-status/
+ * dc-pressure-action below are both width: 1%) - confirmed on real
+ * hardware, 2026-08-13: the Add/X buttons visibly stuck out past the
+ * row's own rounded border. Top/bottom on every cell (border-collapse
+ * merges each row's shared edge with the next into one line); left/
+ * right only on the first/last cell, so there's still no vertical
+ * divider *between* columns, only the outer frame - each cell's own
+ * border now directly wraps its own content, however wide, so nothing
+ * can escape it. */
+.dc-pressure-table td {
+  padding: 8px;
   background: var(--dc-surface);
-  border: 1px solid var(--dc-border);
+  border-top: 1px solid var(--dc-border);
+  border-bottom: 1px solid var(--dc-border);
 }
 
-.dc-pressure-table tbody tr:not(:last-child) {
-  border-bottom: none;
+.dc-pressure-table td:first-child {
+  border-left: 1px solid var(--dc-border);
+}
+
+.dc-pressure-table td:last-child {
+  border-right: 1px solid var(--dc-border);
 }
 
 .dc-pressure-table tbody tr:first-child td:first-child {
@@ -672,10 +689,6 @@ body {
 
 .dc-pressure-table tbody tr:last-child td:last-child {
   border-bottom-right-radius: var(--dc-radius-sm);
-}
-
-.dc-pressure-table td {
-  padding: 8px;
 }
 
 .dc-pressure-table input[type="text"],
@@ -698,6 +711,18 @@ body {
 
 .dc-pressure-table input[type="number"] {
   text-align: right;
+  /* Plain numeric text entry, no native spinner - a Modbus address is
+     typed/edited as a whole value, not incremented/decremented one at a
+     time, and the spinner arrows ate into the already-narrow Address
+     column. Still type="number" (keeps the numeric mobile keyboard and
+     built-in validation), just without the up/down control. */
+  -moz-appearance: textfield;
+}
+
+.dc-pressure-table input[type="number"]::-webkit-outer-spin-button,
+.dc-pressure-table input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .dc-pressure-table input:focus {

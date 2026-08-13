@@ -75,12 +75,25 @@ sensor:
     state_class: measurement
     accuracy_decimals: 2
     disabled_by_default: true
-    update_interval: 5s
+    # 1s, not the original 5s - still bounded by how expensive a *failed*
+    # poll is, not how fast a working one could go: every read here runs
+    # synchronously on the main loop (see include/rs485_modbus.h's
+    # wait_for_bytes()), so with all 8 slots registered and simultaneously
+    # unreachable, a full round is 8 x this poll's own timeout - at the
+    # 100ms passed below, worst case ~0.8s out of every 1s window, which
+    # is already a lot. The 200-500ms range floated for this was tried
+    # against that math and judged too tight - at 8 slots x up to 200ms
+    # each, an all-offline round could take longer than the interval
+    # itself, and even at 4 slots it would still dominate the loop. 1s +
+    # a shorter (100ms) timeout is a middle ground: ~5x more responsive
+    # than before without the main loop spending most of its time
+    # blocked. Straightforward to retune in either direction later.
+    update_interval: 1s
     lambda: |-
       uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
       if (address == 0) return {};  // unregistered slot - nothing to poll
       float value;
-      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value)) {
+      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 100)) {
         id(${id_prefix}_online).publish_state(true);
         return value;
       } else {

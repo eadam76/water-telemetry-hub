@@ -509,29 +509,36 @@
   // pulling in ensureServiceGroup()'s .dc-fields layout. Deliberately
   // NOT routed through the shared pressButton() (its brief ".dc-pressed"
   // flash doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
-  // for the fetch's whole lifetime instead, which also happens to be
-  // exactly the request's own actual duration (ESPHome runs a button's
-  // on_press: synchronously within the request handler, so the fetch()
-  // promise doesn't resolve until the scan itself is done). Confirmed
-  // useful on real hardware, 2026-08-13: with no feedback at all here,
-  // it wasn't obvious a scan was running, which invited exactly the kind
-  // of repeated re-clicking that (combined with the try_register bug
-  // fixed the same day) produced duplicate registrations.
+  // instead, driven by its own live "Scan In Progress" binary_sensor
+  // (see syncScanButtonBusyState() below), NOT the fetch() promise's own
+  // lifetime - tried that first, but confirmed on real hardware,
+  // 2026-08-13, that ESPHome's web_server doesn't hold the HTTP response
+  // open for a button's on_press: to actually finish, so the fetch
+  // resolved almost immediately, well before the real ~6s scan was done.
+  // Feedback here matters beyond cosmetics: with none at all, it wasn't
+  // obvious a scan was running, which invited exactly the kind of
+  // repeated re-clicking that (combined with the try_register bug fixed
+  // the same day) produced duplicate registrations.
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
-      const idleLabel = displayName(entity);
-      entity.btnEl = el("button", "dc-btn dc-btn-compact", idleLabel);
+      entity.idleLabel = displayName(entity);
+      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
-        entity.btnEl.disabled = true;
-        entity.btnEl.textContent = "Scanning…";
-        fetch(`${entity.namePath}/press`, { method: "POST" }).finally(() => {
-          entity.btnEl.disabled = false;
-          entity.btnEl.textContent = idleLabel;
-        });
+        fetch(`${entity.namePath}/press`, { method: "POST" });
       });
       pressureToolbarEl.appendChild(entity.btnEl);
     }
+  }
+
+  // Drives the Scan Bus button's busy state from modbus_scan_in_progress
+  // (see mountPressureToolbarButton()'s own comment for why this - not
+  // the button entity's own fetch() - is the source of truth).
+  function syncScanButtonBusyState(inProgress) {
+    const scanEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Bus");
+    if (!scanEntity || !scanEntity.btnEl) return;
+    scanEntity.btnEl.disabled = inProgress;
+    scanEntity.btnEl.textContent = inProgress ? "Scanning…" : scanEntity.idleLabel;
   }
 
   const pressureTableRows = new Map(); // "reg:"+groupName or "new:"+address -> <tr>
@@ -811,6 +818,7 @@
       const label = displayName(entity);
       if (label === "Scan Bus") mountPressureToolbarButton(entity);
       else if (label === "Scan Results" || label === "Scan Collisions") renderPressureTableBody();
+      else if (label === "Scan In Progress") syncScanButtonBusyState(entity.value === true);
       // Add Name / Add Target Address / Add itself have no visible UI of
       // their own - they're write-only targets set by each new-device
       // row's own Add button above, never rendered directly.

@@ -459,6 +459,24 @@ sensor:
         sorting_group_id: sorting_group_system
         sorting_weight: 30
 
+binary_sensor:
+  # Live/ephemeral, never persisted - true for the ~6s a "Pressure
+  # Sensors Scan Bus" press actually takes, see that button's own
+  # on_press: above. Not pressure-specific in spirit (scan_bus() sweeps
+  # the whole Modbus bus, any device type), kept under the "Pressure
+  # Sensors" heading for now only because that's still the only Add flow
+  # that exists - see modbus_add_claimed's own comment for the same
+  # naming note.
+  - platform: template
+    id: modbus_scan_in_progress
+    name: "Pressure Sensors Scan In Progress"
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 4.5
+
 text_sensor:
   # Latest bus-scan result - a comma-separated list of Modbus addresses
   # that answered (e.g. "1,4,9"), published by "Pressure Sensors Scan
@@ -652,6 +670,14 @@ button:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 5
     on_press:
+      # modbus_scan_in_progress brackets the actual scan - NOT the same
+      # as the dashboard's fetch() promise for this /press request, which
+      # (confirmed on real hardware, 2026-08-13) resolves almost
+      # immediately, well before the ~6s scan itself is done - ESPHome's
+      # web_server evidently doesn't hold the HTTP response open for a
+      # button's on_press: to finish. This binary_sensor is what the
+      # dashboard's own "Scanning…" state now actually watches instead.
+      - lambda: 'id(modbus_scan_in_progress).publish_state(true);'
       - lambda: |-
           auto result = rs485_modbus::scan_bus(id(rs485_uart), 1, 247);
           auto to_csv = [](const std::vector<uint8_t> &addresses) {
@@ -664,6 +690,7 @@ button:
           };
           id(pressure_scan_results).publish_state(to_csv(result.found));
           id(pressure_scan_collisions).publish_state(to_csv(result.collisions));
+      - lambda: 'id(modbus_scan_in_progress).publish_state(false);'
 
   # Registers the first still-free pressure sensor slot (out of the 8 in
   # packages/pressure_sensor.yaml) with the address+name set in "Pressure
