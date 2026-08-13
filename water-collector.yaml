@@ -837,12 +837,18 @@ packages:
   # megfontolás v3", 2026-08-13) - see packages/pressure_sensor.yaml's own
   # header for the id_prefix/friendly_name rename caveat and the current
   # (real Modbus RTU over `uart: rs485_uart` above) status.
+  #
+  # poll_interval is staggered 40ms apart per slot (520ms..800ms) -
+  # deliberately not one shared value for all 8 - see
+  # packages/pressure_sensor.yaml's own Pressure sensor comment for why
+  # (avoids all 8 slots' polls landing on the same main-loop tick).
   pressure_slot1: !include
     file: packages/pressure_sensor.yaml
     vars:
       id_prefix: slot1
       friendly_name: "Pressure Sensor 1"
       sorting_group_id: sorting_group_pressure1
+      poll_interval: 520ms
 
   pressure_slot2: !include
     file: packages/pressure_sensor.yaml
@@ -850,6 +856,7 @@ packages:
       id_prefix: slot2
       friendly_name: "Pressure Sensor 2"
       sorting_group_id: sorting_group_pressure2
+      poll_interval: 560ms
 
   pressure_slot3: !include
     file: packages/pressure_sensor.yaml
@@ -857,6 +864,7 @@ packages:
       id_prefix: slot3
       friendly_name: "Pressure Sensor 3"
       sorting_group_id: sorting_group_pressure3
+      poll_interval: 600ms
 
   pressure_slot4: !include
     file: packages/pressure_sensor.yaml
@@ -864,6 +872,7 @@ packages:
       id_prefix: slot4
       friendly_name: "Pressure Sensor 4"
       sorting_group_id: sorting_group_pressure4
+      poll_interval: 640ms
 
   pressure_slot5: !include
     file: packages/pressure_sensor.yaml
@@ -871,6 +880,7 @@ packages:
       id_prefix: slot5
       friendly_name: "Pressure Sensor 5"
       sorting_group_id: sorting_group_pressure5
+      poll_interval: 680ms
 
   pressure_slot6: !include
     file: packages/pressure_sensor.yaml
@@ -878,6 +888,7 @@ packages:
       id_prefix: slot6
       friendly_name: "Pressure Sensor 6"
       sorting_group_id: sorting_group_pressure6
+      poll_interval: 720ms
 
   pressure_slot7: !include
     file: packages/pressure_sensor.yaml
@@ -885,6 +896,7 @@ packages:
       id_prefix: slot7
       friendly_name: "Pressure Sensor 7"
       sorting_group_id: sorting_group_pressure7
+      poll_interval: 760ms
 
   pressure_slot8: !include
     file: packages/pressure_sensor.yaml
@@ -892,3 +904,4 @@ packages:
       id_prefix: slot8
       friendly_name: "Pressure Sensor 8"
       sorting_group_id: sorting_group_pressure8
+      poll_interval: 800ms

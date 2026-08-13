@@ -44,6 +44,11 @@
 #                        internal grouping key, never shown as a label
 #                        (the dashboard's own pressure table renders from
 #                        each entity's Display Name, not group names)
+#   poll_interval     - this slot's own Pressure update_interval (e.g.
+#                        "560ms") - deliberately a different value per
+#                        slot (water-collector.yaml staggers all 8), not
+#                        one shared constant. See the Pressure sensor's
+#                        own comment below for why.
 
 sensor:
   # The actual reading, shown on the Home page once registered - see
@@ -57,7 +62,7 @@ sensor:
   # 8 enabled-but-meaningless ones - opt in per slot once it's actually
   # registered.
   #
-  # Polls the real sensor directly every 5s (rs485_modbus::read_pressure_bar(),
+  # Polls the real sensor directly (rs485_modbus::read_pressure_bar(),
   # include/rs485_modbus.h - H:22-H:23 as Float32, see
   # docs/hardver/qdw90a-modbus-referencia.md) - a no-op (returns {}, no
   # publish at all) while this slot is unregistered. This same poll is
@@ -66,6 +71,21 @@ sensor:
   # result the way a not-yet-registered "New device" row is; a scan is
   # for discovering addresses we don't have a slot for yet, this is for
   # continuously watching one we do.
+  #
+  # `poll_interval` is staggered per slot (not one shared value) so 8
+  # registered slots' polls don't all land on the same main-loop tick -
+  # every read here runs synchronously (wait_for_bytes() blocks the main
+  # loop for up to its own timeout), so 8 *simultaneous* polls would
+  # briefly block for the sum of all 8 timeouts, not just one. Spread
+  # across ~280ms (520-800ms in ~40ms steps), they drift apart over
+  # multiple cycles instead of staying permanently in lockstep (all 8
+  # start at nearly the same boot-time moment, and with one shared
+  # interval would never separate on their own). Read timeout is 50ms
+  # (passed explicitly below, i.e. read_pressure_bar()'s own 200ms
+  # default is NOT used here) - real hardware responses have been well
+  # under that; worst case with every slot simultaneously unreachable is
+  # still bounded (8 x 50ms = 400ms) within the shortest slot's own
+  # ~520ms window, not runaway backlog.
   - platform: template
     id: ${id_prefix}_pressure
     name: "${friendly_name} Pressure"
@@ -75,25 +95,12 @@ sensor:
     state_class: measurement
     accuracy_decimals: 2
     disabled_by_default: true
-    # 1s, not the original 5s - still bounded by how expensive a *failed*
-    # poll is, not how fast a working one could go: every read here runs
-    # synchronously on the main loop (see include/rs485_modbus.h's
-    # wait_for_bytes()), so with all 8 slots registered and simultaneously
-    # unreachable, a full round is 8 x this poll's own timeout - at the
-    # 100ms passed below, worst case ~0.8s out of every 1s window, which
-    # is already a lot. The 200-500ms range floated for this was tried
-    # against that math and judged too tight - at 8 slots x up to 200ms
-    # each, an all-offline round could take longer than the interval
-    # itself, and even at 4 slots it would still dominate the loop. 1s +
-    # a shorter (100ms) timeout is a middle ground: ~5x more responsive
-    # than before without the main loop spending most of its time
-    # blocked. Straightforward to retune in either direction later.
-    update_interval: 1s
+    update_interval: ${poll_interval}
     lambda: |-
       uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
       if (address == 0) return {};  // unregistered slot - nothing to poll
       float value;
-      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 100)) {
+      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50)) {
         id(${id_prefix}_online).publish_state(true);
         return value;
       } else {
@@ -174,6 +181,12 @@ number:
           if (old_address != 0 && new_address != 0 && old_address != new_address) {
             if (rs485_modbus::change_address_and_save(id(rs485_uart), old_address, new_address)) {
               ESP_LOGI("pressure", "${friendly_name}: reprogrammed sensor address %d -> %d", old_address, new_address);
+              // Without this, the old address lingers in "Scan Results"
+              // until the next actual bus scan and the dashboard's JOIN
+              // renders it as a phantom "New device" row for an address
+              // nothing answers at anymore - confirmed wrong (not just
+              // stale), not merely cosmetic, on real hardware, 2026-08-13.
+              rs485_modbus::update_scan_result_address(id(pressure_scan_results), old_address, new_address);
             } else {
               ESP_LOGW("pressure", "${friendly_name}: FAILED to reprogram sensor address %d -> %d - it may not have actually switched, check it before trusting this slot", old_address, new_address);
             }

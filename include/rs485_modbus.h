@@ -21,7 +21,9 @@
 // water-collector.yaml, so every symbol here is available from any
 // lambda without an explicit #include.
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -30,6 +32,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/uart/uart.h"
 
 namespace rs485_modbus {
@@ -371,6 +374,42 @@ inline bool change_address_and_save(UARTComponent *bus, uint8_t old_address, uin
   std::vector<uint16_t> readback;
   if (!read_holding_registers(bus, new_address, 0, 1, readback, timeout_ms)) return false;
   return !readback.empty() && readback[0] == new_address;
+}
+
+// Keeps a scan_bus()-produced CSV text_sensor ("Scan Results"-shaped -
+// see water-collector.yaml) in sync with a just-verified successful
+// change_address_and_save() - removes `old_address` (it doesn't answer
+// there anymore) and adds `new_address` (already confirmed to answer
+// there by that same call's own read-back). Without this, a reprogram
+// left the *old* address sitting in the scan snapshot until the next
+// actual bus scan, which the dashboard's JOIN then rendered as a
+// phantom "New device" row for an address nothing answers at anymore -
+// confirmed confusing (rightly so - it's not just stale, it's actively
+// wrong) on real hardware, 2026-08-13.
+inline void update_scan_result_address(esphome::text_sensor::TextSensor *scan_results, uint8_t old_address,
+                                        uint8_t new_address) {
+  std::vector<uint8_t> addresses;
+  const std::string &current = scan_results->state;
+  size_t start = 0;
+  while (start <= current.size()) {
+    size_t comma = current.find(',', start);
+    std::string token = current.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+    int parsed = atoi(token.c_str());
+    if (parsed > 0 && parsed <= 247) addresses.push_back(static_cast<uint8_t>(parsed));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  addresses.erase(std::remove(addresses.begin(), addresses.end(), old_address), addresses.end());
+  if (std::find(addresses.begin(), addresses.end(), new_address) == addresses.end()) {
+    addresses.push_back(new_address);
+  }
+  std::sort(addresses.begin(), addresses.end());
+  std::string csv;
+  for (size_t i = 0; i < addresses.size(); i++) {
+    if (i > 0) csv += ",";
+    csv += std::to_string(addresses[i]);
+  }
+  scan_results->publish_state(csv);
 }
 
 }  // namespace rs485_modbus
