@@ -122,7 +122,7 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 
 ### Hardver
 
-- Érzékelő: **QDW90A** (Anhui Qidian Automation Technology), diffúz szilícium piezorezisztív nyomás-távadó. Dokumentáció: [`docs/hardver/qdw90a-nyomastavado-adatlap.pdf`](docs/hardver/qdw90a-nyomastavado-adatlap.pdf).
+- Érzékelő: **QDW90A** (Anhui Qidian Automation Technology), diffúz szilícium piezorezisztív nyomás-távadó. Gyártói adatlap: [`docs/hardver/qdw90a-nyomastavado-adatlap.pdf`](docs/hardver/qdw90a-nyomastavado-adatlap.pdf). **Modbus-regiszterek, bekötés, betanítás – saját, hardveren megerősített referencia**: [`docs/hardver/qdw90a-modbus-referencia.md`](docs/hardver/qdw90a-modbus-referencia.md).
   - **A beszerzett/tervezett kivitel**: RS485/Modbus RTU kimenet (az adatlap alapváltozata 4-20mA áramhurok, de a Modbus-kimenet is dokumentált kivitel, 4-vezetékes bekötéssel – **ezt a variánst rendeljük**), táp `24V DC`, mérési tartomány `0–10 bar` (`0–1.0 MPa`).
   - `G1/4` menetes csatlakozás, pontosság `±0.2% F.S.`, védettség `IP65`.
   - Kommunikáció a végleges **Waveshare ESP32-S3-RS485-CAN** board saját, galvanikusan leválasztott RS485 illesztőjén keresztül (lásd [`esp32-s3-rs485-can-board.md`](docs/hardver/esp32-s3-rs485-can-board.md)) – a jelenlegi tesztboardon (`esp32dev`) nincs RS485 illesztő, ezért a **tényleges Modbus-kommunikáció megvalósítása a végleges hardver megérkezéséig szándékosan várat magára** (ld. Architekturális megfontolás – Státusz).
