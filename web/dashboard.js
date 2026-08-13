@@ -546,7 +546,15 @@
       "dc-pressure-table",
       `<thead><tr><th>Name</th><th>Address</th><th>Status</th><th></th><th></th></tr></thead><tbody></tbody>`
     );
-    section.append(label, toolbar, table);
+    // A future extra column (e.g. device class - QDW90A vs. a flow meter
+    // once more Modbus device types land) has to go somewhere; scrolling
+    // the table itself horizontally, on whichever screen is too narrow
+    // for it, beats squeezing every column down or clipping content
+    // outright (#dc-main forces overflow-x: hidden page-wide - see its
+    // own comment).
+    const tableScroll = el("div", "dc-pressure-table-scroll");
+    tableScroll.appendChild(table);
+    section.append(label, toolbar, tableScroll);
     g = { weight: groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
     serviceGroups.set(PRESSURE_ADD_GROUP, g);
     document.getElementById("dc-page-service").appendChild(section);
@@ -575,7 +583,16 @@
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.idleLabel = displayName(entity);
-      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
+      // Label and spinner are separate child elements, not the button's
+      // own textContent, specifically so syncScanButtonBusyState() below
+      // can toggle the spinner without clobbering it every time it
+      // rewrites the label (a plain `btnEl.textContent = ...` replaces
+      // *all* children, spinner included).
+      entity.btnEl = el("button", "dc-btn dc-btn-compact");
+      entity.labelEl = el("span", null, entity.idleLabel);
+      entity.spinnerEl = el("span", "dc-spinner");
+      entity.spinnerEl.hidden = true;
+      entity.btnEl.append(entity.labelEl, entity.spinnerEl);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
         fetch(`${entity.namePath}/press`, { method: "POST" });
@@ -586,12 +603,17 @@
 
   // Drives the Scan Bus button's busy state from modbus_scan_in_progress
   // (see mountPressureToolbarButton()'s own comment for why this - not
-  // the button entity's own fetch() - is the source of truth).
+  // the button entity's own fetch() - is the source of truth). A ~6s
+  // scan with only a relabeled button as feedback still read as "did
+  // this actually do anything?" at a glance - the spinner is a second,
+  // more immediately legible "something is happening" signal alongside
+  // the text.
   function syncScanButtonBusyState(inProgress) {
     const scanEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Bus");
     if (!scanEntity || !scanEntity.btnEl) return;
     scanEntity.btnEl.disabled = inProgress;
-    scanEntity.btnEl.textContent = inProgress ? "Scanning…" : scanEntity.idleLabel;
+    scanEntity.labelEl.textContent = inProgress ? "Scanning…" : scanEntity.idleLabel;
+    scanEntity.spinnerEl.hidden = !inProgress;
   }
 
   const pressureTableRows = new Map(); // "reg:"+groupName or "new:"+address -> <tr>
@@ -630,7 +652,7 @@
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
-      nameInput.readOnly = true;
+      nameInput.disabled = true;
       row.querySelector(".dc-pressure-name").appendChild(nameInput);
       row._nameInput = nameInput;
 
@@ -639,7 +661,7 @@
       addrInput.min = 1;
       addrInput.max = 247;
       addrInput.step = 1;
-      addrInput.readOnly = true;
+      addrInput.disabled = true;
       row.querySelector(".dc-pressure-addr").appendChild(addrInput);
       row._addrInput = addrInput;
 
@@ -700,16 +722,16 @@
       const enterEdit = () => {
         row._editOrigName = nameInput.value;
         row._editOrigAddr = addrInput.value;
-        nameInput.readOnly = false;
-        addrInput.readOnly = false;
+        nameInput.disabled = false;
+        addrInput.disabled = false;
         row.classList.add("dc-pressure-row-editing");
         row._editing = true;
         nameInput.focus();
         nameInput.select();
       };
       const exitEdit = () => {
-        nameInput.readOnly = true;
-        addrInput.readOnly = true;
+        nameInput.disabled = true;
+        addrInput.disabled = true;
         row.classList.remove("dc-pressure-row-editing");
         row._editing = false;
       };
@@ -767,7 +789,7 @@
       row._nameInput.value = (nameEntity && nameEntity.value) || "";
       if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
     }
-    row._statusEl.textContent = hasCollision ? "Collision?" : isOnline ? "OK" : "Lost";
+    row._statusEl.textContent = hasCollision ? "Collision" : isOnline ? "OK" : "Lost";
     row._statusEl.classList.toggle("dc-pressure-badge-ok", isOnline && !hasCollision);
     row._statusEl.classList.toggle("dc-pressure-badge-lost", !isOnline && !hasCollision);
     row._statusEl.classList.toggle("dc-pressure-badge-collision", hasCollision);
@@ -810,12 +832,26 @@
       nameInput.maxLength = 32;
       nameInput.placeholder = "Sensor name";
       nameInput.value = pressureNewRowDrafts.get(address) || "";
-      nameInput.addEventListener("input", () => pressureNewRowDrafts.set(address, nameInput.value));
+      nameInput.addEventListener("input", () => {
+        pressureNewRowDrafts.set(address, nameInput.value);
+        // Live, not just on the next render - a name typed and then
+        // immediately clicked past shouldn't have to wait for an SSE
+        // round trip to unlock Add. atCeiling itself is a snapshot from
+        // this row's creation, same as every other read of it in this
+        // function - reconciled again on the next real render regardless.
+        if (!row._addBtn._busy) row._addBtn.disabled = atCeiling || !nameInput.value.trim();
+      });
       row.querySelector(".dc-pressure-name").appendChild(nameInput);
       row._nameInput = nameInput;
 
+      // Add stays disabled with no name typed - a device isn't
+      // necessarily a pressure sensor (more Modbus device types are
+      // planned), so silently falling back to a generic "Pressure Sensor
+      // N" label on an empty name would be actively wrong for those,
+      // confirmed a problem, 2026-08-13.
       const addBtn = el("button", "dc-btn dc-btn-compact", "Add");
       addBtn.type = "button";
+      addBtn.disabled = true;
       addBtn.addEventListener("click", () => {
         if (addBtn.disabled) return;
         const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
@@ -847,8 +883,13 @@
     // landing mid-request would otherwise reset disabled back to
     // whatever atCeiling says here, undoing that guard.
     if (!row._addBtn._busy) {
-      row._addBtn.disabled = atCeiling;
-      row._addBtn.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
+      const nameEmpty = !row._nameInput.value.trim();
+      row._addBtn.disabled = atCeiling || nameEmpty;
+      row._addBtn.title = atCeiling
+        ? "All 8 sensor slots are already registered - delete one first to add another."
+        : nameEmpty
+          ? "Enter a name first."
+          : "";
     }
   }
 
@@ -868,7 +909,7 @@
         "dc-pressure-row-collision",
         `<td class="dc-pressure-name"><span class="dc-pressure-collision-note">Multiple devices may share this address</span></td>` +
           `<td class="dc-pressure-addr"></td>` +
-          `<td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-collision">Collision?</span></td>` +
+          `<td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-collision">Collision</span></td>` +
           `<td class="dc-pressure-action"></td>` +
           `<td class="dc-pressure-order"></td>`
       );
@@ -938,12 +979,36 @@
     // it's created - without this, every row would keep whatever
     // position it happened to be inserted at forever afterwards, even
     // once a Sort Order change (or a slot getting registered/deleted
-    // elsewhere in the list) says it belongs somewhere else. Cheap even
-    // with a full 8 rows - appendChild() on a node that's already
-    // attached just moves it, it doesn't clone or re-create anything.
-    for (const slot of orderedRegistered) tbody.appendChild(pressureTableRows.get("reg:" + slot.groupName));
-    for (const address of newAddresses) tbody.appendChild(pressureTableRows.get("new:" + address));
-    for (const address of unclaimedCollisions) tbody.appendChild(pressureTableRows.get("collision:" + address));
+    // elsewhere in the list) says it belongs somewhere else.
+    //
+    // Only actually *moves* a row when it isn't already in the right
+    // spot - unconditionally calling appendChild()/insertBefore() on
+    // every row on every render (an earlier version of this loop) is
+    // wrong even for rows that don't need to move at all: detaching and
+    // reattaching a node blurs whatever input inside it currently has
+    // focus. Since this whole function re-runs on every relevant SSE
+    // update - which, for a registered slot, includes its own live
+    // Online status changing on essentially every poll, roughly twice a
+    // second - that made editing a row's Name/Address effectively
+    // impossible, confirmed on real hardware, 2026-08-13: focus kept
+    // getting kicked out mid-edit by the *next* poll's own re-render, not
+    // by anything about editing itself. This walks the desired order
+    // once and only touches a node when its current position doesn't
+    // already match - for the overwhelmingly common case (nothing was
+    // just reordered) that's zero DOM moves.
+    const desiredOrder = [
+      ...orderedRegistered.map((s) => pressureTableRows.get("reg:" + s.groupName)),
+      ...newAddresses.map((a) => pressureTableRows.get("new:" + a)),
+      ...unclaimedCollisions.map((a) => pressureTableRows.get("collision:" + a)),
+    ];
+    let anchor = tbody.firstElementChild;
+    for (const row of desiredOrder) {
+      if (anchor === row) {
+        anchor = anchor.nextElementSibling;
+      } else {
+        tbody.insertBefore(row, anchor);
+      }
+    }
 
     for (const [key, row] of pressureTableRows) {
       if (!seenKeys.has(key)) {

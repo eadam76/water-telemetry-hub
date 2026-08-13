@@ -414,7 +414,13 @@ body {
 
 .dc-service-group {
   margin-bottom: 26px;
-  max-width: 420px;
+  /* Was a flat 420px regardless of viewport - on anything wider than a
+     phone that left most of the Service page's own width sitting empty
+     for no reason ("nem igazodnak a komponensek a szélességhez",
+     confirmed a real complaint, not just an aspiration, 2026-08-13).
+     Still just a max-width, not a fixed width - shrinks to fit a narrow
+     viewport exactly as before, this only raises the ceiling. */
+  max-width: 560px;
 }
 
 .dc-service-group:last-child {
@@ -609,10 +615,26 @@ body {
  * below for the Status pill each renders. */
 
 .dc-pressure-group {
-  /* Was 480px - every other Service card (.dc-service-group) uses
-     420px, and this one visibly sat wider than its siblings because of
-     the mismatch, confirmed on real hardware, 2026-08-13. */
-  max-width: 420px;
+  /* Deliberately wider than a plain .dc-service-group now (was matched
+     to it at 420px, 2026-08-13, to fix an *unintentional* mismatch) -
+     this one holds an actual multi-column table, not a single stacked
+     field, so it benefits from the extra room in a way a form field
+     doesn't; a future extra column (see the table-scroll wrapper's own
+     comment in dashboard.js) needs the room even more. Still just a
+     max-width - shrinks to fit a narrow viewport same as every other
+     card, this only raises the ceiling on wider screens ("desktopon
+     jóval szélesebb táblázat is működhet", direct feedback, same day). */
+  max-width: 900px;
+}
+
+/* Lets the table itself scroll sideways, independent of the rest of the
+ * page, if its content ever needs more width than even a widened
+ * .dc-pressure-group has to give (a narrow phone screen, or a future
+ * extra column) - see this element's own creation comment in
+ * ensurePressureTable() (dashboard.js) for why that's the right
+ * fallback instead of squeezing columns down further or clipping. */
+.dc-pressure-table-scroll {
+  overflow-x: auto;
 }
 
 /* Scan Bus button (see mountPressureToolbarButton() in dashboard.js) -
@@ -628,6 +650,38 @@ body {
 
 .dc-pressure-toolbar .dc-btn.dc-btn-compact {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Small spinning ring, shown next to the Scan Bus label while a scan is
+ * running (syncScanButtonBusyState() in dashboard.js) - `currentColor`
+ * so it always matches the button's own (already theme-aware) text
+ * color, no separate color token needed. The [hidden] rule is required,
+ * not redundant with the browser default - .dc-spinner's own
+ * `display: inline-block` below has equal specificity to the UA
+ * stylesheet's `[hidden] { display: none }` and, being an author rule,
+ * would otherwise win and silently defeat `hidden`. */
+.dc-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-left: 8px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: dc-spin 0.7s linear infinite;
+}
+
+.dc-spinner[hidden] {
+  display: none;
+}
+
+@keyframes dc-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .dc-pressure-table {
@@ -877,14 +931,20 @@ body {
   display: inline-flex;
 }
 
-/* An editable Name/Address input still looks like a plain field while
- * read-only (same background/border as always) but isn't - readOnly
- * blocks typing without greying it out like :disabled would, which would
- * make an already-registered row look broken/unset at a glance. The
- * accent border on focus-while-editing (input:focus below) is the only
- * visual difference, on top of the pencil/save/cancel swap itself. */
-.dc-pressure-table input:read-only {
+/* Whether a row is locked or unlocked needs to be obvious at a glance,
+ * not just inferable from which two icons happen to be showing - a
+ * dimmed, inert-looking Name/Address (disabled, not just readOnly - a
+ * disabled input can't even be clicked into, closing off the field
+ * entirely until the pencil is actually pressed, confirmed necessary on
+ * real hardware, 2026-08-13) plus a highlighted row background together
+ * make view vs. edit unambiguous. */
+.dc-pressure-table input:disabled {
+  opacity: 0.6;
   cursor: default;
+}
+
+.dc-pressure-table tbody tr.dc-pressure-row-editing td {
+  background: var(--dc-accent-dim);
 }
 
 .dc-pressure-table td.dc-pressure-action .dc-btn.dc-btn-compact {

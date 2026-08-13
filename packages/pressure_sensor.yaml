@@ -57,6 +57,17 @@
 #                        one shared constant. See the Pressure sensor's
 #                        own comment below for why.
 
+globals:
+  # How many *consecutive* clean (non-collision) polls this slot has seen
+  # in a row - see the Pressure sensor's own lambda below for why
+  # clearing "Collision" needs more than just the latest poll's result.
+  # Not persisted (restore_value: false) - a reboot has no memory of an
+  # in-progress streak anyway, starting over at 0 is exactly correct.
+  - id: ${id_prefix}_collision_clean_streak
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
 sensor:
   # The actual reading, shown on the Home page once registered - see
   # dashboard.js. disabled_by_default here (unlike the water meters' own
@@ -108,24 +119,38 @@ sensor:
       if (address == 0) return {};  // unregistered slot - nothing to poll
       float value;
       bool collision = false;
-      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision)) {
-        id(${id_prefix}_online).publish_state(true);
-        // A clean read proves nothing else is colliding with this
-        // address *right now* - clears any collision flagged by an
-        // earlier poll or a past Scan Bus press, same reasoning as the
-        // add/remove below.
-        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
-        return value;
-      } else {
-        id(${id_prefix}_online).publish_state(false);
-        // Keeps "Scan Collisions" live between explicit Scan Bus
-        // presses - see set_scan_collision_address()'s own comment in
-        // include/rs485_modbus.h for why this matters (a collision
-        // that starts after the last scan otherwise only ever showed
-        // as this slot flickering Lost/OK with no explanation).
-        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, collision);
-        return NAN;
+      bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
+      id(${id_prefix}_online).publish_state(ok);
+      if (collision) {
+        // Immediate and decisive, no debounce needed on the way *up* - a
+        // garbled reply is real, right now. Resets the clean streak so
+        // any earlier progress toward clearing starts over.
+        id(${id_prefix}_collision_clean_streak) = 0;
+        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, true);
+      } else if (ok) {
+        // A single clean read is *not* proof the collision is over: on a
+        // shared address, RS485 bus arbitration means any given poll can
+        // land a clean single-device reply purely because the *other*
+        // device didn't happen to answer this exact time, even while it's
+        // still there. Clearing on just one clean poll produced a real,
+        // confirmed symptom - the badge briefly, falsely flashing back to
+        // "OK" for a poll or two before flipping back to Collision, which
+        // is worse than useless since a colliding address is never
+        // actually "OK". Require two clean polls in a row before
+        // actually clearing it; keep it flagged in the meantime, without
+        // ever latching permanently (a poll's own ordinary CRC failure
+        // above still notices as soon as the collision resumes).
+        id(${id_prefix}_collision_clean_streak)++;
+        if (id(${id_prefix}_collision_clean_streak) >= 2) {
+          rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
+        }
       }
+      // A plain timeout (ok == false, collision == false) is inconclusive
+      // either way - deliberately left alone: doesn't reset the clean
+      // streak (a stray timeout partway through recovery shouldn't have
+      // to restart the count from zero) and doesn't touch the Collision
+      // flag either (no evidence either way this poll).
+      return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 10
