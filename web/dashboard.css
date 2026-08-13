@@ -607,7 +607,10 @@ body {
  * below for the Status pill each renders. */
 
 .dc-pressure-group {
-  max-width: 480px;
+  /* Was 480px - every other Service card (.dc-service-group) uses
+     420px, and this one visibly sat wider than its siblings because of
+     the mismatch, confirmed on real hardware, 2026-08-13. */
+  max-width: 420px;
 }
 
 /* Scan Bus button (see mountPressureToolbarButton() in dashboard.js) -

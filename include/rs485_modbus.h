@@ -251,12 +251,10 @@ inline bool write_single_register(UARTComponent *bus, uint8_t address, uint16_t 
 // Cheapest possible "is anything at this address" probe - reads just
 // H:0 (1 register). Used only by scan_bus() below - the live per-slot
 // pressure poll (pressure_sensor.yaml) calls read_pressure_bar()
-// directly instead, it doesn't need this three-way distinction (an
-// already-registered slot's own live status is a plain online/offline
-// binary_sensor, not the OK/collision/nothing triage a bus-wide scan
-// needs - see REQUIREMENTS.md's "Ütközés kimutatása" for why extending
-// that to continuous polling too is a plausible future idea, not done
-// here).
+// directly instead, but reads the same underlying any_reply signal
+// itself (see that function's own `collision` parameter) to feed the
+// same three-way distinction into continuous polling too, not just a
+// one-shot bus scan.
 enum class ProbeResult : uint8_t { NO_RESPONSE, COLLISION, FOUND };
 
 inline ProbeResult probe(UARTComponent *bus, uint8_t address, uint32_t timeout_ms = 25) {
@@ -264,6 +262,35 @@ inline ProbeResult probe(UARTComponent *bus, uint8_t address, uint32_t timeout_m
   bool any_reply = false;
   if (read_holding_registers(bus, address, 0, 1, tmp, timeout_ms, &any_reply)) return ProbeResult::FOUND;
   return any_reply ? ProbeResult::COLLISION : ProbeResult::NO_RESPONSE;
+}
+
+// --- Address-CSV helpers -------------------------------------------------
+// Shared by update_scan_result_address()/set_scan_collision_address()
+// below - both read-modify-write a "Scan Results"/"Scan Collisions"-
+// shaped text_sensor (comma-separated decimal addresses, e.g. "1,4,9").
+
+inline std::vector<uint8_t> parse_address_csv(const std::string &csv) {
+  std::vector<uint8_t> addresses;
+  size_t start = 0;
+  while (start <= csv.size()) {
+    size_t comma = csv.find(',', start);
+    std::string token = csv.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+    int parsed = atoi(token.c_str());
+    if (parsed > 0 && parsed <= 247) addresses.push_back(static_cast<uint8_t>(parsed));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return addresses;
+}
+
+inline std::string join_address_csv(std::vector<uint8_t> addresses) {
+  std::sort(addresses.begin(), addresses.end());
+  std::string csv;
+  for (size_t i = 0; i < addresses.size(); i++) {
+    if (i > 0) csv += ",";
+    csv += std::to_string(addresses[i]);
+  }
+  return csv;
 }
 
 // Sweeps [min_address, max_address] with a short per-address timeout.
@@ -327,19 +354,33 @@ inline ScanResult scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_
 // qdw90a-modbus-referencia.md's "H:4 vs. H:22-H:23" section for why this
 // is used instead of H:4 (needs separately reading+applying H:3's
 // decimal-places scaling).
-inline bool read_pressure_bar(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200) {
+//
+// `collision`, if given, is set true when this failure looks like two+
+// devices sharing this address (a reply arrived but didn't survive its
+// own CRC check) rather than plain silence - same signal probe()/
+// scan_bus() already use, now also available to a registered slot's own
+// continuous poll. Added after real-hardware testing, 2026-08-13, showed
+// this mattered in practice: adding a second device at an address
+// already polled by a registered slot just made that slot flicker
+// Lost/OK with no indication *why*, until an explicit Scan Bus press
+// happened to catch it - see pressure_sensor.yaml's own use of this.
+inline bool read_pressure_bar(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200,
+                               bool *collision = nullptr) {
   std::vector<uint16_t> regs;
-  if (!read_holding_registers(bus, address, 22, 2, regs, timeout_ms)) {
-    // DEBUG, not VV: this is a registered slot's own 5s poll failing -
-    // exactly the "Lost" diagnostic signal (see pressure_sensor.yaml's
-    // Online binary_sensor) - worth seeing without turning on the full
-    // wire-level trace. A successful read stays silent here (at most
-    // one line per slot per 5s if it were logged, and the value's
-    // already visible as the Pressure sensor's own state) - only the
-    // failures are the actionable/unusual case.
-    ESP_LOGD(TAG, "address %d: pressure read failed", address);
+  bool any_reply = false;
+  if (!read_holding_registers(bus, address, 22, 2, regs, timeout_ms, &any_reply)) {
+    // DEBUG, not VV: this is a registered slot's own poll failing -
+    // exactly the "Lost"/"Collision?" diagnostic signal (see
+    // pressure_sensor.yaml's Online binary_sensor) - worth seeing
+    // without turning on the full wire-level trace. A successful read
+    // stays silent here (the value's already visible as the Pressure
+    // sensor's own state) - only the failures are the actionable/
+    // unusual case.
+    ESP_LOGD(TAG, "address %d: pressure read failed%s", address, any_reply ? " (possible collision)" : "");
+    if (collision) *collision = any_reply;
     return false;
   }
+  if (collision) *collision = false;
   uint32_t bits = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
   float value;
   std::memcpy(&value, &bits, sizeof(value));
@@ -388,28 +429,39 @@ inline bool change_address_and_save(UARTComponent *bus, uint8_t old_address, uin
 // wrong) on real hardware, 2026-08-13.
 inline void update_scan_result_address(esphome::text_sensor::TextSensor *scan_results, uint8_t old_address,
                                         uint8_t new_address) {
-  std::vector<uint8_t> addresses;
-  const std::string &current = scan_results->state;
-  size_t start = 0;
-  while (start <= current.size()) {
-    size_t comma = current.find(',', start);
-    std::string token = current.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-    int parsed = atoi(token.c_str());
-    if (parsed > 0 && parsed <= 247) addresses.push_back(static_cast<uint8_t>(parsed));
-    if (comma == std::string::npos) break;
-    start = comma + 1;
-  }
+  auto addresses = parse_address_csv(scan_results->state);
   addresses.erase(std::remove(addresses.begin(), addresses.end(), old_address), addresses.end());
   if (std::find(addresses.begin(), addresses.end(), new_address) == addresses.end()) {
     addresses.push_back(new_address);
   }
-  std::sort(addresses.begin(), addresses.end());
-  std::string csv;
-  for (size_t i = 0; i < addresses.size(); i++) {
-    if (i > 0) csv += ",";
-    csv += std::to_string(addresses[i]);
+  scan_results->publish_state(join_address_csv(addresses));
+}
+
+// Keeps a scan_bus()-produced "Scan Collisions" CSV text_sensor live
+// between explicit Scan Bus presses, not just immediately after one -
+// called from a registered slot's own continuous poll (see
+// pressure_sensor.yaml) every time it succeeds or fails, adding/removing
+// just that one address. Without this, a collision that started *after*
+// the last scan (e.g. a second device added at an already-registered
+// slot's address) only ever showed up as that slot flickering Lost/OK
+// with no explanation, until whoever noticed happened to press Scan Bus
+// again - confirmed confusing in exactly that sequence on real hardware,
+// 2026-08-13. Only ever touches `address`, never any other entry - a
+// concurrent scan_bus() run (or another slot's own poll) rewriting the
+// same text_sensor around the same time can't lose this address's own
+// state, since ESPHome runs everything single-threaded on the main loop
+// (no two of these calls are ever actually simultaneous).
+inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_collisions, uint8_t address,
+                                        bool present) {
+  auto addresses = parse_address_csv(scan_collisions->state);
+  bool already_present = std::find(addresses.begin(), addresses.end(), address) != addresses.end();
+  if (present == already_present) return;  // no change - skip the publish_state()/SSE update entirely
+  if (present) {
+    addresses.push_back(address);
+  } else {
+    addresses.erase(std::remove(addresses.begin(), addresses.end(), address), addresses.end());
   }
-  scan_results->publish_state(csv);
+  scan_collisions->publish_state(join_address_csv(addresses));
 }
 
 }  // namespace rs485_modbus
