@@ -207,8 +207,14 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
 ### Diagnosztika
 
 - Kommunikációs állapot méterenként (Modbus timeout/hiba) – egy busz-osztott szenzor hibája **nem befolyásolhatja** a többi szenzor működését (a busz maga megosztott, de a hibakezelés méterenként független legyen).
+- **"Communication OK" – konkrét terv, 2026-08-13**: az ESPHome saját `modbus_controller` komponense (telepített csomag forrása alapján ellenőrizve) **már készen tartalmazza ennek az alapját**, nem kell saját watchdogot építeni hozzá (szemben a vízmérők nulla-átfolyás timeout-jával, ami saját `interval:`-alapú logika volt, mert arra nincs beépített ESPHome-mechanizmus):
+  - `module_offline_` állapot eszközönként, `max_cmd_retries` (alapértelmezett `4`) próbálkozás után vált offline-ra – nem egyetlen kimaradt válaszra, védve az átmeneti zajtól.
+  - `send_wait_time` (busz-szintű, alapértelmezett `250ms`) – válaszvárási idő próbánként.
+  - `on_online:` / `on_offline:` natív automatizáció-triggerek – ezekre köthető egy slotonkénti "Communication OK" `binary_sensor`, ugyanolyan mintával, mint a "Commissioned" jelző.
+  - **Végső "OK/ERR" logika**: kommunikáció rendben ÉS az érték a `0–10 bar` (kis toleranciával) tartományban van – a kommunikációs és az érték-tartomány elleni védelem egy közös állapotba olvasztva (analóg a 4–20mA hurkos érzékelők "4–20mA=OK, 0mA=hiba" egyszerűségével).
 - Utolsó sikeres olvasás időbélyege / "elavult" (stale) jelzés, ha egy adott szenzor tartósan nem válaszol – hasonló szerepű, mint a vízmérők Nulla-átfolyás timeout-ja, csak itt kommunikációs hibát, nem mérési állapotot jelez.
 - **Javasolt védelem**: a fizikai szenzor kalibrált tartományán (`0–10 bar`, kis toleranciával) kívül eső érték inkább szenzor-/kommunikációs hibaként kezelendő, nem valós mérésként (hasonló elv, mint a nulla-átfolyás timeout: egy nyilvánvalóan érvénytelen érték explicit jelzése jobb, mint csendben megjeleníteni).
+- **Gyors, teljes busz-scan diagnosztikai eszköz (tervezve, nincs implementálva)**: `1–32` cím végigpróbálása rövid (pl. `~50ms`/cím), egyedi timeout-tal – ez **nem** a `modbus_controller` normál pollozási útja (az stabil, kevés ismert eszköz folyamatos monitorozására hangolt, nem gyors felderítésre), hanem egy külön, a nyers `modbus:` buszt közvetlenül használó rutin igényel (pl. `script:` + kis `delay:`-ek, hogy ne blokkoljon). Tartomány `1–32`-re korlátozva (nem a teljes `1–247` Modbus-tartomány) – ez pontosan a hub dokumentált busz-eszközszám-korlátja, ennél többet a rendszer úgysem támogat, és sokkal gyorsabb. **Korlátja**: jelzi az eltérést (pl. "3 eszköz van bekötve, csak 2 cím válaszol"), de **nem tudja megkülönböztetni** egy halott eszközt egy cím-ütközéstől (mindkettő ugyanúgy "nincs válasz"-ként jelenik meg) – riasztás, nem pontos diagnózis, ld. fentebb az "Ütközés kimutatása" pontot.
 
 ### Perzisztencia
 
