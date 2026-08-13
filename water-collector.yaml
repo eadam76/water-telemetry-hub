@@ -117,7 +117,7 @@ preferences:
 # claim the same address+name at once (confirmed on real hardware,
 # 2026-08-13, on a fresh board with all 8 slots free).
 globals:
-  - id: pressure_add_claimed
+  - id: modbus_add_claimed
     type: bool
     restore_value: false
     initial_value: "false"
@@ -672,7 +672,7 @@ button:
   # before pressing this, so from the user's perspective it looks like a
   # per-row "Add" button, even though underneath it's one shared trigger.
   #
-  # Resets pressure_add_claimed to false first, so exactly one of the 8
+  # Resets modbus_add_claimed to false first, so exactly one of the 8
   # try_register calls below claims the slot - see that global's own
   # comment for why this is needed at all (a bug, found on real hardware,
   # 2026-08-13: each try_register only ever checked *its own* slot's
@@ -690,7 +690,7 @@ button:
       sorting_weight: 20
     on_press:
       - globals.set:
-          id: pressure_add_claimed
+          id: modbus_add_claimed
           value: "false"
       - script.execute:
           id: slot1_try_register

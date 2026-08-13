@@ -226,7 +226,7 @@ script:
   # per-discovered-address "Add" buttons, once per slot in sequence -
   # claims the given address+name into this slot only if BOTH this slot
   # is still free AND no other slot has already claimed it in this same
-  # Add (the global `pressure_add_claimed`, reset to false right before
+  # Add (the global `modbus_add_claimed`, reset to false right before
   # this sequence starts - see that global's own comment in
   # water-collector.yaml). Checking only "am I free?" is NOT enough on
   # its own - confirmed on real hardware, 2026-08-13: with all 8 slots
@@ -250,7 +250,7 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(pressure_add_claimed);'
+            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(modbus_add_claimed);'
           then:
             - text.set:
                 id: ${id_prefix}_display_name
@@ -259,5 +259,5 @@ script:
                 id: ${id_prefix}_modbus_address
                 value: !lambda 'return address;'
             - globals.set:
-                id: pressure_add_claimed
+                id: modbus_add_claimed
                 value: "true"
