@@ -161,12 +161,12 @@ web_server:
     - id: sorting_group_meter2
       name: "Water Meter 2"
       sorting_weight: 20
-    # Pressure sensors: one umbrella group (houses only the top-level "Add
-    # Pressure Sensor" name field + button) plus 4 fixed per-slot groups
-    # (packages/pressure_sensor.yaml) - see REQUIREMENTS.md "Architekturális
-    # megfontolás: dinamikus nyomásmérő-hozzáadás" for why 4 (1:1 with the
-    # E810-R14 hub's 4 physical ports, no spare slots). All of this is
-    # intercepted client-side into one compact table (web/dashboard.js) -
+    # Pressure sensors: one umbrella group (houses the bus-scan + generic
+    # add controls) plus 8 fixed per-slot groups (packages/pressure_sensor.yaml) -
+    # see REQUIREMENTS.md "Architekturális megfontolás v3" (2026-08-13) for
+    # why 8 (cheap headroom vs. the hub's real 32-node bus capacity, not
+    # tied 1:1 to its 4 physical ports anymore). All of this is intercepted
+    # client-side into one compact, scan-joined table (web/dashboard.js) -
     # these sorting_group names/weights only matter as internal grouping
     # keys, never shown as literal labels (see pressure_sensor.yaml's own
     # header on why slot numbering is otherwise meaningless).
@@ -185,6 +185,18 @@ web_server:
     - id: sorting_group_pressure4
       name: "Pressure Sensor 4"
       sorting_weight: 34
+    - id: sorting_group_pressure5
+      name: "Pressure Sensor 5"
+      sorting_weight: 35
+    - id: sorting_group_pressure6
+      name: "Pressure Sensor 6"
+      sorting_weight: 36
+    - id: sorting_group_pressure7
+      name: "Pressure Sensor 7"
+      sorting_weight: 37
+    - id: sorting_group_pressure8
+      name: "Pressure Sensor 8"
+      sorting_weight: 38
     - id: sorting_group_network
       name: "Network"
       sorting_weight: 80
@@ -382,6 +394,22 @@ sensor:
         sorting_weight: 30
 
 text_sensor:
+  # Latest bus-scan result - a comma-separated list of Modbus addresses
+  # that answered (e.g. "1,4,9"), published by "Pressure Sensors Scan Bus
+  # (Mock)" above. Read-only/diagnostic: the dashboard's own JS parses
+  # this to join against the 8 slots' registered addresses - see
+  # web/dashboard.js's pressure-table section. Never itself persisted -
+  # a scan result is only ever as fresh as the last scan.
+  - platform: template
+    id: pressure_scan_results
+    name: "Pressure Sensors Scan Results"
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3
+
   - platform: wifi_info
     ip_address:
       name: "IP Address"
@@ -489,19 +517,41 @@ button:
       sorting_group_id: sorting_group_system
       sorting_weight: 92
 
-  # Commissions the first still-free pressure sensor slot (out of the 8
-  # in packages/pressure_sensor.yaml) with the name typed into "Pressure
-  # Sensors New Sensor Name" below - see that field's own comment, and
-  # each slot's own try_commission script for why trying all 8 in a fixed
+  # Bus-scan (v3, MOCK for now - see file-level status note in
+  # packages/pressure_sensor.yaml). Real Modbus scanning needs a UART/RS485
+  # bus, which the current test board (esp32dev) doesn't have - this
+  # publishes whatever CSV address list is typed into "Pressure Sensors
+  # Mock Scan Addresses (Test)" as the scan result, so the *dashboard's*
+  # scan-joined table (web/dashboard.js) can be built and tried out now.
+  # DELETE this button + the mock scan input text entity once a real
+  # bus-scan routine (over an actual UART/modbus:) replaces it - the
+  # "Scan Results" text_sensor it publishes to should stay, that part of
+  # the interface doesn't change.
+  - platform: template
+    id: pressure_scan
+    name: "Pressure Sensors Scan Bus (Mock)"
+    icon: "mdi:radar"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 5
+    on_press:
+      - text_sensor.template.publish:
+          id: pressure_scan_results
+          state: !lambda 'return id(pressure_mock_scan_input).state;'
+
+  # Registers the first still-free pressure sensor slot (out of the 8 in
+  # packages/pressure_sensor.yaml) with the address+name set in "Pressure
+  # Sensors Add Target Address"/"...Add Name" below - the dashboard sets
+  # both of those (from a scan-discovered "New device" row) immediately
+  # before pressing this, so from the user's perspective it looks like a
+  # per-row "Add" button, even though underneath it's one shared trigger -
+  # see the per-slot try_register script for why trying all 8 in a fixed
   # sequence (rather than picking one directly) is safe and correct: the
-  # first slot whose ${idN}_commissioned is still false is the one that
-  # actually claims the name, every other call in this list is a no-op.
-  # Slot order itself is never shown anywhere - see pressure_sensor.yaml's
-  # header.
-  #
-  # On the dashboard (web/dashboard.js) this and the name field below are
-  # rendered together as the pressure table's own "+" row, not as two
-  # separate Service-page fields - see ensurePressureTable() there.
+  # first slot whose address is still 0 is the one that actually claims
+  # it, every other call in this list is a no-op. Slot order itself is
+  # never shown anywhere - see pressure_sensor.yaml's header.
   - platform: template
     id: pressure_add
     name: "Pressure Sensors Add"
@@ -513,30 +563,72 @@ button:
       sorting_weight: 20
     on_press:
       - script.execute:
-          id: slot1_try_commission
-          name: !lambda 'return id(pressure_new_name).state;'
+          id: slot1_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
       - script.execute:
-          id: slot2_try_commission
-          name: !lambda 'return id(pressure_new_name).state;'
+          id: slot2_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
       - script.execute:
-          id: slot3_try_commission
-          name: !lambda 'return id(pressure_new_name).state;'
+          id: slot3_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
       - script.execute:
-          id: slot4_try_commission
-          name: !lambda 'return id(pressure_new_name).state;'
+          id: slot4_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
+      - script.execute:
+          id: slot5_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
+      - script.execute:
+          id: slot6_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
+      - script.execute:
+          id: slot7_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
+      - script.execute:
+          id: slot8_try_register
+          name: !lambda 'return id(pressure_add_name).state;'
+          address: !lambda 'return (int) id(pressure_add_address).state;'
       - text.set:
-          id: pressure_new_name
+          id: pressure_add_name
           value: ""
+      - number.set:
+          id: pressure_add_address
+          value: 0
 
 text:
-  # The name for the *next* pressure sensor to be commissioned - read by
-  # "Pressure Sensors Add" above when pressed, then cleared back to empty
-  # so the next Add starts fresh. Not itself persisted (restore_value
-  # unset/false - default): this is a transient scratch field, not a
-  # setting, nothing meaningful to restore after a restart.
+  # TEMPORARY test scaffold, see the Scan Bus button above - a comma-
+  # separated list of addresses to pretend the bus scan found, e.g.
+  # "1,4,9". Delete together with the mock Scan Bus button once real
+  # Modbus scanning exists.
   - platform: template
-    id: pressure_new_name
-    name: "Pressure Sensors New Sensor Name"
+    id: pressure_mock_scan_input
+    name: "Pressure Sensors Mock Scan Addresses (Test)"
+    icon: "mdi:test-tube"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    min_length: 0
+    max_length: 64
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 4
+
+  # Set by the dashboard (not typed by hand in normal use) immediately
+  # before pressing "Pressure Sensors Add" - see that button's own
+  # comment. Not persisted (restore_value unset/false): a transient
+  # scratch field, cleared back to empty right after Add fires.
+  - platform: template
+    id: pressure_add_name
+    name: "Pressure Sensors Add Name"
     icon: "mdi:form-textbox"
     mode: text
     optimistic: true
@@ -547,6 +639,27 @@ text:
     web_server:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 10
+
+number:
+  # Set by the dashboard immediately before pressing "Pressure Sensors
+  # Add" - see that button's own comment. Not persisted: transient,
+  # cleared back to 0 right after Add fires.
+  - platform: template
+    id: pressure_add_address
+    name: "Pressure Sensors Add Target Address"
+    icon: "mdi:identifier"
+    mode: box
+    min_value: 0
+    max_value: 247
+    step: 1
+    optimistic: true
+    restore_value: false
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 15
 
 packages:
   # friendly_name is deliberately generic ("Water Meter 1/2", not "Main"/
@@ -582,10 +695,11 @@ packages:
       zero_flow_timeout_default: "60"
       sorting_group_id: sorting_group_meter2
 
-  # 4 fixed pressure sensor slots (1:1 with the E810-R14 hub's 4 physical
-  # ports) - see packages/pressure_sensor.yaml's own header for the
-  # id_prefix/friendly_name rename caveat and the current (mock-data, no
-  # real Modbus yet) status.
+  # 8 fixed pressure sensor slots (cheap headroom vs. the hub's real
+  # 32-node bus capacity - see REQUIREMENTS.md "Architekturális
+  # megfontolás v3", 2026-08-13) - see packages/pressure_sensor.yaml's own
+  # header for the id_prefix/friendly_name rename caveat and the current
+  # (mock-data, no real Modbus yet) status.
   pressure_slot1: !include
     file: packages/pressure_sensor.yaml
     vars:
@@ -613,3 +727,31 @@ packages:
       id_prefix: slot4
       friendly_name: "Pressure Sensor 4"
       sorting_group_id: sorting_group_pressure4
+
+  pressure_slot5: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot5
+      friendly_name: "Pressure Sensor 5"
+      sorting_group_id: sorting_group_pressure5
+
+  pressure_slot6: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot6
+      friendly_name: "Pressure Sensor 6"
+      sorting_group_id: sorting_group_pressure6
+
+  pressure_slot7: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot7
+      friendly_name: "Pressure Sensor 7"
+      sorting_group_id: sorting_group_pressure7
+
+  pressure_slot8: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot8
+      friendly_name: "Pressure Sensor 8"
+      sorting_group_id: sorting_group_pressure8

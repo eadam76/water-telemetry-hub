@@ -600,11 +600,55 @@ body {
 
 /* --- Pressure sensor table (Service page) - see dashboard.js's own
  * "Pressure sensor table" section for why this is a compact table
- * (Name | Address) instead of a .dc-fields block per slot like every
- * other Service section above. */
+ * (Name | Address | Status) instead of a .dc-fields block per slot like
+ * every other Service section above. A row is either "registered" (a
+ * real slot, editable Name/Address) or "new" (a scanned-but-unregistered
+ * address, read-only Address + a per-row Add) - see .dc-pressure-badge-*
+ * below for the Status pill each renders. */
 
 .dc-pressure-group {
   max-width: 480px;
+}
+
+/* Scan Bus (Mock) + its temporary mock-address input (see
+ * mountPressureToolbarButton()/mountPressureToolbarText() in
+ * dashboard.js) - delete the field styling once real scanning replaces
+ * the mock input; the button itself stays. */
+.dc-pressure-toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dc-pressure-toolbar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 160px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--dc-text-muted);
+}
+
+.dc-pressure-toolbar-field input {
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 7px 9px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input above */
+  min-width: 0;
+}
+
+.dc-pressure-toolbar-field input:focus {
+  outline: none;
+  border-color: var(--dc-accent);
+}
+
+.dc-pressure-toolbar .dc-btn.dc-btn-compact {
+  flex: 0 0 auto;
 }
 
 .dc-pressure-table {
@@ -625,6 +669,10 @@ body {
 
 .dc-pressure-table thead th:nth-child(2) {
   text-align: right;
+}
+
+.dc-pressure-table thead th:nth-child(3) {
+  text-align: center;
 }
 
 .dc-pressure-table tbody tr {
@@ -669,7 +717,9 @@ body {
 }
 
 .dc-pressure-table td.dc-pressure-addr {
-  width: 6em;
+  width: 5.5em;
+  text-align: right;
+  color: var(--dc-text);
 }
 
 .dc-pressure-table input[type="number"] {
@@ -681,9 +731,46 @@ body {
   border-color: var(--dc-accent);
 }
 
-.dc-pressure-table td.dc-pressure-del {
+.dc-pressure-table td.dc-pressure-status {
   width: 1%;
   white-space: nowrap;
+  text-align: center;
+}
+
+.dc-pressure-table td.dc-pressure-action {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Status pill - OK (registered, seen in the latest scan), Lost
+ * (registered, NOT seen - the real diagnostic signal, see
+ * REQUIREMENTS.md), New (seen, not yet registered - has its own Add
+ * button instead of a Delete one). */
+.dc-pressure-badge {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.dc-pressure-badge-ok {
+  background: var(--dc-accent-dim);
+  color: var(--dc-accent);
+}
+
+.dc-pressure-badge-lost {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--dc-warning);
+}
+
+.dc-pressure-badge-new {
+  background: var(--dc-surface-2);
+  color: var(--dc-text-muted);
+  border: 1px dashed var(--dc-border);
 }
 
 .dc-pressure-del-btn {
@@ -700,49 +787,21 @@ body {
   color: var(--dc-danger);
 }
 
-.dc-pressure-add-row {
-  display: flex;
-  justify-content: center;
-  margin-top: 10px;
+.dc-pressure-table td.dc-pressure-action .dc-btn.dc-btn-compact {
+  padding: 6px 12px;
+  font-size: 13px;
 }
 
-.dc-pressure-add-btn {
-  background: var(--dc-accent-dim);
-  color: var(--dc-accent);
-  border: 1px solid var(--dc-accent);
-  border-radius: var(--dc-radius-sm);
-  width: 40px;
-  height: 40px;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
+.dc-pressure-table td.dc-pressure-action .dc-btn.dc-btn-compact:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.dc-pressure-add-btn:hover {
-  background: var(--dc-accent);
-  color: #06201d;
-}
-
-.dc-pressure-add-form {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-}
-
-.dc-pressure-add-form input[type="text"] {
-  flex: 1 1 auto;
-  background: var(--dc-surface-2);
-  border: 1px solid var(--dc-border);
-  color: var(--dc-text);
-  border-radius: var(--dc-radius-sm);
-  padding: 9px 10px;
-  font-size: 16px;
-  min-width: 0;
-}
-
-.dc-pressure-add-form input[type="text"]:focus {
-  outline: none;
-  border-color: var(--dc-accent);
+.dc-pressure-empty td {
+  text-align: center;
+  color: var(--dc-text-muted);
+  padding: 14px 8px;
+  font-size: 13px;
 }
 
 /* --- Log page --- */
