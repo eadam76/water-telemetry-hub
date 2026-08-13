@@ -14,7 +14,16 @@ substitutions:
   friendly_device_name: "Water Data Collector"
 
   # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
-  board_type: esp32-s3-devkitc-1
+  # esp32-s3-devkitc1-n16r8: the actual chip on this board is an
+  # ESP32-S3R8 (per the manufacturer's own PDF, docs/hardver/
+  # esp32-s3-rs485-can-board.pdf) - "R8" = 8 MB Octal PSRAM - plus 16 MB
+  # flash. The plain `esp32-s3-devkitc-1` preset (N8, no PSRAM) would
+  # still boot fine (it just under-declares what's physically there,
+  # always safe - the opposite, over-declaring, would try to address
+  # memory that doesn't exist), but wastes half the flash and all of the
+  # PSRAM for no reason - this preset matches the real hardware exactly
+  # (confirmed against the installed esphome package's own boards.py).
+  board_type: esp32-s3-devkitc1-n16r8
   meter1_pulse_pin: GPIO1
   meter2_pulse_pin: GPIO2
 
