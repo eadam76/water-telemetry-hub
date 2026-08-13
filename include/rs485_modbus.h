@@ -23,15 +23,26 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
+#include "esphome/core/alloc_helpers.h"
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/log.h"
 #include "esphome/components/uart/uart.h"
 
 namespace rs485_modbus {
 
 using esphome::uart::UARTComponent;
+
+// Everything in this file logs under this one tag - "Debug Log: Modbus"
+// (water-collector.yaml's `switch:` section) flips it to VERY_VERBOSE at
+// runtime via `logger.set_level`, off by default (see the `logger:`
+// block's own comment for why the compile-time ceiling has to be raised
+// separately from the runtime default for that switch to have anything
+// to turn on).
+static const char *const TAG = "modbus";
 
 // --- CRC16 (Modbus RTU, poly 0xA001, init 0xFFFF) --------------------
 // Cross-checked against 4 worked examples straight from the QDW90A
@@ -114,14 +125,21 @@ inline std::vector<uint8_t> transact(UARTComponent *bus, const std::vector<uint8
   std::vector<uint8_t> frame = request;
   frame.push_back(static_cast<uint8_t>(crc & 0xFF));         // CRC low byte first (Modbus RTU wire order)
   frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));  // CRC high byte
+  ESP_LOGVV(TAG, "-> %s", esphome::format_hex_pretty(frame).c_str());
   bus->write_array(frame);
 
   // The shortest possible reply (an exception) is 5 bytes - wait for at
   // least the first 3 (address, function, byte-count-or-exception-code)
   // before deciding how much more to read.
-  if (!wait_for_bytes(bus, 3, timeout_ms)) return {};
+  if (!wait_for_bytes(bus, 3, timeout_ms)) {
+    ESP_LOGVV(TAG, "<- address %d: no reply within %ums", request[0], timeout_ms);
+    return {};
+  }
   uint8_t head[3];
-  if (!bus->read_array(head, 3)) return {};
+  if (!bus->read_array(head, 3)) {
+    ESP_LOGVV(TAG, "<- address %d: UART read error on the header bytes", request[0]);
+    return {};
+  }
 
   bool is_exception = (head[1] & 0x80) != 0;
   size_t total_len = is_exception ? 5 : expected_len;
@@ -130,15 +148,32 @@ inline std::vector<uint8_t> transact(UARTComponent *bus, const std::vector<uint8
   std::vector<uint8_t> reply(head, head + 3);
   size_t remaining = total_len - 3;
   if (remaining > 0) {
-    if (!wait_for_bytes(bus, remaining, timeout_ms)) return {};
+    if (!wait_for_bytes(bus, remaining, timeout_ms)) {
+      ESP_LOGVV(TAG, "<- address %d: reply started (%s...) but the rest never arrived", request[0],
+                esphome::format_hex_pretty(reply).c_str());
+      return {};
+    }
     reply.resize(total_len);
-    if (!bus->read_array(reply.data() + 3, remaining)) return {};
+    if (!bus->read_array(reply.data() + 3, remaining)) {
+      ESP_LOGVV(TAG, "<- address %d: UART read error on the reply body", request[0]);
+      return {};
+    }
   }
 
   uint16_t got_crc = static_cast<uint16_t>(reply[reply.size() - 2] | (reply[reply.size() - 1] << 8));
   uint16_t want_crc = crc16(reply.data(), reply.size() - 2);
-  if (got_crc != want_crc) return {};
-  if (reply[0] != request[0]) return {};  // reply from a different address - bus noise/collision, ignore
+  if (got_crc != want_crc) {
+    ESP_LOGVV(TAG, "<- %s: CRC mismatch (got %04X, wanted %04X) - bus noise or a collision",
+              esphome::format_hex_pretty(reply).c_str(), got_crc, want_crc);
+    return {};
+  }
+  if (reply[0] != request[0]) {
+    // reply from a different address - bus noise/collision, ignore
+    ESP_LOGVV(TAG, "<- %s: address in reply doesn't match request (asked %d) - ignored",
+              esphome::format_hex_pretty(reply).c_str(), request[0]);
+    return {};
+  }
+  ESP_LOGVV(TAG, "<- %s", esphome::format_hex_pretty(reply).c_str());
   return reply;
 }
 
@@ -214,11 +249,28 @@ inline bool probe(UARTComponent *bus, uint8_t address, uint32_t timeout_ms = 25)
 // repeatedly re-scanning the whole bus.
 inline std::vector<uint8_t> scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_address,
                                       uint32_t per_address_timeout_ms = 25) {
+  ESP_LOGD(TAG, "scan_bus: sweeping addresses %d-%d (~%.1fs total)...", min_address, max_address,
+           (max_address - min_address + 1) * per_address_timeout_ms / 1000.0f);
   std::vector<uint8_t> found;
   for (uint16_t address = min_address; address <= max_address; address++) {
     if (probe(bus, static_cast<uint8_t>(address), per_address_timeout_ms)) {
       found.push_back(static_cast<uint8_t>(address));
     }
+  }
+  if (found.empty()) {
+    ESP_LOGD(TAG, "scan_bus: no devices found");
+  } else {
+    // Decimal, comma-separated (Modbus addresses are conventionally
+    // decimal, e.g. "1,4,9" - matching how the "Scan Results" CSV
+    // itself is built, water-collector.yaml's Scan Bus button) - NOT
+    // format_hex_pretty(), which would print byte *values* in hex and
+    // read as a different, confusing set of numbers here.
+    std::string list;
+    for (size_t i = 0; i < found.size(); i++) {
+      if (i > 0) list += ", ";
+      list += std::to_string(found[i]);
+    }
+    ESP_LOGD(TAG, "scan_bus: found %zu device(s): %s", found.size(), list.c_str());
   }
   return found;
 }
@@ -230,7 +282,17 @@ inline std::vector<uint8_t> scan_bus(UARTComponent *bus, uint8_t min_address, ui
 // decimal-places scaling).
 inline bool read_pressure_bar(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200) {
   std::vector<uint16_t> regs;
-  if (!read_holding_registers(bus, address, 22, 2, regs, timeout_ms)) return false;
+  if (!read_holding_registers(bus, address, 22, 2, regs, timeout_ms)) {
+    // DEBUG, not VV: this is a registered slot's own 5s poll failing -
+    // exactly the "Lost" diagnostic signal (see pressure_sensor.yaml's
+    // Online binary_sensor) - worth seeing without turning on the full
+    // wire-level trace. A successful read stays silent here (at most
+    // one line per slot per 5s if it were logged, and the value's
+    // already visible as the Pressure sensor's own state) - only the
+    // failures are the actionable/unusual case.
+    ESP_LOGD(TAG, "address %d: pressure read failed", address);
+    return false;
+  }
   uint32_t bits = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
   float value;
   std::memcpy(&value, &bits, sizeof(value));

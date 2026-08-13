@@ -107,7 +107,19 @@ external_components:
 preferences:
   flash_write_interval: 60s
 
+# level (compile-time ceiling - anything above it is stripped from the
+# binary entirely, can never be shown no matter what) is raised to
+# VERY_VERBOSE so the include/rs485_modbus.h "modbus" tag's detailed
+# wire-level tracing (raw request/reply hex dumps) actually exists in
+# the firmware; initial_level (the boot-time default, applies to every
+# tag that isn't otherwise overridden) stays at the previous default
+# (DEBUG) so nothing gets noisier by default - the "modbus" tag's own
+# VERY_VERBOSE detail only turns on when "Debug Log: Modbus" (Log page)
+# is switched on, via logger.set_level - see the switch: section below.
 logger:
+  id: logger_id
+  level: VERY_VERBOSE
+  initial_level: DEBUG
 
 api:
   encryption:
@@ -491,6 +503,37 @@ text_sensor:
       web_server:
         sorting_group_id: sorting_group_system
         sorting_weight: 50
+
+switch:
+  # Turns the "modbus" log tag (include/rs485_modbus.h) up to
+  # VERY_VERBOSE - raw request/reply hex dumps for every Modbus
+  # transaction, plus per-scan/per-poll detail - and back down to the
+  # normal DEBUG default. Off by default: at VERY_VERBOSE a full bus
+  # scan alone would log ~250 lines, not something to leave running.
+  # Intercepted by the dashboard's own JS (see the "Log page" section of
+  # web/dashboard.js) and mounted directly into the Log page's toolbar,
+  # not the generic Service list - rendered via the normal fallback
+  # there too if that interception ever doesn't fire (e.g. in Home
+  # Assistant, which has no such special-casing).
+  - platform: template
+    id: debug_log_modbus
+    name: "Debug Log: Modbus"
+    icon: "mdi:bug-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 60
+    turn_on_action:
+      - logger.set_level:
+          level: VERY_VERBOSE
+          tag: "modbus"
+    turn_off_action:
+      - logger.set_level:
+          level: DEBUG
+          tag: "modbus"
 
 button:
   # entity_category: config -> dashboard "Service" page, alongside the

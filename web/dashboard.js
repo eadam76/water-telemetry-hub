@@ -984,6 +984,33 @@
     if (stickToBottom) pre.scrollTop = pre.scrollHeight;
   }
 
+  // "Debug Log: Modbus" (water-collector.yaml) - flips the "modbus" log
+  // tag (include/rs485_modbus.h) up to VERY_VERBOSE via ESPHome's own
+  // logger.set_level action, right from the Log page itself rather than
+  // as a generic Service-page switch - this only ever matters while
+  // actually watching this page for a live communication problem, so
+  // that's where the control belongs. Off by default (see the entity's
+  // own restore_mode: ALWAYS_OFF) - at VERY_VERBOSE a single bus scan
+  // alone logs ~250 lines, not something to leave running.
+  function mountLogDebugToggle(entity) {
+    const toolbar = document.getElementById("dc-log-toolbar");
+    if (!entity.toggleEl) {
+      const wrap = el("label", "dc-log-debug-toggle", `<span>Debug: Modbus</span>`);
+      const toggle = el("button", "dc-toggle", "");
+      toggle.type = "button";
+      toggle.setAttribute("role", "switch");
+      toggle.addEventListener("click", () => {
+        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+      });
+      wrap.appendChild(toggle);
+      toolbar.insertBefore(wrap, document.getElementById("dc-log-clear"));
+      entity.toggleEl = toggle;
+    }
+    const on = entity.value === true;
+    entity.toggleEl.classList.toggle("dc-toggle-on", on);
+    entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
+  }
+
   // --- Shared helpers ------------------------------------------------
 
   // Entity names repeat their sorting_group's name as a prefix (e.g.
@@ -1061,6 +1088,13 @@
     // the "Pressure sensor table" section above for why.
     if (entity.groupName && isPressureGroup(entity.groupName)) {
       renderPressureEntity(entity);
+      return;
+    }
+    // "Debug Log: Modbus" - mounted into the Log page's own toolbar
+    // instead of the generic Service list, see mountLogDebugToggle()'s
+    // own comment for why.
+    if (entity.domain === "switch" && entity.name === "Debug Log: Modbus") {
+      mountLogDebugToggle(entity);
       return;
     }
     const page = pageFor(entity);
