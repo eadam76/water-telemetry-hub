@@ -437,6 +437,24 @@ inline void update_scan_result_address(esphome::text_sensor::TextSensor *scan_re
   scan_results->publish_state(join_address_csv(addresses));
 }
 
+// Forgets one address from a scan_bus()-produced "Scan Results" CSV
+// text_sensor outright - called from a slot's Delete button (see
+// pressure_sensor.yaml). Without this, un-registering a slot left its
+// address sitting in the last scan's stale snapshot, so the dashboard's
+// JOIN immediately re-rendered it as a "New device" row from that old
+// data - looking like the device could never actually be removed from
+// the list - rather than genuinely disappearing until an actual re-scan
+// confirms something still answers there. Distinct from
+// update_scan_result_address() above (that one *replaces* one address
+// with another on a confirmed-successful reprogram; this one just
+// removes, nothing is added back), confirmed real on the dashboard,
+// 2026-08-13.
+inline void remove_scan_result_address(esphome::text_sensor::TextSensor *scan_results, uint8_t address) {
+  auto addresses = parse_address_csv(scan_results->state);
+  addresses.erase(std::remove(addresses.begin(), addresses.end(), address), addresses.end());
+  scan_results->publish_state(join_address_csv(addresses));
+}
+
 // Keeps a scan_bus()-produced "Scan Collisions" CSV text_sensor live
 // between explicit Scan Bus presses, not just immediately after one -
 // called from a registered slot's own continuous poll (see

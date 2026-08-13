@@ -600,9 +600,11 @@ body {
 
 /* --- Pressure sensor table (Service page) - see dashboard.js's own
  * "Pressure sensor table" section for why this is a compact table
- * (Name | Address | Status) instead of a .dc-fields block per slot like
- * every other Service section above. A row is either "registered" (a
- * real slot, editable Name/Address) or "new" (a scanned-but-unregistered
+ * (Name | Address | Status | edit/delete | reorder) instead of a
+ * .dc-fields block per slot like every other Service section above. A
+ * row is either "registered" (a real slot - Name/Address are locked
+ * read-only until its own pencil button is pressed, see
+ * .dc-pressure-icon-btn below) or "new" (a scanned-but-unregistered
  * address, read-only Address + a per-row Add) - see .dc-pressure-badge-*
  * below for the Status pill each renders. */
 
@@ -744,6 +746,28 @@ body {
   white-space: nowrap;
 }
 
+.dc-pressure-table td.dc-pressure-order {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Up/Down (movePressureRow() in dashboard.js) - stacked, not side by
+ * side, so this stays narrow next to the Name/Address/Status/Action
+ * columns rather than widening the row further. */
+.dc-pressure-order-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.dc-pressure-order-btn {
+  padding: 2px;
+}
+
+.dc-pressure-order-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
 /* Status indicator - dot + text, deliberately NOT pill/button-shaped
  * (an earlier pill-with-fill version read as a clickable button next to
  * the real Scan Bus button, confirmed on real hardware - a plain colored
@@ -789,18 +813,78 @@ body {
   color: var(--dc-danger);
 }
 
-.dc-pressure-del-btn {
+/* Row action icons (pencil/trash/check/close - see
+ * upsertRegisteredPressureRow() in dashboard.js). Edit/Delete show by
+ * default; a row entering edit mode (dc-pressure-row-editing) swaps to
+ * Save/Cancel instead - only one pair is ever visible at a time, so
+ * there's no way to press Delete mid-edit or Save without having pressed
+ * Edit first. */
+.dc-pressure-icon-btn {
   background: none;
   border: none;
   color: var(--dc-text-muted);
-  font-size: 15px;
-  line-height: 1;
   padding: 6px;
+  line-height: 1;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dc-pressure-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dc-pressure-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dc-pressure-edit-btn:hover {
+  color: var(--dc-text);
 }
 
 .dc-pressure-del-btn:hover {
   color: var(--dc-danger);
+}
+
+.dc-pressure-save-btn:hover {
+  color: var(--dc-accent);
+}
+
+.dc-pressure-cancel-btn:hover {
+  color: var(--dc-danger);
+}
+
+.dc-pressure-save-btn,
+.dc-pressure-cancel-btn {
+  display: none;
+}
+
+.dc-pressure-row-editing .dc-pressure-edit-btn,
+.dc-pressure-row-editing .dc-pressure-del-btn {
+  display: none;
+}
+
+.dc-pressure-row-editing .dc-pressure-save-btn,
+.dc-pressure-row-editing .dc-pressure-cancel-btn {
+  display: inline-flex;
+}
+
+/* An editable Name/Address input still looks like a plain field while
+ * read-only (same background/border as always) but isn't - readOnly
+ * blocks typing without greying it out like :disabled would, which would
+ * make an already-registered row look broken/unset at a glance. The
+ * accent border on focus-while-editing (input:focus below) is the only
+ * visual difference, on top of the pencil/save/cancel swap itself. */
+.dc-pressure-table input:read-only {
+  cursor: default;
 }
 
 .dc-pressure-table td.dc-pressure-action .dc-btn.dc-btn-compact {

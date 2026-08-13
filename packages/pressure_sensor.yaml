@@ -15,15 +15,22 @@
 # never-`internal` entity (same "don't rely on deprecated set_internal()"
 # reasoning as v2 - see git history for that finding).
 #
-# PERSISTENT DATA MODEL (v3, simplified from v2): a slot has exactly two
-# persisted fields - Modbus Address and Display Name. That's it. v2 also
-# had a separate "Commissioned" bool/binary_sensor; v3 drops it entirely -
-# "registered or not" is now derived purely from Modbus Address != 0 (the
-# same sentinel v1 originally used), both in firmware (this file) and in
-# the dashboard's own join logic (web/dashboard.js). One fewer persisted
-# concept, one fewer thing that could drift out of sync with the address.
-# "Online" below is the live counterpart - never persisted, always
-# recomputed by the poll.
+# PERSISTENT DATA MODEL (v3, simplified from v2): a slot's identity is
+# exactly two persisted fields - Modbus Address and Display Name. That's
+# it. v2 also had a separate "Commissioned" bool/binary_sensor; v3 drops
+# it entirely - "registered or not" is now derived purely from Modbus
+# Address != 0 (the same sentinel v1 originally used), both in firmware
+# (this file) and in the dashboard's own join logic (web/dashboard.js).
+# One fewer persisted concept, one fewer thing that could drift out of
+# sync with the address. "Online" below is the live counterpart - never
+# persisted, always recomputed by the poll.
+#
+# A third persisted field, Sort Order (added 2026-08-13), is deliberately
+# NOT part of that identity - it carries no meaning about the sensor
+# itself, purely the dashboard's own display position (see that entity's
+# own comment below), and is reset independently of the two identity
+# fields (Delete resets it too, but for a different reason - see the
+# Delete button's own comment).
 #
 # Instantiate per slot from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
@@ -209,6 +216,34 @@ number:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 20
 
+  # Pure dashboard-side ordering (2026-08-13, direct feedback: the
+  # displayed row order should be able to represent physical pipe layout,
+  # not just Modbus address order) - no relation whatsoever to the
+  # physical Modbus address or which slot this happens to be (still
+  # meaningless - see the file header). 0 = "never customized"; the
+  # dashboard falls back to sorting by address for any slot still at 0
+  # (web/dashboard.js's orderedRegisteredSlots()). Every registered
+  # slot's own value gets rewritten together by each Up/Down press in the
+  # table (movePressureRow() in dashboard.js) - not a device-side concept
+  # at all, so no set_action needed here beyond the default optimistic
+  # publish/restore every other plain value field in this file also uses.
+  - platform: template
+    id: ${id_prefix}_sort_order
+    name: "${friendly_name} Sort Order"
+    icon: "mdi:sort"
+    mode: box
+    min_value: 0
+    max_value: 8
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 25
+
 text:
   - platform: template
     id: ${id_prefix}_display_name
@@ -239,6 +274,25 @@ button:
   # a "New device" if it's ever re-added. Confirmed before firing on the
   # dashboard itself (CONFIRM_ON_PRESS in web/dashboard.js), same pattern
   # as Update/Restart/Forget Wi-Fi.
+  #
+  # Also forgets this address from "Scan Results"/"Scan Collisions" (the
+  # first lambda below, which has to run *before* the Modbus Address
+  # reset that follows it - it's the last moment this slot still knows
+  # its own address). Without this the deleted device's address lingered
+  # in the last scan's stale snapshot and immediately reappeared as a
+  # "New device" row from that old data - looking like it could never
+  # actually be removed from the list - rather than genuinely
+  # disappearing until an actual re-scan confirms something still
+  # answers there, confirmed real on the dashboard, 2026-08-13.
+  #
+  # Also resets Sort Order back to 0 - a re-added sensor in this slot
+  # later starts fresh at the bottom of any custom order (falls back to
+  # address, same as any never-customized slot) rather than silently
+  # inheriting a stale rank from whatever used to be here. The other
+  # slots' own Sort Order values are untouched - gaps left behind in the
+  # numbering are harmless, only relative order matters (see
+  # web/dashboard.js's orderedRegisteredSlots()), so nothing needs to be
+  # renumbered just because one slot dropped out.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -249,8 +303,17 @@ button:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 100
     on_press:
+      - lambda: |-
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address != 0) {
+            rs485_modbus::remove_scan_result_address(id(pressure_scan_results), address);
+            rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
+          }
       - number.set:
           id: ${id_prefix}_modbus_address
+          value: 0
+      - number.set:
+          id: ${id_prefix}_sort_order
           value: 0
       - text.set:
           id: ${id_prefix}_display_name

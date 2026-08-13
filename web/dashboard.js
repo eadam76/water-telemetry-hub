@@ -68,6 +68,15 @@
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
     gauge: '<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1" fill="currentColor" stroke="none"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
+    // Pressure table row actions (see upsertRegisteredPressureRow() below) -
+    // pencil starts editing Name/Address, trash un-registers the slot,
+    // check/close save or discard an in-progress edit.
+    pencil: '<path d="M4 20l.7-3.5L16.2 5a1.5 1.5 0 0 1 2.1 0l0.7 0.7a1.5 1.5 0 0 1 0 2.1L7.5 19.3 4 20Z"/><path d="M14.5 7.5l2 2"/>',
+    trash: '<path d="M5 7h14"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M7 7l1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/>',
+    check: '<path d="M4 12.5l5 5L20 6.5"/>',
+    close: '<path d="M5 5l14 14M19 5L5 19"/>',
+    chevronUp: '<path d="M6 15l6-6 6 6"/>',
+    chevronDown: '<path d="M6 9l6 6 6-6"/>',
   };
   // Keyed on the group's real (compile-time) name, never on its
   // renameable Display Name override (CR "generic naming") - so a rename
@@ -424,11 +433,55 @@
         const address = Math.round(e.value || 0);
         if (address > 0) {
           const onlineEntity = pressureSlotEntity(e.groupName, "Online");
-          slots.push({ groupName: e.groupName, address, online: onlineEntity ? onlineEntity.value === true : undefined });
+          const orderEntity = pressureSlotEntity(e.groupName, "Sort Order");
+          slots.push({
+            groupName: e.groupName,
+            address,
+            online: onlineEntity ? onlineEntity.value === true : undefined,
+            order: orderEntity ? Math.round(orderEntity.value || 0) : 0,
+          });
         }
       }
     }
     return slots;
+  }
+
+  // Registered slots in *display* order - each slot's own Sort Order
+  // (packages/pressure_sensor.yaml's "${friendly_name} Sort Order", the
+  // Up/Down buttons below) when it's been customized (non-zero); a slot
+  // still at its default 0 falls back to plain address order and sorts
+  // after every customized one. Deliberately unrelated to Modbus address
+  // or which physical slot a sensor happens to occupy - this exists
+  // purely so the dashboard can be made to match the physical pipe
+  // layout instead, per direct feedback, 2026-08-13.
+  function orderedRegisteredSlots() {
+    return [...registeredPressureSlots()].sort((a, b) => {
+      if (a.order && b.order) return a.order - b.order;
+      if (a.order) return -1;
+      if (b.order) return 1;
+      return a.address - b.address;
+    });
+  }
+
+  // Moves `groupName` one step up/down (direction -1/+1) in the current
+  // display order and persists the result by rewriting *every* registered
+  // slot's own Sort Order to match the new sequence (1, 2, 3, ...) - not
+  // just the two rows that swapped. Simpler and self-healing than a
+  // narrower two-row-only update: it can never leave a stale or
+  // duplicate rank behind regardless of what state Sort Order happened to
+  // be in before (including every slot still at the default 0), at the
+  // cost of up to 8 extra requests for a rare, deliberate user action.
+  function movePressureRow(groupName, direction) {
+    const ordered = orderedRegisteredSlots();
+    const idx = ordered.findIndex((s) => s.groupName === groupName);
+    const swapIdx = idx + direction;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return;
+    const names = ordered.map((s) => s.groupName);
+    [names[idx], names[swapIdx]] = [names[swapIdx], names[idx]];
+    names.forEach((gName, i) => {
+      const e = pressureSlotEntity(gName, "Sort Order");
+      if (e) fetch(`${e.namePath}/set?value=${i + 1}`, { method: "POST" });
+    });
   }
 
   // The last bus-scan result, parsed from its CSV text_sensor - e.g.
@@ -491,7 +544,7 @@
     const table = el(
       "table",
       "dc-pressure-table",
-      `<thead><tr><th>Name</th><th>Address</th><th>Status</th><th></th></tr></thead><tbody></tbody>`
+      `<thead><tr><th>Name</th><th>Address</th><th>Status</th><th></th><th></th></tr></thead><tbody></tbody>`
     );
     section.append(label, toolbar, table);
     g = { weight: groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
@@ -544,16 +597,22 @@
   const pressureTableRows = new Map(); // "reg:"+groupName or "new:"+address -> <tr>
   const pressureNewRowDrafts = new Map(); // address -> in-progress typed name, kept across re-renders until Add/rescan
 
-  // A registered slot's row - Name/Address stay editable (the same
-  // duplicate-check as v2). Status is normally this slot's own live
+  // A registered slot's row. Status is normally this slot's own live
   // Online value (OK/Lost), but a collision seen at this exact address in
   // the last scan overrides that - a garbled reply is a much more
   // specific, actionable signal ("something else is answering to your
   // address too") than a plain Lost, so it takes priority over whatever
-  // the last poll happened to see. Editing Address here really does
-  // reprogram the physical sensor - see pressure_sensor.yaml's Modbus
-  // Address set_action.
-  function upsertRegisteredPressureRow(tbody, groupName, isOnline, hasCollision) {
+  // the last poll happened to see.
+  //
+  // Name/Address are read-only until the row's own pencil button is
+  // pressed, then editable with an explicit Save/Cancel - previously they
+  // wrote on every blur (a plain HTML `change` event), which made it
+  // dangerously easy to fire a real reprogram (Address really does
+  // rewrite the physical sensor - see pressure_sensor.yaml's Modbus
+  // Address set_action) just by tabbing through the row or clicking
+  // elsewhere mid-edit. Confirmed too easy to trigger by accident on real
+  // use, 2026-08-13.
+  function upsertRegisteredPressureRow(tbody, groupName, isOnline, hasCollision, isFirst, isLast) {
     const key = "reg:" + groupName;
     const nameEntity = pressureSlotEntity(groupName, "Display Name");
     const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
@@ -563,7 +622,7 @@
       row = el(
         "tr",
         "dc-pressure-row-registered",
-        `<td class="dc-pressure-name"></td><td class="dc-pressure-addr"></td><td class="dc-pressure-status"></td><td class="dc-pressure-action"></td>`
+        `<td class="dc-pressure-name"></td><td class="dc-pressure-addr"></td><td class="dc-pressure-status"></td><td class="dc-pressure-action"></td><td class="dc-pressure-order"></td>`
       );
       pressureTableRows.set(key, row);
       tbody.appendChild(row);
@@ -571,11 +630,8 @@
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
+      nameInput.readOnly = true;
       row.querySelector(".dc-pressure-name").appendChild(nameInput);
-      nameInput.addEventListener("change", () => {
-        const e = pressureSlotEntity(groupName, "Display Name");
-        if (e) fetch(`${e.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" });
-      });
       row._nameInput = nameInput;
 
       const addrInput = document.createElement("input");
@@ -583,14 +639,91 @@
       addrInput.min = 1;
       addrInput.max = 247;
       addrInput.step = 1;
+      addrInput.readOnly = true;
       row.querySelector(".dc-pressure-addr").appendChild(addrInput);
-      addrInput.addEventListener("change", () => {
-        const e = pressureSlotEntity(groupName, "Modbus Address");
-        if (!e) return;
+      row._addrInput = addrInput;
+
+      const status = el("span", "dc-pressure-badge");
+      row.querySelector(".dc-pressure-status").appendChild(status);
+      row._statusEl = status;
+
+      const actionCell = row.querySelector(".dc-pressure-action");
+
+      const editBtn = el("button", "dc-pressure-icon-btn dc-pressure-edit-btn", svgIcon("pencil"));
+      editBtn.type = "button";
+      editBtn.title = "Edit name/address";
+      actionCell.appendChild(editBtn);
+      row._editBtn = editBtn;
+
+      // Trash, not the old bare "✕" - reads more clearly as "delete this
+      // registration" at a glance (per direct feedback, 2026-08-13).
+      const delBtn = el("button", "dc-pressure-icon-btn dc-pressure-del-btn", svgIcon("trash"));
+      delBtn.type = "button";
+      delBtn.title = "Delete";
+      actionCell.appendChild(delBtn);
+      row._delBtn = delBtn;
+
+      const saveBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
+      saveBtn.type = "button";
+      saveBtn.title = "Save";
+      actionCell.appendChild(saveBtn);
+      row._saveBtn = saveBtn;
+
+      const cancelBtn = el("button", "dc-pressure-icon-btn dc-pressure-cancel-btn", svgIcon("close"));
+      cancelBtn.type = "button";
+      cancelBtn.title = "Cancel";
+      actionCell.appendChild(cancelBtn);
+      row._cancelBtn = cancelBtn;
+
+      // Up/Down - reorders this row relative to the other registered
+      // rows (movePressureRow() above), independent of the edit lock
+      // above (no need to press the pencil first). Physically the slot
+      // doesn't move at all, only the Sort Order metadata each slot
+      // carries - see that number entity's own comment in
+      // pressure_sensor.yaml. Disabled at whichever end of the list a row
+      // already sits at (isFirst/isLast below), rather than just being a
+      // no-op click - visibly not just cosmetically first/last.
+      const orderGroup = el("div", "dc-pressure-order-group");
+      row.querySelector(".dc-pressure-order").appendChild(orderGroup);
+      const upBtn = el("button", "dc-pressure-icon-btn dc-pressure-order-btn", svgIcon("chevronUp"));
+      upBtn.type = "button";
+      upBtn.title = "Move up";
+      upBtn.addEventListener("click", () => movePressureRow(groupName, -1));
+      const downBtn = el("button", "dc-pressure-icon-btn dc-pressure-order-btn", svgIcon("chevronDown"));
+      downBtn.type = "button";
+      downBtn.title = "Move down";
+      downBtn.addEventListener("click", () => movePressureRow(groupName, 1));
+      orderGroup.append(upBtn, downBtn);
+      row._upBtn = upBtn;
+      row._downBtn = downBtn;
+
+      const enterEdit = () => {
+        row._editOrigName = nameInput.value;
+        row._editOrigAddr = addrInput.value;
+        nameInput.readOnly = false;
+        addrInput.readOnly = false;
+        row.classList.add("dc-pressure-row-editing");
+        row._editing = true;
+        nameInput.focus();
+        nameInput.select();
+      };
+      const exitEdit = () => {
+        nameInput.readOnly = true;
+        addrInput.readOnly = true;
+        row.classList.remove("dc-pressure-row-editing");
+        row._editing = false;
+      };
+      editBtn.addEventListener("click", enterEdit);
+      cancelBtn.addEventListener("click", () => {
+        nameInput.value = row._editOrigName;
+        addrInput.value = row._editOrigAddr;
+        exitEdit();
+      });
+      saveBtn.addEventListener("click", () => {
         const parsed = parseInt(addrInput.value, 10);
         if (Number.isNaN(parsed) || parsed < 1 || parsed > 247) {
-          addrInput.value = e.value ?? "";
-          return;
+          alert("Address must be a number between 1 and 247.");
+          return; // stay in edit mode so the value can be fixed
         }
         const dupe = findPressureAddressOwner(parsed, groupName);
         if (
@@ -599,21 +732,21 @@
             `Address ${parsed} is already registered as "${dupe}". This only checks sensors already registered here, not the physical bus - set it anyway?`
           )
         ) {
-          addrInput.value = e.value ?? "";
-          return;
+          return; // stay in edit mode
         }
-        fetch(`${e.namePath}/set?value=${encodeURIComponent(parsed)}`, { method: "POST" });
+        const ne = pressureSlotEntity(groupName, "Display Name");
+        const ae = pressureSlotEntity(groupName, "Modbus Address");
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        const requests = [];
+        if (ne) requests.push(fetch(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" }));
+        if (ae) requests.push(fetch(`${ae.namePath}/set?value=${encodeURIComponent(parsed)}`, { method: "POST" }));
+        Promise.all(requests).finally(() => {
+          saveBtn.disabled = false;
+          cancelBtn.disabled = false;
+          exitEdit();
+        });
       });
-      row._addrInput = addrInput;
-
-      const status = el("span", "dc-pressure-badge");
-      row.querySelector(".dc-pressure-status").appendChild(status);
-      row._statusEl = status;
-
-      const delBtn = el("button", "dc-pressure-del-btn", "✕");
-      delBtn.type = "button";
-      row.querySelector(".dc-pressure-action").appendChild(delBtn);
-      row._delBtn = delBtn;
     }
     // pressButton() reads entity.btnEl (for the press animation) - unlike
     // every other button in this file, this one is never routed through
@@ -625,12 +758,21 @@
     row._delBtn.onclick = () => {
       if (delEntity) pressButton(delEntity);
     };
-    if (document.activeElement !== row._nameInput) row._nameInput.value = (nameEntity && nameEntity.value) || "";
-    if (addrEntity && document.activeElement !== row._addrInput) row._addrInput.value = addrEntity.value ?? "";
+    // Never overwrites an in-progress edit's own local (unsaved) values -
+    // same reasoning as every other field in this file's activeElement
+    // guards, extended to the whole row (not just whichever input has
+    // focus right now) since Save/Cancel can be clicked while focus has
+    // already moved off the input being edited.
+    if (!row._editing) {
+      row._nameInput.value = (nameEntity && nameEntity.value) || "";
+      if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
+    }
     row._statusEl.textContent = hasCollision ? "Collision?" : isOnline ? "OK" : "Lost";
     row._statusEl.classList.toggle("dc-pressure-badge-ok", isOnline && !hasCollision);
     row._statusEl.classList.toggle("dc-pressure-badge-lost", !isOnline && !hasCollision);
     row._statusEl.classList.toggle("dc-pressure-badge-collision", hasCollision);
+    row._upBtn.disabled = !!isFirst;
+    row._downBtn.disabled = !!isLast;
     // Mirrors what upsertServiceText() does for the water meters (CR #8) -
     // this slot's Home card header uses the same shared groupLabel()/
     // refreshGroupLabel() machinery, which otherwise has no other way to
@@ -656,7 +798,7 @@
       row = el(
         "tr",
         "dc-pressure-row-new",
-        `<td class="dc-pressure-name"></td><td class="dc-pressure-addr"></td><td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-new">New</span></td><td class="dc-pressure-action"></td>`
+        `<td class="dc-pressure-name"></td><td class="dc-pressure-addr"></td><td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-new">New</span></td><td class="dc-pressure-action"></td><td class="dc-pressure-order"></td>`
       );
       pressureTableRows.set(key, row);
       tbody.appendChild(row);
@@ -727,7 +869,8 @@
         `<td class="dc-pressure-name"><span class="dc-pressure-collision-note">Multiple devices may share this address</span></td>` +
           `<td class="dc-pressure-addr"></td>` +
           `<td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-collision">Collision?</span></td>` +
-          `<td class="dc-pressure-action"></td>`
+          `<td class="dc-pressure-action"></td>` +
+          `<td class="dc-pressure-order"></td>`
       );
       pressureTableRows.set(key, row);
       tbody.appendChild(row);
@@ -741,7 +884,7 @@
       placeholder = el(
         "tr",
         "dc-pressure-empty",
-        `<td colspan="4">No sensors yet – press "Scan Bus" to find one on the RS485 bus.</td>`
+        `<td colspan="5">No sensors yet – press "Scan Bus" to find one on the RS485 bus.</td>`
       );
       tbody.appendChild(placeholder);
     } else if (!isEmpty && placeholder) {
@@ -766,10 +909,18 @@
     const atCeiling = registered.length >= PRESSURE_MAX_SLOTS;
 
     const seenKeys = new Set();
-    for (const slot of [...registered].sort((a, b) => a.address - b.address)) {
+    const orderedRegistered = orderedRegisteredSlots();
+    orderedRegistered.forEach((slot, i) => {
       seenKeys.add("reg:" + slot.groupName);
-      upsertRegisteredPressureRow(tbody, slot.groupName, slot.online === true, collisionSet.has(slot.address));
-    }
+      upsertRegisteredPressureRow(
+        tbody,
+        slot.groupName,
+        slot.online === true,
+        collisionSet.has(slot.address),
+        i === 0,
+        i === orderedRegistered.length - 1
+      );
+    });
     const newAddresses = [...new Set(scanAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b);
     for (const address of newAddresses) {
       seenKeys.add("new:" + address);
@@ -782,6 +933,17 @@
       seenKeys.add("collision:" + address);
       upsertCollisionPressureRow(tbody, address);
     }
+
+    // upsert*Row() above only appends a row to the DOM the first time
+    // it's created - without this, every row would keep whatever
+    // position it happened to be inserted at forever afterwards, even
+    // once a Sort Order change (or a slot getting registered/deleted
+    // elsewhere in the list) says it belongs somewhere else. Cheap even
+    // with a full 8 rows - appendChild() on a node that's already
+    // attached just moves it, it doesn't clone or re-create anything.
+    for (const slot of orderedRegistered) tbody.appendChild(pressureTableRows.get("reg:" + slot.groupName));
+    for (const address of newAddresses) tbody.appendChild(pressureTableRows.get("new:" + address));
+    for (const address of unclaimedCollisions) tbody.appendChild(pressureTableRows.get("collision:" + address));
 
     for (const [key, row] of pressureTableRows) {
       if (!seenKeys.has(key)) {
