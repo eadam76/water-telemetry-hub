@@ -134,22 +134,32 @@ Checkpoint időköz nem entitás, fix `60 s`, fordítási időben rögzítve (l�
   - Baud tartomány `300–230400` (egyéni baud is támogatott) – a szenzor `1200–115200` tartományát bőven lefedi. A busz össz-eszközszám korlátja `32` – ez az általunk tervezett 4 slot-nak bőven elég tartalékot ad.
   - Gyártói infó: [cdebyte.com/products/E810-R14](https://www.cdebyte.com/products/E810-R14).
   - **Miért kell a hub akkor is, ha a master board (ESP32-S3-RS485-CAN) RS485 illesztője már eleve izolált, és a kábelek csak pár méteresek?** Mert a master-oldali izoláció a masztert védi a buszról, nem a szenzorokat egymástól – hub nélkül csillagba kötve mind ugyanazon a közös, nem izolált buszszakaszon lennének, így egy eltérő földpotenciálú (más gépházban lévő) szenzor közös módusú feszültsége simán túlmehetne a driver tartományán. A hub csatornánként külön izolál, ez oldja meg ezt – a topológia (csillag vs. daisy-chain) önmagában, pár méteres kábellel és `9600` baudon valószínűleg amúgy sem okozna gondot.
-- **Modbus regisztertérkép** – ⚠️ eredetileg nem hivatalos forrásból (HA közösségi fórum) állt össze, **2026-08-12-én kibővítve egy sokkal részletesebb, szintén nem hivatalos, de alaposabb forrással**: a TapHome QDW90A kompatibilitási oldala (nyers jegyzet elmentve: [`docs/hardver/qdw90a-modbus-taphome-jegyzet.md`](docs/hardver/qdw90a-modbus-taphome-jegyzet.md) – **ez munkaanyag, nem a projekt saját, végleges referenciája**, ld. a fájl elején lévő figyelmeztetést). Az alábbi táblázat ebből a bővebb forrásból való; a **✅ jelölésű sorok valós hardveren is megerősítve**, a többi egyelőre csak a TapHome-jegyzet állítása.
+- **Modbus regisztertérkép** – ⚠️ eredetileg nem hivatalos forrásból (HA közösségi fórum) állt össze, **2026-08-12-én kibővítve** egy sokkal részletesebb, szintén nem hivatalos, de alaposabb forrással (TapHome QDW90A kompatibilitási oldala, nyers jegyzet: [`docs/hardver/qdw90a-modbus-taphome-jegyzet.md`](docs/hardver/qdw90a-modbus-taphome-jegyzet.md) – munkaanyag, nem végleges referencia), **majd ugyanazon a napon egy teljes regiszter-scan-nel (`mbpoll`, `H:0–H:39`) a valós hardveren végigmérve**. Az alábbi táblázat **minden dokumentált regisztere hardveren megerősített**:
 
-  | Reg. | Funkció | Állapot |
+  | Reg. | Funkció | Mért érték | Állapot |
+  | --- | --- | --- | --- |
+  | `H:0` | Slave cím (`1–255`) | `1` | ✅ hardveren megerősítve |
+  | `H:1` | Átviteli sebesség-kód (`0`=1200 … `7`=115200) | `3` = 9600 | ✅ hardveren megerősítve |
+  | `H:2` | Mértékegység-kód (`3`=bar, teljes lista a TapHome-jegyzetben) | `3` = bar | ✅ hardveren megerősítve |
+  | `H:3` | Tizedesjegyek száma – `érték = H:4 / 10^H:3` | `2` | ✅ hardveren megerősítve (tehát ténylegesen `/100`) |
+  | `H:4` | Mérési érték, `Int16`, skálázás `H:3` szerint | `0` (terheletlen) | ✅ hardveren megerősítve, élőben reagál valós nyomásra (ld. lent) |
+  | `H:5` | Méréstartomány alsó pontja | `0` | ✅ hardveren megerősítve |
+  | `H:6` | Méréstartomány felső pontja | `1000` → `/100`-zal **10.00 bar** – egyezik a szenzor `0–10 bar` méréshatárával | ✅ hardveren megerősítve, és értelmes is |
+  | `H:12` | Nullponteltolás, `Int16`, írható | `0` (gyári alapállapot) | ✅ hardveren megerősítve |
+  | `H:15` | Beállítás mentése – `0` írása menti tartósan a `H:0`/`H:1`/stb. módosítását (**enélkül a változtatás elveszhet újraindításkor!**) | `0` (olvasva) | ✅ olvasva, ahogy vártuk – **írás még nincs kipróbálva** |
+  | `H:16` | Gyári visszaállítás – `1` írása töröl mindent (cím, kalibráció is) | `0` (olvasva, **nem lett kiváltva**) | ✅ biztonságosan csak olvasva – **írást szándékosan nem próbáltunk ki** |
+  | `H:22–H:23` | Mérési érték közvetlenül IEEE754 Float32-ként, big-endian/ABCD | `0.0` | ✅ hardveren megerősítve, egyezik a `H:4`-alapú olvasással – **firmware-hez ígéretes alternatíva** a `H:4`+`H:3` kombináció helyett |
+  | `H:37` | Soros paritás (`0`=nincs, `1`=páratlan, `2`=páros) | `0` = nincs | ✅ hardveren megerősítve |
+
+  **A TapHome-jegyzetben nem szereplő, de a teljes scan során talált, valószínűsíthetően valódi paraméterblokk** (`H:22`-től kezdve 2-2 regiszteres Float32 párok, "kerek" értékekkel – ez nem véletlen mintázat):
+
+  | Regiszterpár | Float32 érték | Jelentés |
   | --- | --- | --- |
-  | `H:0` | Slave cím (`1–255`, gyári `1`) | ✅ **hardveren megerősítve** (ld. lent) |
-  | `H:1` | Átviteli sebesség – **kód, nem a nyers baud-érték!** (`0`=1200, `1`=2400, `2`=4800, `3`=9600, `4`=19200, `5`=38400, `6`=57600, `7`=115200) | nincs hardveren ellenőrizve – **korábbi feltevésünk hibás volt**, azt hittük `H:1` a baud-értéket magát tárolja |
-  | `H:2` | Mértékegység-kód (`0`=MPa, `1`=kPa, `2`=Pa, `3`=bar, `4`=mbar, `5`=kg/cm², `6`=PSI, `7-10`=vízoszlop-egységek, `11-13`=higanyoszlop-egységek, `14`=atm, `15`=Torr, `16-18`=folyadékszint m/cm/mm, `19`=kg, `20`=°C, `21`=pH, `22`=°F) | ✅ **hardveren megerősítve: `3` = bar** |
-  | `H:3` | Tizedesjegyek száma – **a skálázás ebből számolódik, nem fix `/100`!**: `érték = H:4 / 10^H:3` | ✅ **hardveren megerősítve: `2`** (tehát ténylegesen `/100`, a korábbi feltevésünk helyesnek bizonyult) |
-  | `H:4` | Mérési érték, `Int16`, skálázás `H:3` szerint | ✅ **regiszter megerősítve, élőben reagál valós nyomásra** (ld. lent) |
-  | `H:5` | Méréstartomány alsó pontja | nincs hardveren ellenőrizve – korábban nem is szerepelt a térképünkben |
-  | `H:6` | Méréstartomány felső pontja ("Range Full Point") | nincs hardveren ellenőrizve |
-  | `H:12` | Nullponteltolás ("Zero Bit Offset"), `Int16`, írható, gyári `0` | nincs hardveren ellenőrizve |
-  | `H:15` | Beállítás mentése – `0` írása menti tartósan a `H:0`/`H:1`/stb. módosítását (**enélkül a változtatás elveszhet újraindításkor!**) | nincs hardveren ellenőrizve |
-  | `H:16` | Gyári visszaállítás – `1` írása töröl mindent (cím, kalibráció is) | nincs hardveren ellenőrizve – **óvatosan** |
-  | `H:22–H:23` | A mérési érték **közvetlenül IEEE754 Float32-ként**, big-endian/ABCD sorrend – nem igényel `H:3` szerinti skálázást | nincs hardveren ellenőrizve, de **firmware-hez ígéretes alternatíva** a `H:4`+`H:3` kombináció helyett |
-  | `H:37` | Soros paritás (`0`=nincs, `1`=páratlan, `2`=páros) | nincs hardveren ellenőrizve |
+  | `H:24–H:25` | `0.0` | ismeretlen, illik a mintázatba |
+  | `H:26–H:27` | `1.0` | feltételezés: kalibrációs szorzó/gain, jelenleg semleges értéken – **nincs megerősítve** |
+  | `H:28–H:29` | `0.001` | feltételezés: felbontás/lépésköz paraméter – **nincs megerősítve** |
+
+  **Egyéb, nem dokumentált, nem nulla regiszterek** a `H:0–H:39` scanből, jelentésük ismeretlen, firmware-ben nem használjuk őket: `H:8=2`, `H:9=-174`, `H:10=-180`, `H:11=13017`, `H:14=82`, `H:21=8`, `H:33=907`, `H:39=-21829`. (`H:20` a scan-ből kimaradt, feltehetően csak bemásolási hiba, nincs újramérve.)
 
   - **Slave cím (`H:0`) – ✅ megerősítve valós QDW90A egységen**, 2026-08-12, kézi Modbus RTU kerettel (FTDI USB-RS485 adapter, `9600 8N1`, közvetlenül a szenzorra kötve, hub nélkül): `01 03 00 00 00 01 84 0A` kérésre `01 03 02 00 01 79 84` érkezett vissza (érték `0x0001` = `1`). A bekötés a gyári kábelszínezés szerint `Piros=24V+`, `Fekete=24V-`, `Kék=PC-A`, `Sárga=PC-B` (a "Ground Wire" felirat a csatlakozó silkscreen-jén félrevezető ezen a kivitelen – nincs külön föld-ér, csak a táp `Fekete` vezetéke). Külön GND-vezeték az FTDI és a szenzor közt **nem** kellett hozzá (rövid, asztali teszt).
   - **Nyomásérték (`H:4`) – ✅ regiszter és skálázás is teljesen megerősítve**: nyugalomban `0` (várt érték terheletlen/légköri állapotban), majd a nyomáscsatlakozóba szájjal belefújva (a tényleges mérési úton, nem mechanikai membrán-nyomogatással) folyamatosan, monoton nőtt: `0 → 3 → 4 → 5` nyers érték (mindegyik CRC-vel ellenőrizve, valódi válasz). A `H:2`/`H:3` regiszterek (`mbpoll`-lal) külön kiolvasva: `H:2 = 3` (bar) és `H:3 = 2` (2 tizedesjegy) – tehát a `0 → 3 → 4 → 5` nyers érték ténylegesen `0.00 → 0.03 → 0.04 → 0.05 bar`-t jelent (`érték = H:4 / 100`), pontosan egyezve a korábbi feltevésünkkel és az emberi fújásnyomás (`~0.01–0.05 bar`) várt tartományával. **A `H:4`-ből számolt `bar` érték firmware-kódba építhető, nincs többé feltételezés benne.**
