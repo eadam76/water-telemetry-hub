@@ -5,9 +5,11 @@
 # and "Architekturális megfontolás v3" (2026-08-13) for the design this
 # file implements.
 #
-# STATUS: commissioning-UX skeleton only, still mock data (see "Mock
-# Pressure (Test)" below) - real Modbus polling waits for the Waveshare
-# board (REQUIREMENTS.md "Státusz").
+# STATUS: real Modbus RTU over the Waveshare ESP32-S3-RS485-CAN board's
+# RS485 bus (water-collector.yaml's `uart: rs485_uart`, protocol helpers
+# in include/rs485_modbus.h) - the earlier commissioning-UX-only pass's
+# "Mock Pressure (Test)" scaffold is gone; the Pressure sensor below now
+# polls the real device directly.
 #
 # EXISTENCE MODEL (v3): every entity below is a normal, always-compiled-in,
 # never-`internal` entity (same "don't rely on deprecated set_internal()"
@@ -20,6 +22,8 @@
 # same sentinel v1 originally used), both in firmware (this file) and in
 # the dashboard's own join logic (web/dashboard.js). One fewer persisted
 # concept, one fewer thing that could drift out of sync with the address.
+# "Online" below is the live counterpart - never persisted, always
+# recomputed by the poll.
 #
 # Instantiate per slot from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
@@ -52,6 +56,16 @@ sensor:
   # a fresh HA connection to show 8 disabled pressure sensors rather than
   # 8 enabled-but-meaningless ones - opt in per slot once it's actually
   # registered.
+  #
+  # Polls the real sensor directly every 5s (rs485_modbus::read_pressure_bar(),
+  # include/rs485_modbus.h - H:22-H:23 as Float32, see
+  # docs/hardver/qdw90a-modbus-referencia.md) - a no-op (returns {}, no
+  # publish at all) while this slot is unregistered. This same poll is
+  # also this slot's *only* source of live online/offline status - see
+  # "Online" below - deliberately not derived from the shared bus-scan
+  # result the way a not-yet-registered "New device" row is; a scan is
+  # for discovering addresses we don't have a slot for yet, this is for
+  # continuously watching one we do.
   - platform: template
     id: ${id_prefix}_pressure
     name: "${friendly_name} Pressure"
@@ -61,15 +75,72 @@ sensor:
     state_class: measurement
     accuracy_decimals: 2
     disabled_by_default: true
+    update_interval: 5s
+    lambda: |-
+      uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+      if (address == 0) return {};  // unregistered slot - nothing to poll
+      float value;
+      if (rs485_modbus::read_pressure_bar(id(rs485_uart), address, value)) {
+        id(${id_prefix}_online).publish_state(true);
+        return value;
+      } else {
+        id(${id_prefix}_online).publish_state(false);
+        return NAN;
+      }
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 10
+
+binary_sensor:
+  # Live/ephemeral only - never persisted (see the file header) - purely
+  # this slot's own last poll result, published from the Pressure sensor's
+  # lambda above. entity_category: diagnostic + disabled_by_default:
+  # meant mainly for the dashboard's own join (web/dashboard.js reads
+  # this as the pressure table's OK/Lost badge for a registered row), but
+  # still a perfectly normal HA entity if ever wanted there too.
+  - platform: template
+    id: ${id_prefix}_online
+    name: "${friendly_name} Online"
+    icon: "mdi:lan-connect"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 15
 
 number:
   # The single source of truth for "registered or not" - see the file
   # header. 0 = empty slot, 1-247 = a real Modbus address. Restored from
   # flash on boot (restore_value: true), same as Display Name below - no
   # separate persisted flag needed on top of this.
+  #
+  # set_action fires with `x` = the new value and (per TemplateNumber::
+  # control(), confirmed from the installed esphome package's own
+  # template_number.cpp - set_trigger_ runs before publish_state()) the
+  # entity's own .state field still holding the *old* value, which is
+  # what makes the reprogram-vs-no-op distinction below possible without
+  # a second variable anywhere else. Only an edit on an already-
+  # registered slot (old and new both non-zero and different) actually
+  # reprograms the physical sensor - a fresh Add (old == 0, from
+  # try_register below) just records an address the sensor is already
+  # using because the bus scan just found it there, and Delete (new == 0)
+  # just forgets our own record - neither needs to touch the device at
+  # all. See include/rs485_modbus.h's change_address_and_save() for the
+  # two-step write+save sequence this performs, and
+  # docs/hardver/qdw90a-modbus-referencia.md's "Betanítás / cím
+  # módosítása" for why it can't be one atomic Modbus transaction.
+  #
+  # A failed reprogram is logged (ESP_LOGW, visible on the Log page) but
+  # the local record still updates regardless - there is no clean way to
+  # roll a TemplateNumber's own optimistic-publish/restore_value-save
+  # back to the old value from inside set_action (both fire unconditionally
+  # from control(), independent of what set_action itself decides - see
+  # the same template_number.cpp). This is an accepted, self-correcting
+  # gap: if the physical address genuinely didn't change, the next poll
+  # of the (wrongly recorded) new address simply fails, and the slot
+  # shows Lost - the same real diagnostic signal a truly offline sensor
+  # would produce, prompting a retry rather than silently believing a
+  # failed reprogram succeeded.
   - platform: template
     id: ${id_prefix}_modbus_address
     name: "${friendly_name} Modbus Address"
@@ -84,34 +155,21 @@ number:
     entity_category: config
     disabled_by_default: true
     set_action:
+      - lambda: |-
+          uint8_t old_address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          uint8_t new_address = (uint8_t) x;
+          if (old_address != 0 && new_address != 0 && old_address != new_address) {
+            if (rs485_modbus::change_address_and_save(id(rs485_uart), old_address, new_address)) {
+              ESP_LOGI("pressure", "${friendly_name}: reprogrammed sensor address %d -> %d", old_address, new_address);
+            } else {
+              ESP_LOGW("pressure", "${friendly_name}: FAILED to reprogram sensor address %d -> %d - it may not have actually switched, check it before trusting this slot", old_address, new_address);
+            }
+          }
       - delay: 10ms
       - lambda: global_preferences->sync();
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 20
-
-  # TEMPORARY test scaffold - see the status note in the file header.
-  # Delete this whole entity (and the matching line in try_register's
-  # reset/Delete's reset) once real Modbus polling replaces it.
-  - platform: template
-    id: ${id_prefix}_mock_pressure
-    name: "${friendly_name} Mock Pressure (Test)"
-    icon: "mdi:test-tube"
-    unit_of_measurement: "bar"
-    mode: box
-    min_value: 0
-    max_value: 10
-    step: 0.1
-    optimistic: true
-    restore_value: false
-    initial_value: 0
-    entity_category: config
-    disabled_by_default: true
-    set_action:
-      - lambda: id(${id_prefix}_pressure).publish_state(x);
-    web_server:
-      sorting_group_id: ${sorting_group_id}
-      sorting_weight: 90
 
 text:
   - platform: template
@@ -135,15 +193,14 @@ text:
 
 button:
   # Un-registers this slot: resets Modbus Address back to 0 (the "empty"
-  # sentinel - see file header), Display Name/Mock Pressure back to their
-  # defaults. Confirmed before firing on the dashboard itself
-  # (CONFIRM_ON_PRESS in web/dashboard.js), same pattern as Update/
-  # Restart/Forget Wi-Fi.
-  #
-  # NOTE (v3, not yet implemented): once real Modbus polling exists, this
-  # should probably also offer to factory-reset/re-address the physical
-  # sensor rather than just forgetting it locally - out of scope for this
-  # pass, tracked in REQUIREMENTS.md.
+  # sentinel - see file header), Display Name back to its default, and
+  # clears the live Pressure/Online readouts. Deliberately does NOT touch
+  # the physical sensor itself (no factory reset/re-address-to-unknown) -
+  # this only forgets our own record; the sensor keeps answering at
+  # whatever address it already has, and a re-scan will find it again as
+  # a "New device" if it's ever re-added. Confirmed before firing on the
+  # dashboard itself (CONFIRM_ON_PRESS in web/dashboard.js), same pattern
+  # as Update/Restart/Forget Wi-Fi.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -160,10 +217,9 @@ button:
       - text.set:
           id: ${id_prefix}_display_name
           value: "${friendly_name}"
-      - number.set:
-          id: ${id_prefix}_mock_pressure
-          value: 0
-      - lambda: id(${id_prefix}_pressure).publish_state(NAN);
+      - lambda: |-
+          id(${id_prefix}_pressure).publish_state(NAN);
+          id(${id_prefix}_online).publish_state(false);
 
 script:
   # Called (unconditionally, on every press) from water-collector.yaml's
@@ -174,9 +230,13 @@ script:
   # claimed is otherwise never shown/meaningful - see the id_prefix note
   # in the file header.
   #
-  # Takes the address as a parameter now (v3) rather than always writing
-  # 0 and leaving it to be typed in later (v2) - the bus-scan/Add flow
-  # already knows the address before Add is ever pressed.
+  # Takes the address as a parameter (v3) rather than always writing 0
+  # and leaving it to be typed in later (v2) - the bus-scan/Add flow
+  # already knows the address before Add is ever pressed. Just records
+  # it (via the Modbus Address number's own set_action above) - it does
+  # NOT write anything to the physical sensor, since the address it's
+  # given is one the bus scan just found the sensor already answering
+  # to.
   - id: ${id_prefix}_try_register
     mode: single
     parameters:

@@ -51,6 +51,8 @@ Tisztázott összefoglaló a gyártói terméklapból ([eredeti PDF](esp32-s3-rs
 | GPIO18 | RS485 RX |
 | GPIO21 | RS485 EN |
 
-## Nyitott kérdés
+## Státusz
 
-A kezdeti teszteléshez egy **másik, régebbi (nem S3) ESP32 boardot** használunk, amíg ez a hardver megérkezik. A YAML-ban emiatt a `board:` típus és a pulzus-GPIO-k `substitutions`-ként vannak paraméterezve, hogy a teszt boardról a végleges Waveshare panelre váltás pár sornyi módosítás legyen.
+**Megérkezett, 2026-08-13** – a `water-collector.yaml` `substitutions`-ai (`board_type`, pulzus-GPIO-k) mostantól közvetlenül erre a boardra céloznak; a korábbi, tesztelésre használt régebbi (nem S3) ESP32 board értékei kikommentezve maradtak a fájlban, referenciaként (arra az esetre, ha valaki visszaváltana rá RS485 nélküli bench-teszteléshez).
+
+Az RS485 busz (`GPIO17` TX / `GPIO18` RX / `GPIO21` EN) ESPHome `uart:` komponensként van bekötve (`water-collector.yaml`), `flow_control_pin: GPIO21`-gyel – ez az esp-idf UART drivert hardveres RS485 fél-duplex módba kapcsolja (`UART_MODE_RS485_HALF_DUPLEX`), pontosan megfelelve a board saját specifikációjának ("Direction Control: Automatically controlled via host hardware flow setting") – nincs szükség a `GPIO21` kézi (szoftveres) billegtetésére küldés előtt/után. A Modbus RTU mester-logika saját, kézzel írt kód (`include/rs485_modbus.h`), ld. `REQUIREMENTS.md` "Architekturális megfontolás v3" a részletekért.

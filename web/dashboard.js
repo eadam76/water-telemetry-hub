@@ -44,7 +44,6 @@
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Show on Dashboard": "Shows or hides this meter's card on the Dashboard page. Purely a display preference - pulse counting and every other setting stay in effect either way.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
-    "Mock Pressure (Test)": "Temporary stand-in for a real sensor reading, until Modbus polling is wired up - moving this publishes straight to this slot's Pressure reading.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Restart (CR #3, previous round): its confirm dialog already
     // explains the consequence when it matters - a permanent "?" would
@@ -366,14 +365,19 @@
   //   - the 8 fixed slots (packages/pressure_sensor.yaml), each persisting
   //     only a Modbus Address + Display Name - a slot counts as
   //     *registered* purely by Address != 0, no separate commissioned flag
-  //     (see that file's own header for why one fewer persisted concept)
-  //   - the latest bus-scan result (water-collector.yaml's "Scan Bus
-  //     (Mock)" button -> "Scan Results" text_sensor) - a live, never-
-  //     persisted CSV of addresses that answered just now
-  // Registered + seen in the scan -> "OK". Registered + NOT seen -> "Lost"
-  // (the real diagnostic signal - see REQUIREMENTS.md's discussion of why
-  // this can't instead be a reliable live electrical collision check).
-  // Seen but not registered -> its own row with a per-row Add button.
+  //     (see that file's own header for why one fewer persisted concept).
+  //     Each registered slot also has its own live "Online" binary_sensor,
+  //     fed by that slot's own continuous pressure poll - NOT by the scan
+  //     below; a registered slot is watched continuously, not just when
+  //     someone happens to press Scan Bus.
+  //   - the latest bus-scan result (water-collector.yaml's "Scan Bus"
+  //     button -> "Scan Results" text_sensor, rs485_modbus::scan_bus()) -
+  //     a live, never-persisted CSV of addresses that answered just now,
+  //     used only to find addresses no slot has registered yet.
+  // Registered + Online -> "OK". Registered + NOT Online -> "Lost" (the
+  // real diagnostic signal - see REQUIREMENTS.md's discussion of why this
+  // can't instead be a reliable live electrical collision check). Scanned
+  // but not registered -> its own row with a per-row Add button.
   // Slot number/order is never shown - see pressure_sensor.yaml's header -
   // rows are sorted purely by address.
   //
@@ -404,16 +408,24 @@
     return null;
   }
 
-  // Every registered slot (Modbus Address != 0), regardless of whether
-  // it's currently seen on the bus - that's a separate, live question,
-  // joined in afterwards. Address is coerced to a whole number since the
-  // number entity's `value` is a plain float over the API.
+  // Every registered slot (Modbus Address != 0), with its own live
+  // Online status (from that slot's continuous pressure poll,
+  // packages/pressure_sensor.yaml - NOT from the shared bus-scan result,
+  // that's a separate, on-demand thing used only to find still-
+  // unregistered addresses, see latestScanAddresses() below). Address is
+  // coerced to a whole number since the number entity's `value` is a
+  // plain float over the API. `online` is `undefined` until this slot's
+  // first poll completes (a few seconds after boot/registration) -
+  // treated the same as "not confirmed online yet" by callers.
   function registeredPressureSlots() {
     const slots = [];
     for (const e of entities.values()) {
       if (e.groupName && PRESSURE_SLOT_RE.test(e.groupName) && e.domain === "number" && displayName(e) === "Modbus Address") {
         const address = Math.round(e.value || 0);
-        if (address > 0) slots.push({ groupName: e.groupName, address });
+        if (address > 0) {
+          const onlineEntity = pressureSlotEntity(e.groupName, "Online");
+          slots.push({ groupName: e.groupName, address, online: onlineEntity ? onlineEntity.value === true : undefined });
+        }
       }
     }
     return slots;
@@ -452,9 +464,9 @@
   // Registers the umbrella "Pressure Sensors" group as a normal
   // serviceGroups entry (reusing reorderServiceGroups()'s existing
   // weight-based interleaving with the meter/system sections, for free)
-  // but with a bespoke body - a small toolbar (Scan Bus + its temporary
-  // mock-input scaffold) above a table, instead of the generic .dc-fields
-  // list - built once, on first use.
+  // but with a bespoke body - a small toolbar (just the Scan Bus button)
+  // above a table, instead of the generic .dc-fields list - built once,
+  // on first use.
   function ensurePressureTable() {
     let g = serviceGroups.get(PRESSURE_ADD_GROUP);
     if (g) return pressureTableBody;
@@ -476,36 +488,16 @@
     return pressureTableBody;
   }
 
-  // TEMPORARY (see the Scan Bus (Mock) button's own comment in
-  // water-collector.yaml) - a plain button/text pair mounted into the
-  // toolbar above the table, same wiring as a generic Service field but
-  // without pulling in ensureServiceGroup()'s .dc-fields layout. Delete
-  // both once real bus scanning replaces the mock button; "Scan Results"
-  // itself (consumed by latestScanAddresses() above) stays.
+  // The real "Scan Bus" button (water-collector.yaml -
+  // rs485_modbus::scan_bus()) - a plain button mounted into the toolbar
+  // above the table, same wiring as a generic Service field but without
+  // pulling in ensureServiceGroup()'s .dc-fields layout.
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.btnEl = el("button", "dc-btn dc-btn-compact", displayName(entity));
       entity.btnEl.addEventListener("click", () => pressButton(entity));
       pressureToolbarEl.appendChild(entity.btnEl);
     }
-  }
-
-  function mountPressureToolbarText(entity) {
-    if (!entity.inputEl) {
-      const wrap = el("label", "dc-pressure-toolbar-field", `<span></span>`);
-      wrap.querySelector("span").textContent = displayName(entity);
-      const input = document.createElement("input");
-      input.type = "text";
-      input.maxLength = entity.maxLength || 64;
-      input.placeholder = "e.g. 1,4,9";
-      input.addEventListener("change", () => {
-        fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
-      });
-      wrap.appendChild(input);
-      pressureToolbarEl.appendChild(wrap);
-      entity.inputEl = input;
-    }
-    if (document.activeElement !== entity.inputEl) entity.inputEl.value = entity.value ?? "";
   }
 
   const pressureTableRows = new Map(); // "reg:"+groupName or "new:"+address -> <tr>
@@ -671,13 +663,12 @@
     const registered = registeredPressureSlots();
     const registeredAddresses = new Set(registered.map((s) => s.address));
     const scanAddresses = latestScanAddresses();
-    const scanSet = new Set(scanAddresses);
     const atCeiling = registered.length >= PRESSURE_MAX_SLOTS;
 
     const seenKeys = new Set();
     for (const slot of [...registered].sort((a, b) => a.address - b.address)) {
       seenKeys.add("reg:" + slot.groupName);
-      upsertRegisteredPressureRow(tbody, slot.groupName, scanSet.has(slot.address));
+      upsertRegisteredPressureRow(tbody, slot.groupName, slot.online === true);
     }
     const newAddresses = [...new Set(scanAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b);
     for (const address of newAddresses) {
@@ -718,8 +709,7 @@
     if (entity.groupName === PRESSURE_ADD_GROUP) {
       ensurePressureTable(); // make sure the toolbar + table exist even with zero scan results yet
       const label = displayName(entity);
-      if (label === "Scan Bus (Mock)") mountPressureToolbarButton(entity);
-      else if (label === "Mock Scan Addresses (Test)") mountPressureToolbarText(entity);
+      if (label === "Scan Bus") mountPressureToolbarButton(entity);
       else if (label === "Scan Results") renderPressureTableBody();
       // Add Name / Add Target Address / Add itself have no visible UI of
       // their own - they're write-only targets set by each new-device
@@ -1068,17 +1058,10 @@
     if (entity.domain === "sensor" && entity.name === "Wi-Fi Signal") updateSignalBars(entity.value);
     // Pressure sensor slots (and their "Pressure Sensors" umbrella group)
     // bypass the generic Home/Service/Diagnostics dispatch entirely - see
-    // the "Pressure sensor table" section above for why. One exception
-    // still ALSO falls through below, unlike every other pressure entity:
-    // Mock Pressure (Test), the temporary stand-in for a real Modbus read
-    // (packages/pressure_sensor.yaml) - the table only has Name/Address/
-    // Status/Delete columns, nowhere to put this, so it falls through to
-    // a normal (generic, one-off) Service field instead, same as before
-    // this table existed. Delete this exception together with the rest
-    // of the Mock Pressure scaffold once real Modbus polling replaces it.
+    // the "Pressure sensor table" section above for why.
     if (entity.groupName && isPressureGroup(entity.groupName)) {
       renderPressureEntity(entity);
-      if (displayName(entity) !== "Mock Pressure (Test)") return;
+      return;
     }
     const page = pageFor(entity);
     if (page === "home") upsertHomeMetric(entity);

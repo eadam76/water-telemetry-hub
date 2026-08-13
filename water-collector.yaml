@@ -3,31 +3,38 @@
 # historization, statistics and presentation. See REQUIREMENTS.md
 # (Hungarian) at the repo root for the full spec.
 #
-# Initial testing: `board_type`/`meter1_pulse_pin`/`meter2_pulse_pin` are
-# set to an older, non-S3 ESP32 devkit (see below). Once the production
-# hardware arrives (Waveshare ESP32-S3-RS485-CAN,
-# docs/hardver/esp32-s3-rs485-can-board.md), flip the commented-out
-# substitutions: board_type -> esp32-s3-devkitc-1, pulse pins -> GPIO1 /
-# GPIO2.
+# Production hardware (2026-08-13): Waveshare ESP32-S3-RS485-CAN,
+# docs/hardver/esp32-s3-rs485-can-board.md - `board_type`/pulse pins below
+# now target it directly. The old non-S3 test board's values are kept
+# commented out purely as a reference for whoever needs to go back to
+# bench-testing without the real hardware in hand.
 
 substitutions:
   device_name: water-collector
   friendly_device_name: "Water Data Collector"
 
-  # --- Hardware: test phase (non-S3 board) ---
-  board_type: esp32dev
-  meter1_pulse_pin: GPIO32
-  meter2_pulse_pin: GPIO33
-
   # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
-  # board_type: esp32-s3-devkitc-1
-  # meter1_pulse_pin: GPIO1
-  # meter2_pulse_pin: GPIO2
+  board_type: esp32-s3-devkitc-1
+  meter1_pulse_pin: GPIO1
+  meter2_pulse_pin: GPIO2
+
+  # --- Hardware: test phase (older, non-S3 ESP32 devkit) ---
+  # board_type: esp32dev
+  # meter1_pulse_pin: GPIO32
+  # meter2_pulse_pin: GPIO33
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_device_name}
   comment: "Water supply data collector - pulse counters (+ pressure sensors planned)"
+  # Hand-written Modbus RTU master helpers used by the RS485 bus
+  # scan/pressure-poll/re-address logic below - see the header comment in
+  # include/rs485_modbus.h for why this isn't ESPHome's built-in
+  # modbus_controller: component. Included globally, so every symbol in
+  # it (the rs485_modbus:: namespace) is available from any lambda below
+  # without its own #include.
+  includes:
+    - include/rs485_modbus.h
 
 esp32:
   board: ${board_type}
@@ -113,6 +120,29 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
+
+# RS485 bus to the QDW90A pressure sensors, over the Waveshare
+# ESP32-S3-RS485-CAN board's isolated RS485 interface (see
+# docs/hardver/esp32-s3-rs485-can-board.md - GPIO17 TX / GPIO18 RX /
+# GPIO21 EN). flow_control_pin makes ESPHome's esp-idf UART driver run in
+# hardware RS485 half-duplex mode (UART_MODE_RS485_HALF_DUPLEX, confirmed
+# from the installed esphome package's own uart_component_esp_idf.cpp) -
+# the driver toggles GPIO21 for us on every write_array(), matching the
+# board's own spec ("Direction Control: Automatically controlled via
+# host hardware flow setting"). 9600 8N1 matches the QDW90A's factory
+# default (docs/hardver/qdw90a-modbus-referencia.md) - every sensor has
+# to already be on this baud/framing before this device can talk to it
+# at all, since the baud itself is one of the only two things (besides
+# address) that can differ per sensor and isn't autodetected.
+uart:
+  id: rs485_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO18
+  flow_control_pin: GPIO21
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
 
 # Backs the "Free Heap" diagnostic sensor below.
 debug:
@@ -395,11 +425,14 @@ sensor:
 
 text_sensor:
   # Latest bus-scan result - a comma-separated list of Modbus addresses
-  # that answered (e.g. "1,4,9"), published by "Pressure Sensors Scan Bus
-  # (Mock)" above. Read-only/diagnostic: the dashboard's own JS parses
-  # this to join against the 8 slots' registered addresses - see
-  # web/dashboard.js's pressure-table section. Never itself persisted -
-  # a scan result is only ever as fresh as the last scan.
+  # that answered (e.g. "1,4,9"), published by "Pressure Sensors Scan
+  # Bus" below (rs485_modbus::scan_bus(), include/rs485_modbus.h).
+  # Read-only/diagnostic: the dashboard's own JS parses this to find
+  # not-yet-registered addresses (registered slots' own live online/
+  # offline status instead comes from each slot's own continuous poll -
+  # see packages/pressure_sensor.yaml's "Online" binary_sensor) - see
+  # web/dashboard.js's pressure-table section. Never itself persisted - a
+  # scan result is only ever as fresh as the last scan.
   - platform: template
     id: pressure_scan_results
     name: "Pressure Sensors Scan Results"
@@ -517,19 +550,18 @@ button:
       sorting_group_id: sorting_group_system
       sorting_weight: 92
 
-  # Bus-scan (v3, MOCK for now - see file-level status note in
-  # packages/pressure_sensor.yaml). Real Modbus scanning needs a UART/RS485
-  # bus, which the current test board (esp32dev) doesn't have - this
-  # publishes whatever CSV address list is typed into "Pressure Sensors
-  # Mock Scan Addresses (Test)" as the scan result, so the *dashboard's*
-  # scan-joined table (web/dashboard.js) can be built and tried out now.
-  # DELETE this button + the mock scan input text entity once a real
-  # bus-scan routine (over an actual UART/modbus:) replaces it - the
-  # "Scan Results" text_sensor it publishes to should stay, that part of
-  # the interface doesn't change.
+  # Real bus-scan (v3) - sweeps every Modbus address (1-247) with a short
+  # per-address timeout (rs485_modbus::scan_bus(), include/rs485_modbus.h)
+  # and publishes whichever ones answered as a CSV to "Scan Results"
+  # above. A full sweep takes a few seconds (see that function's own
+  # comment for why it's deliberately not run on a fast interval) - this
+  # button is what the dashboard's "New device" rows are found by; a
+  # registered slot's own live status instead comes from its continuous
+  # per-slot poll (packages/pressure_sensor.yaml's "Online" binary_sensor),
+  # not from this button.
   - platform: template
     id: pressure_scan
-    name: "Pressure Sensors Scan Bus (Mock)"
+    name: "Pressure Sensors Scan Bus"
     icon: "mdi:radar"
     entity_category: config
     disabled_by_default: true
@@ -537,9 +569,14 @@ button:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 5
     on_press:
-      - text_sensor.template.publish:
-          id: pressure_scan_results
-          state: !lambda 'return id(pressure_mock_scan_input).state;'
+      - lambda: |-
+          auto found = rs485_modbus::scan_bus(id(rs485_uart), 1, 247);
+          std::string csv;
+          for (size_t i = 0; i < found.size(); i++) {
+            if (i > 0) csv += ",";
+            csv += std::to_string(found[i]);
+          }
+          id(pressure_scan_results).publish_state(csv);
 
   # Registers the first still-free pressure sensor slot (out of the 8 in
   # packages/pressure_sensor.yaml) with the address+name set in "Pressure
@@ -602,26 +639,6 @@ button:
           value: 0
 
 text:
-  # TEMPORARY test scaffold, see the Scan Bus button above - a comma-
-  # separated list of addresses to pretend the bus scan found, e.g.
-  # "1,4,9". Delete together with the mock Scan Bus button once real
-  # Modbus scanning exists.
-  - platform: template
-    id: pressure_mock_scan_input
-    name: "Pressure Sensors Mock Scan Addresses (Test)"
-    icon: "mdi:test-tube"
-    mode: text
-    optimistic: true
-    restore_value: true
-    initial_value: ""
-    min_length: 0
-    max_length: 64
-    entity_category: config
-    disabled_by_default: true
-    web_server:
-      sorting_group_id: sorting_group_pressure
-      sorting_weight: 4
-
   # Set by the dashboard (not typed by hand in normal use) immediately
   # before pressing "Pressure Sensors Add" - see that button's own
   # comment. Not persisted (restore_value unset/false): a transient
@@ -699,7 +716,7 @@ packages:
   # 32-node bus capacity - see REQUIREMENTS.md "Architekturális
   # megfontolás v3", 2026-08-13) - see packages/pressure_sensor.yaml's own
   # header for the id_prefix/friendly_name rename caveat and the current
-  # (mock-data, no real Modbus yet) status.
+  # (real Modbus RTU over `uart: rs485_uart` above) status.
   pressure_slot1: !include
     file: packages/pressure_sensor.yaml
     vars:
