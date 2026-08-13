@@ -223,12 +223,17 @@ button:
 
 script:
   # Called (unconditionally, on every press) from water-collector.yaml's
-  # per-discovered-address "Add" buttons, once per slot in sequence - a
-  # no-op if this slot's address is already non-zero (registered), so
-  # whichever slot is first still-free in that sequence is the one that
-  # actually claims the given address+name. Which slot number ends up
-  # claimed is otherwise never shown/meaningful - see the id_prefix note
-  # in the file header.
+  # per-discovered-address "Add" buttons, once per slot in sequence -
+  # claims the given address+name into this slot only if BOTH this slot
+  # is still free AND no other slot has already claimed it in this same
+  # Add (the global `pressure_add_claimed`, reset to false right before
+  # this sequence starts - see that global's own comment in
+  # water-collector.yaml). Checking only "am I free?" is NOT enough on
+  # its own - confirmed on real hardware, 2026-08-13: with all 8 slots
+  # free, every single one independently satisfied that check and all 8
+  # claimed the same address+name at once. Which slot number ends up
+  # actually claiming it is otherwise never shown/meaningful - see the
+  # id_prefix note in the file header.
   #
   # Takes the address as a parameter (v3) rather than always writing 0
   # and leaving it to be typed in later (v2) - the bus-scan/Add flow
@@ -245,7 +250,7 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(${id_prefix}_modbus_address).state == 0;'
+            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(pressure_add_claimed);'
           then:
             - text.set:
                 id: ${id_prefix}_display_name
@@ -253,3 +258,6 @@ script:
             - number.set:
                 id: ${id_prefix}_modbus_address
                 value: !lambda 'return address;'
+            - globals.set:
+                id: pressure_add_claimed
+                value: "true"

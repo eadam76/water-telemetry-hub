@@ -118,8 +118,20 @@ inline void flush_rx(UARTComponent *bus) {
 // callers can tell "device answered with an error" (a non-empty 5-byte
 // reply with the high bit of the function byte set) apart from
 // "nothing answered at all" (empty).
+//
+// `any_reply`, if given, is set true the moment ANY bytes at all arrive
+// in response - regardless of what happens to them afterward (CRC fail,
+// wrong address, etc.). This is what lets scan_bus() below tell "no
+// device here" (a real timeout, nothing ever arrived) apart from "two+
+// devices share this address" (something answered, but got garbled) -
+// confirmed on real hardware, 2026-08-13: three sensors deliberately set
+// to the same address produced exactly this - a received-but-CRC-failed
+// reply, not a timeout. See docs/hardver/qdw90a-modbus-referencia.md's
+// "Ütközés kimutatása" for why this still isn't proof of a collision
+// (could in principle be plain bus noise instead), just a strong signal.
 inline std::vector<uint8_t> transact(UARTComponent *bus, const std::vector<uint8_t> &request, size_t expected_len,
-                                      uint32_t timeout_ms) {
+                                      uint32_t timeout_ms, bool *any_reply = nullptr) {
+  if (any_reply) *any_reply = false;
   flush_rx(bus);
   uint16_t crc = crc16(request.data(), request.size());
   std::vector<uint8_t> frame = request;
@@ -135,6 +147,7 @@ inline std::vector<uint8_t> transact(UARTComponent *bus, const std::vector<uint8
     ESP_LOGVV(TAG, "<- address %d: no reply within %ums", request[0], timeout_ms);
     return {};
   }
+  if (any_reply) *any_reply = true;
   uint8_t head[3];
   if (!bus->read_array(head, 3)) {
     ESP_LOGVV(TAG, "<- address %d: UART read error on the header bytes", request[0]);
@@ -198,11 +211,12 @@ inline std::vector<uint8_t> build_write_request(uint8_t address, uint16_t reg, u
 // auto-chunk a larger request, callers must respect the limit
 // themselves (none of this project's own reads ever need more than 2).
 inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t start_reg, uint16_t count,
-                                    std::vector<uint16_t> &out, uint32_t timeout_ms = 200) {
+                                    std::vector<uint16_t> &out, uint32_t timeout_ms = 200,
+                                    bool *any_reply = nullptr) {
   if (count == 0 || count > 20) return false;
   auto request = build_read_request(address, start_reg, count);
   size_t expected_len = 5 + 2 * static_cast<size_t>(count);
-  auto reply = transact(bus, request, expected_len, timeout_ms);
+  auto reply = transact(bus, request, expected_len, timeout_ms, any_reply);
   if (reply.size() != expected_len) return false;
   if (reply[1] != 0x03) return false;               // exception (or, in principle, garbage)
   if (reply[2] != 2 * count) return false;           // byte-count sanity check
@@ -232,47 +246,77 @@ inline bool write_single_register(UARTComponent *bus, uint8_t address, uint16_t 
 }
 
 // Cheapest possible "is anything at this address" probe - reads just
-// H:0 (1 register). Used by both scan_bus() below and, per registered
-// slot, by the live pressure poll in pressure_sensor.yaml.
-inline bool probe(UARTComponent *bus, uint8_t address, uint32_t timeout_ms = 25) {
+// H:0 (1 register). Used only by scan_bus() below - the live per-slot
+// pressure poll (pressure_sensor.yaml) calls read_pressure_bar()
+// directly instead, it doesn't need this three-way distinction (an
+// already-registered slot's own live status is a plain online/offline
+// binary_sensor, not the OK/collision/nothing triage a bus-wide scan
+// needs - see REQUIREMENTS.md's "Ütközés kimutatása" for why extending
+// that to continuous polling too is a plausible future idea, not done
+// here).
+enum class ProbeResult : uint8_t { NO_RESPONSE, COLLISION, FOUND };
+
+inline ProbeResult probe(UARTComponent *bus, uint8_t address, uint32_t timeout_ms = 25) {
   std::vector<uint16_t> tmp;
-  return read_holding_registers(bus, address, 0, 1, tmp, timeout_ms);
+  bool any_reply = false;
+  if (read_holding_registers(bus, address, 0, 1, tmp, timeout_ms, &any_reply)) return ProbeResult::FOUND;
+  return any_reply ? ProbeResult::COLLISION : ProbeResult::NO_RESPONSE;
 }
 
-// Sweeps [min_address, max_address] with a short per-address timeout,
-// returns every address that answered - "New device" rows in the
-// dashboard's pressure table come from this (see the "Scan Bus" button,
-// water-collector.yaml). A full 1-247 sweep at the default timeout takes
-// a few seconds - deliberately only run on demand, not on a fast
-// interval; per-slot liveness during normal operation instead comes from
-// each registered slot's own pressure poll (probe() above), not from
-// repeatedly re-scanning the whole bus.
-inline std::vector<uint8_t> scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_address,
-                                      uint32_t per_address_timeout_ms = 25) {
+// Sweeps [min_address, max_address] with a short per-address timeout.
+// `found` - "New device" rows in the dashboard's pressure table come
+// from this (see the "Scan Bus" button, water-collector.yaml).
+// `collisions` - addresses where *something* answered but the reply
+// didn't survive its own CRC check - confirmed on real hardware,
+// 2026-08-13, as the actual signature of two+ devices sharing one
+// address (see probe()'s own comment) - surfaced in the dashboard as
+// its own "Collision?" status, distinct from both "New" and "nothing
+// there at all" (addresses in neither list). A full 1-247 sweep at the
+// default timeout takes a few seconds - deliberately only run on
+// demand, not on a fast interval; per-slot liveness during normal
+// operation instead comes from each registered slot's own pressure poll,
+// not from repeatedly re-scanning the whole bus.
+struct ScanResult {
+  std::vector<uint8_t> found;
+  std::vector<uint8_t> collisions;
+};
+
+inline ScanResult scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_address,
+                            uint32_t per_address_timeout_ms = 25) {
   ESP_LOGD(TAG, "scan_bus: sweeping addresses %d-%d (~%.1fs total)...", min_address, max_address,
            (max_address - min_address + 1) * per_address_timeout_ms / 1000.0f);
-  std::vector<uint8_t> found;
+  ScanResult result;
   for (uint16_t address = min_address; address <= max_address; address++) {
-    if (probe(bus, static_cast<uint8_t>(address), per_address_timeout_ms)) {
-      found.push_back(static_cast<uint8_t>(address));
+    switch (probe(bus, static_cast<uint8_t>(address), per_address_timeout_ms)) {
+      case ProbeResult::FOUND:
+        result.found.push_back(static_cast<uint8_t>(address));
+        break;
+      case ProbeResult::COLLISION:
+        result.collisions.push_back(static_cast<uint8_t>(address));
+        break;
+      case ProbeResult::NO_RESPONSE:
+        break;
     }
   }
-  if (found.empty()) {
-    ESP_LOGD(TAG, "scan_bus: no devices found");
-  } else {
-    // Decimal, comma-separated (Modbus addresses are conventionally
-    // decimal, e.g. "1,4,9" - matching how the "Scan Results" CSV
-    // itself is built, water-collector.yaml's Scan Bus button) - NOT
-    // format_hex_pretty(), which would print byte *values* in hex and
-    // read as a different, confusing set of numbers here.
+  // Decimal, comma-separated (Modbus addresses are conventionally
+  // decimal, e.g. "1,4,9" - matching how the "Scan Results" CSV itself
+  // is built, water-collector.yaml's Scan Bus button) - NOT
+  // format_hex_pretty(), which would print byte *values* in hex and read
+  // as a different, confusing set of numbers here.
+  auto join_decimal = [](const std::vector<uint8_t> &addresses) {
     std::string list;
-    for (size_t i = 0; i < found.size(); i++) {
+    for (size_t i = 0; i < addresses.size(); i++) {
       if (i > 0) list += ", ";
-      list += std::to_string(found[i]);
+      list += std::to_string(addresses[i]);
     }
-    ESP_LOGD(TAG, "scan_bus: found %zu device(s): %s", found.size(), list.c_str());
+    return list;
+  };
+  ESP_LOGD(TAG, "scan_bus: found %zu device(s): %s", result.found.size(), join_decimal(result.found).c_str());
+  if (!result.collisions.empty()) {
+    ESP_LOGD(TAG, "scan_bus: %zu likely collision(s) at: %s", result.collisions.size(),
+             join_decimal(result.collisions).c_str());
   }
-  return found;
+  return result;
 }
 
 // Reads the QDW90A's ready-scaled pressure straight from H:22-H:23, as a

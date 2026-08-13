@@ -444,6 +444,21 @@
       .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
   }
 
+  // Addresses where the last scan got a reply that failed its own CRC
+  // check - see include/rs485_modbus.h's scan_bus()/probe() for why this
+  // is a real (if not airtight) signal that two+ devices are answering
+  // to the same address, distinct from both a clean find and plain
+  // silence. An address is never in both this and latestScanAddresses()
+  // at once - each address gets exactly one outcome per scan.
+  function latestCollisionAddresses() {
+    const e = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Collisions");
+    if (!e || typeof e.value !== "string" || !e.value.trim()) return [];
+    return e.value
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
+  }
+
   // Cross-slot duplicate check, purely against sensors already registered
   // in *this* list - not a real electrical bus collision check (that
   // needs actually talking Modbus over the real hardware, not available
@@ -491,11 +506,30 @@
   // The real "Scan Bus" button (water-collector.yaml -
   // rs485_modbus::scan_bus()) - a plain button mounted into the toolbar
   // above the table, same wiring as a generic Service field but without
-  // pulling in ensureServiceGroup()'s .dc-fields layout.
+  // pulling in ensureServiceGroup()'s .dc-fields layout. Deliberately
+  // NOT routed through the shared pressButton() (its brief ".dc-pressed"
+  // flash doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
+  // for the fetch's whole lifetime instead, which also happens to be
+  // exactly the request's own actual duration (ESPHome runs a button's
+  // on_press: synchronously within the request handler, so the fetch()
+  // promise doesn't resolve until the scan itself is done). Confirmed
+  // useful on real hardware, 2026-08-13: with no feedback at all here,
+  // it wasn't obvious a scan was running, which invited exactly the kind
+  // of repeated re-clicking that (combined with the try_register bug
+  // fixed the same day) produced duplicate registrations.
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
-      entity.btnEl = el("button", "dc-btn dc-btn-compact", displayName(entity));
-      entity.btnEl.addEventListener("click", () => pressButton(entity));
+      const idleLabel = displayName(entity);
+      entity.btnEl = el("button", "dc-btn dc-btn-compact", idleLabel);
+      entity.btnEl.addEventListener("click", () => {
+        if (entity.btnEl.disabled) return;
+        entity.btnEl.disabled = true;
+        entity.btnEl.textContent = "Scanning…";
+        fetch(`${entity.namePath}/press`, { method: "POST" }).finally(() => {
+          entity.btnEl.disabled = false;
+          entity.btnEl.textContent = idleLabel;
+        });
+      });
       pressureToolbarEl.appendChild(entity.btnEl);
     }
   }
@@ -504,11 +538,15 @@
   const pressureNewRowDrafts = new Map(); // address -> in-progress typed name, kept across re-renders until Add/rescan
 
   // A registered slot's row - Name/Address stay editable (the same
-  // duplicate-check as v2), Status reflects whether this address was seen
-  // in the latest scan. Changing Address here only updates our own record
-  // for now - it does not reprogram the physical sensor yet, same gap
-  // noted in packages/pressure_sensor.yaml's Delete button comment.
-  function upsertRegisteredPressureRow(tbody, groupName, isOnline) {
+  // duplicate-check as v2). Status is normally this slot's own live
+  // Online value (OK/Lost), but a collision seen at this exact address in
+  // the last scan overrides that - a garbled reply is a much more
+  // specific, actionable signal ("something else is answering to your
+  // address too") than a plain Lost, so it takes priority over whatever
+  // the last poll happened to see. Editing Address here really does
+  // reprogram the physical sensor - see pressure_sensor.yaml's Modbus
+  // Address set_action.
+  function upsertRegisteredPressureRow(tbody, groupName, isOnline, hasCollision) {
     const key = "reg:" + groupName;
     const nameEntity = pressureSlotEntity(groupName, "Display Name");
     const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
@@ -570,12 +608,22 @@
       row.querySelector(".dc-pressure-action").appendChild(delBtn);
       row._delBtn = delBtn;
     }
-    row._delBtn.onclick = () => pressButton(delEntity);
+    // pressButton() reads entity.btnEl (for the press animation) - unlike
+    // every other button in this file, this one is never routed through
+    // upsertServiceButton() (pressure entities are all intercepted before
+    // they'd get there), so nothing else ever sets it. Without this the
+    // click handler threw (`btnEl` undefined) before the fetch() ever
+    // fired - the X looked completely dead, confirmed on real hardware.
+    if (delEntity) delEntity.btnEl = row._delBtn;
+    row._delBtn.onclick = () => {
+      if (delEntity) pressButton(delEntity);
+    };
     if (document.activeElement !== row._nameInput) row._nameInput.value = (nameEntity && nameEntity.value) || "";
     if (addrEntity && document.activeElement !== row._addrInput) row._addrInput.value = addrEntity.value ?? "";
-    row._statusEl.textContent = isOnline ? "OK" : "Lost";
-    row._statusEl.classList.toggle("dc-pressure-badge-ok", isOnline);
-    row._statusEl.classList.toggle("dc-pressure-badge-lost", !isOnline);
+    row._statusEl.textContent = hasCollision ? "Collision?" : isOnline ? "OK" : "Lost";
+    row._statusEl.classList.toggle("dc-pressure-badge-ok", isOnline && !hasCollision);
+    row._statusEl.classList.toggle("dc-pressure-badge-lost", !isOnline && !hasCollision);
+    row._statusEl.classList.toggle("dc-pressure-badge-collision", hasCollision);
     // Mirrors what upsertServiceText() does for the water meters (CR #8) -
     // this slot's Home card header uses the same shared groupLabel()/
     // refreshGroupLabel() machinery, which otherwise has no other way to
@@ -620,21 +668,64 @@
       const addBtn = el("button", "dc-btn dc-btn-compact", "Add");
       addBtn.type = "button";
       addBtn.addEventListener("click", () => {
+        if (addBtn.disabled) return;
         const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
         const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
         const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
         if (!nameEntity || !addrEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
         const name = row._nameInput.value;
+        // Disabled for the round-trip's duration, not just the ceiling
+        // check below - guards against a double-click firing this whole
+        // chain twice, which (even with the shared-flag fix in
+        // pressure_sensor.yaml's try_register) could still let two
+        // separate Add presses each claim a slot for the same address.
+        addBtn._busy = true;
+        addBtn.disabled = true;
         fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
           .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(address)}`, { method: "POST" }))
-          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }));
+          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
+          .finally(() => {
+            addBtn._busy = false;
+            addBtn.disabled = atCeiling;
+          });
         pressureNewRowDrafts.delete(address);
       });
       row._addBtn = addBtn;
       row.querySelector(".dc-pressure-action").appendChild(addBtn);
     }
-    row._addBtn.disabled = atCeiling;
-    row._addBtn.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
+    // Never overrides an in-flight request's own disabled state (see the
+    // click handler's _busy flag above) - a re-render (any SSE update)
+    // landing mid-request would otherwise reset disabled back to
+    // whatever atCeiling says here, undoing that guard.
+    if (!row._addBtn._busy) {
+      row._addBtn.disabled = atCeiling;
+      row._addBtn.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
+    }
+  }
+
+  // An address where the last scan got a reply but it failed its own
+  // CRC check (latestCollisionAddresses() above) and no slot already
+  // claims it - informational only, deliberately no Add button: there's
+  // no single device identity here to register (adding it would just
+  // register whichever device happens to win bus arbitration on a given
+  // poll, silently), see include/rs485_modbus.h's scan_bus() for why
+  // this reading is a strong signal but not proof.
+  function upsertCollisionPressureRow(tbody, address) {
+    const key = "collision:" + address;
+    let row = pressureTableRows.get(key);
+    if (!row) {
+      row = el(
+        "tr",
+        "dc-pressure-row-collision",
+        `<td class="dc-pressure-name"><span class="dc-pressure-collision-note">Multiple devices may share this address</span></td>` +
+          `<td class="dc-pressure-addr"></td>` +
+          `<td class="dc-pressure-status"><span class="dc-pressure-badge dc-pressure-badge-collision">Collision?</span></td>` +
+          `<td class="dc-pressure-action"></td>`
+      );
+      pressureTableRows.set(key, row);
+      tbody.appendChild(row);
+      row.querySelector(".dc-pressure-addr").textContent = String(address);
+    }
   }
 
   function updatePressureEmptyState(tbody, isEmpty) {
@@ -663,17 +754,26 @@
     const registered = registeredPressureSlots();
     const registeredAddresses = new Set(registered.map((s) => s.address));
     const scanAddresses = latestScanAddresses();
+    const collisionAddresses = latestCollisionAddresses();
+    const collisionSet = new Set(collisionAddresses);
     const atCeiling = registered.length >= PRESSURE_MAX_SLOTS;
 
     const seenKeys = new Set();
     for (const slot of [...registered].sort((a, b) => a.address - b.address)) {
       seenKeys.add("reg:" + slot.groupName);
-      upsertRegisteredPressureRow(tbody, slot.groupName, slot.online === true);
+      upsertRegisteredPressureRow(tbody, slot.groupName, slot.online === true, collisionSet.has(slot.address));
     }
     const newAddresses = [...new Set(scanAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b);
     for (const address of newAddresses) {
       seenKeys.add("new:" + address);
       upsertNewPressureRow(tbody, address, atCeiling);
+    }
+    const unclaimedCollisions = [...new Set(collisionAddresses)]
+      .filter((a) => !registeredAddresses.has(a))
+      .sort((a, b) => a - b);
+    for (const address of unclaimedCollisions) {
+      seenKeys.add("collision:" + address);
+      upsertCollisionPressureRow(tbody, address);
     }
 
     for (const [key, row] of pressureTableRows) {
@@ -710,7 +810,7 @@
       ensurePressureTable(); // make sure the toolbar + table exist even with zero scan results yet
       const label = displayName(entity);
       if (label === "Scan Bus") mountPressureToolbarButton(entity);
-      else if (label === "Scan Results") renderPressureTableBody();
+      else if (label === "Scan Results" || label === "Scan Collisions") renderPressureTableBody();
       // Add Name / Add Target Address / Add itself have no visible UI of
       // their own - they're write-only targets set by each new-device
       // row's own Add button above, never rendered directly.

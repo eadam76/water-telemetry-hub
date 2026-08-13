@@ -716,35 +716,49 @@ body {
   white-space: nowrap;
 }
 
-/* Status pill - OK (registered, seen in the latest scan), Lost
+/* Status indicator - dot + text, deliberately NOT pill/button-shaped
+ * (an earlier pill-with-fill version read as a clickable button next to
+ * the real Scan Bus button, confirmed on real hardware - a plain colored
+ * dot is unambiguous). OK (registered, seen by its own live poll), Lost
  * (registered, NOT seen - the real diagnostic signal, see
  * REQUIREMENTS.md), New (seen, not yet registered - has its own Add
- * button instead of a Delete one). */
+ * button instead of a Delete one), Collision (seen, but the reply was
+ * garbled - likely two devices sharing this address, see
+ * REQUIREMENTS.md's "Ütközés kimutatása"). */
 .dc-pressure-badge {
-  display: inline-block;
-  font-size: 10.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: 999px;
+  letter-spacing: 0.02em;
   line-height: 1.4;
+  cursor: default;
+}
+
+.dc-pressure-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
 }
 
 .dc-pressure-badge-ok {
-  background: var(--dc-accent-dim);
   color: var(--dc-accent);
 }
 
 .dc-pressure-badge-lost {
-  background: rgba(251, 191, 36, 0.15);
   color: var(--dc-warning);
 }
 
 .dc-pressure-badge-new {
-  background: var(--dc-surface-2);
   color: var(--dc-text-muted);
-  border: 1px dashed var(--dc-border);
+}
+
+.dc-pressure-badge-collision {
+  color: var(--dc-danger);
 }
 
 .dc-pressure-del-btn {
@@ -776,6 +790,14 @@ body {
   color: var(--dc-text-muted);
   padding: 14px 8px;
   font-size: 13px;
+}
+
+/* An unclaimed collision address (upsertCollisionPressureRow()) - no
+ * inputs, just a note explaining why there's no Add button here. */
+.dc-pressure-collision-note {
+  color: var(--dc-text-muted);
+  font-size: 12.5px;
+  font-style: italic;
 }
 
 /* --- Log page --- */

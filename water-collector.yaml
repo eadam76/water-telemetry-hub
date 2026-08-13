@@ -107,6 +107,21 @@ external_components:
 preferences:
   flash_write_interval: 60s
 
+# Cross-slot coordination for the "Pressure Sensors Add" button below -
+# NOT persisted (restore_value: false, initial_value doesn't matter since
+# the Add button always resets this to false before using it) - purely a
+# same-press guard. Each of the 8 packages/pressure_sensor.yaml
+# try_register scripts only ever knows about its *own* slot's address -
+# without a shared "already claimed this round" flag, every still-free
+# slot independently satisfies its own "am I free?" check and all of them
+# claim the same address+name at once (confirmed on real hardware,
+# 2026-08-13, on a fresh board with all 8 slots free).
+globals:
+  - id: pressure_add_claimed
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
 # level (compile-time ceiling - anything above it is stripped from the
 # binary entirely, can never be shown no matter what) is raised to
 # VERY_VERBOSE so the include/rs485_modbus.h "modbus" tag's detailed
@@ -464,6 +479,22 @@ text_sensor:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 3
 
+  # Addresses where the last scan got *something* back but it failed its
+  # own CRC check - confirmed on real hardware, 2026-08-13, as the actual
+  # signature of two+ devices sharing one address (three sensors
+  # deliberately set to the same address produced exactly this, not a
+  # timeout - see include/rs485_modbus.h's scan_bus()/probe()). The
+  # dashboard renders these as a distinct "Collision?" status.
+  - platform: template
+    id: pressure_scan_collisions
+    name: "Pressure Sensors Scan Collisions"
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.5
+
   - platform: wifi_info
     ip_address:
       name: "IP Address"
@@ -622,25 +653,32 @@ button:
       sorting_weight: 5
     on_press:
       - lambda: |-
-          auto found = rs485_modbus::scan_bus(id(rs485_uart), 1, 247);
-          std::string csv;
-          for (size_t i = 0; i < found.size(); i++) {
-            if (i > 0) csv += ",";
-            csv += std::to_string(found[i]);
-          }
-          id(pressure_scan_results).publish_state(csv);
+          auto result = rs485_modbus::scan_bus(id(rs485_uart), 1, 247);
+          auto to_csv = [](const std::vector<uint8_t> &addresses) {
+            std::string csv;
+            for (size_t i = 0; i < addresses.size(); i++) {
+              if (i > 0) csv += ",";
+              csv += std::to_string(addresses[i]);
+            }
+            return csv;
+          };
+          id(pressure_scan_results).publish_state(to_csv(result.found));
+          id(pressure_scan_collisions).publish_state(to_csv(result.collisions));
 
   # Registers the first still-free pressure sensor slot (out of the 8 in
   # packages/pressure_sensor.yaml) with the address+name set in "Pressure
   # Sensors Add Target Address"/"...Add Name" below - the dashboard sets
   # both of those (from a scan-discovered "New device" row) immediately
   # before pressing this, so from the user's perspective it looks like a
-  # per-row "Add" button, even though underneath it's one shared trigger -
-  # see the per-slot try_register script for why trying all 8 in a fixed
-  # sequence (rather than picking one directly) is safe and correct: the
-  # first slot whose address is still 0 is the one that actually claims
-  # it, every other call in this list is a no-op. Slot order itself is
-  # never shown anywhere - see pressure_sensor.yaml's header.
+  # per-row "Add" button, even though underneath it's one shared trigger.
+  #
+  # Resets pressure_add_claimed to false first, so exactly one of the 8
+  # try_register calls below claims the slot - see that global's own
+  # comment for why this is needed at all (a bug, found on real hardware,
+  # 2026-08-13: each try_register only ever checked *its own* slot's
+  # address, never whether some other slot had already claimed this
+  # address in the same Add - on a fresh board, with every slot free,
+  # every single one of them independently claimed it).
   - platform: template
     id: pressure_add
     name: "Pressure Sensors Add"
@@ -651,6 +689,9 @@ button:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 20
     on_press:
+      - globals.set:
+          id: pressure_add_claimed
+          value: "false"
       - script.execute:
           id: slot1_try_register
           name: !lambda 'return id(pressure_add_name).state;'
