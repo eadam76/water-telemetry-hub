@@ -25,6 +25,7 @@
 #include <cstring>
 #include <vector>
 
+#include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/components/uart/uart.h"
 
@@ -60,10 +61,21 @@ inline uint16_t crc16(const uint8_t *data, size_t len) {
 // bus scan. Polling available() ourselves is what lets scan_bus() below
 // use a much shorter per-address timeout, while read_holding_registers()/
 // write_single_register() still pass a longer one for a real transfer.
+//
+// App.feed_wdt() here is load-bearing, not decoration: a full 1-247
+// scan_bus() runs synchronously inside one button press, ~6s total with
+// nothing responding (247 addresses x the ~25ms probe timeout) - that
+// whole stretch never returns to ESPHome's own Application::loop(),
+// which is what normally feeds the ESP-IDF task watchdog on every main
+// loop tick. Confirmed on real hardware: without this, the watchdog
+// fires mid-scan and the device hard-crashes/reboots. feed_wdt() is
+// internally rate-limited (see the installed esphome package's own
+// application.h/.cpp - safe and cheap to call every spin of this loop.
 inline bool wait_for_bytes(UARTComponent *bus, size_t count, uint32_t timeout_ms) {
   uint32_t start = esphome::millis();
   while (bus->available() < count) {
     if (esphome::millis() - start >= timeout_ms) return false;
+    esphome::App.feed_wdt();
     esphome::yield();
   }
   return true;
