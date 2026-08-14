@@ -434,7 +434,20 @@
   // coerced to a whole number since the number entity's `value` is a
   // plain float over the API. `online` is `undefined` until this slot's
   // first poll completes (a few seconds after boot/registration) -
-  // treated the same as "not confirmed online yet" by callers.
+  // treated the same as "not confirmed online yet" by callers (see
+  // upsertRegisteredPressureRow()'s own "Checking…" state).
+  //
+  // Checking `onlineEntity.value !== undefined`, not just truthiness of
+  // `onlineEntity` itself, is load-bearing: the entity object exists in
+  // `entities` from the moment its *declaration* is known (effectively
+  // from connection), well before its binary_sensor has ever actually
+  // published a state - which for a just-registered slot doesn't happen
+  // until its first poll completes. Without this distinction,
+  // `onlineEntity.value === true` silently evaluated to `false` for that
+  // whole window (comparing `undefined === true`), not `undefined` as
+  // the comment above already claimed - confirmed on real hardware,
+  // 2026-08-13: a freshly-added, perfectly healthy sensor visibly
+  // flashed "Lost" for a moment before its first poll ever ran.
   function registeredPressureSlots() {
     const slots = [];
     for (const e of entities.values()) {
@@ -446,7 +459,7 @@
           slots.push({
             groupName: e.groupName,
             address,
-            online: onlineEntity ? onlineEntity.value === true : undefined,
+            online: onlineEntity && onlineEntity.value !== undefined ? onlineEntity.value === true : undefined,
             order: orderEntity ? Math.round(orderEntity.value || 0) : 0,
           });
         }
@@ -632,6 +645,17 @@
   // address too") than a plain Lost, so it takes priority over whatever
   // the last poll happened to see.
   //
+  // `online` is a tri-state: true/false once this slot's own poll has
+  // actually reported something, or `undefined` for the brief window
+  // between a fresh Add and that first poll completing (up to this
+  // slot's own ~600-670ms interval) - shown as "Checking…", not "Lost".
+  // Rendering it as Lost was real hardware feedback, 2026-08-13: a
+  // just-added, perfectly healthy sensor still visibly flashed Lost for
+  // a moment, since a fresh row starts with no Online reading yet at all
+  // (indistinguishable, before this, from a genuinely unreachable one) -
+  // Lost should mean "this slot was confirmed and then dropped off", not
+  // "haven't heard from it yet".
+  //
   // Name/Address are read-only until the row's own pencil button is
   // pressed, then editable with an explicit Save/Cancel - previously they
   // wrote on every blur (a plain HTML `change` event), which made it
@@ -640,7 +664,7 @@
   // Address set_action) just by tabbing through the row or clicking
   // elsewhere mid-edit. Confirmed too easy to trigger by accident on real
   // use, 2026-08-13.
-  function upsertRegisteredPressureRow(tbody, groupName, isOnline, hasCollision, isFirst, isLast) {
+  function upsertRegisteredPressureRow(tbody, groupName, online, hasCollision, isFirst, isLast) {
     const key = "reg:" + groupName;
     const nameEntity = pressureSlotEntity(groupName, "Display Name");
     const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
@@ -747,6 +771,23 @@
         addrInput.value = row._editOrigAddr;
         exitEdit();
       });
+      // Enter = Save, Escape = Cancel, mirroring the pencil's own pair of
+      // icon buttons rather than requiring a reach for the mouse.
+      // Deliberately attached to the inputs themselves, not the row -
+      // a disabled input never receives keydown from user typing in the
+      // first place, so this is naturally a no-op outside edit mode
+      // without needing its own row._editing guard.
+      const handleEditKeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveBtn.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancelBtn.click();
+        }
+      };
+      nameInput.addEventListener("keydown", handleEditKeydown);
+      addrInput.addEventListener("keydown", handleEditKeydown);
       saveBtn.addEventListener("click", () => {
         const parsed = parseInt(addrInput.value, 10);
         if (Number.isNaN(parsed) || parsed < 1 || parsed > 247) {
@@ -795,10 +836,11 @@
       row._nameInput.value = (nameEntity && nameEntity.value) || "";
       if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
     }
-    row._statusEl.textContent = hasCollision ? "Collision" : isOnline ? "OK" : "Lost";
-    row._statusEl.classList.toggle("dc-pressure-badge-ok", isOnline && !hasCollision);
-    row._statusEl.classList.toggle("dc-pressure-badge-lost", !isOnline && !hasCollision);
+    row._statusEl.textContent = hasCollision ? "Collision" : online === undefined ? "Checking…" : online ? "OK" : "Lost";
+    row._statusEl.classList.toggle("dc-pressure-badge-ok", online === true && !hasCollision);
+    row._statusEl.classList.toggle("dc-pressure-badge-lost", online === false && !hasCollision);
     row._statusEl.classList.toggle("dc-pressure-badge-collision", hasCollision);
+    row._statusEl.classList.toggle("dc-pressure-badge-pending", online === undefined && !hasCollision);
     row._upBtn.disabled = !!isFirst;
     row._downBtn.disabled = !!isLast;
     // Mirrors what upsertServiceText() does for the water meters (CR #8) -
@@ -962,7 +1004,7 @@
       upsertRegisteredPressureRow(
         tbody,
         slot.groupName,
-        slot.online === true,
+        slot.online, // tri-state: true/false/undefined ("never polled yet") - see upsertRegisteredPressureRow()'s own comment
         collisionSet.has(slot.address),
         i === 0,
         i === orderedRegistered.length - 1
@@ -1016,13 +1058,29 @@
       }
     }
 
+    let removedAny = false;
     for (const [key, row] of pressureTableRows) {
       if (!seenKeys.has(key)) {
         row.remove();
         pressureTableRows.delete(key);
+        removedAny = true;
       }
     }
+    // A row disappearing (e.g. Delete) can leave a *different* row's icon
+    // sitting exactly where the mouse cursor already was - the confirm()
+    // dialog that gated the delete is a blocking native prompt, so the
+    // click that led here never involved the mouse actually moving over
+    // whatever's there now. Confirmed on real hardware, 2026-08-13: the
+    // new first row's trash icon showed a stuck hover-red look until the
+    // mouse was moved (or clicked elsewhere). suppressStaleHover() below
+    // clears that until an actual pointer move happens.
+    if (removedAny) suppressStaleHover(tbody);
     updatePressureEmptyState(tbody, seenKeys.size === 0);
+  }
+
+  function suppressStaleHover(tbody) {
+    tbody.classList.add("dc-pressure-table-settling");
+    document.addEventListener("mousemove", () => tbody.classList.remove("dc-pressure-table-settling"), { once: true });
   }
 
   // Home card existence, gated purely on Modbus Address != 0 - see this
@@ -1304,7 +1362,20 @@
       return `Set ${entity.groupName} Reading to ${value}${unit}? This overwrites the accumulated total and cannot be undone.`;
     }
     if (label === "Delete") {
-      return `Delete ${entity.groupName}'s registration (Modbus Address, Display Name)? Its Dashboard card disappears until re-added.`;
+      // entity.groupName here is a pressure slot's internal, deliberately
+      // meaningless compile-time id (e.g. "Pressure Sensor 3" - which
+      // physical slot a sensor happens to occupy is never supposed to be
+      // shown anywhere, see pressure_sensor.yaml's own file header) - the
+      // confirm dialog showing it directly was a real leak of that
+      // internal detail, confirmed confusing on real hardware,
+      // 2026-08-13. Show the sensor's own Display Name instead (falling
+      // back to its Modbus Address if the name was left blank).
+      const nameEntity = pressureSlotEntity(entity.groupName, "Display Name");
+      const addrEntity = pressureSlotEntity(entity.groupName, "Modbus Address");
+      const shownName =
+        (nameEntity && nameEntity.value && nameEntity.value.trim()) ||
+        (addrEntity ? `address ${Math.round(addrEntity.value)}` : "this sensor");
+      return `Delete "${shownName}"'s registration? Its Dashboard card disappears until re-added.`;
     }
     return "Are you sure?";
   }

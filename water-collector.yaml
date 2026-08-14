@@ -122,6 +122,25 @@ globals:
     restore_value: false
     initial_value: "false"
 
+  # Monotonically-increasing counter, handed out (and bumped) by
+  # whichever slot's try_register script actually claims a new
+  # registration (packages/pressure_sensor.yaml) - gives every freshly-
+  # added device a Sort Order strictly higher than any previously issued
+  # one, so it always lands at the bottom of the dashboard's table by
+  # default, matching plain add-order, rather than falling back to
+  # address order among however many still-uncustomized (Sort Order == 0)
+  # slots happen to exist - confirmed a real complaint, 2026-08-13.
+  # restore_value: true - a reboot must not reissue a smaller value than
+  # is already sitting on an existing slot (which could put a *new* add
+  # ahead of older ones after a restart). uint16_t, not uint8_t: only 8
+  # slots exist at once, but this never decreases even across delete/re-
+  # add cycles over the device's whole lifetime, so it needs more
+  # headroom than the slot count itself.
+  - id: next_pressure_sort_order
+    type: uint16_t
+    restore_value: true
+    initial_value: "1"
+
 # level (compile-time ceiling - anything above it is stripped from the
 # binary entirely, can never be shown no matter what) is raised to
 # VERY_VERBOSE so the include/rs485_modbus.h "modbus" tag's detailed

@@ -900,6 +900,13 @@ body {
   color: var(--dc-text-muted);
 }
 
+/* "Checking…" - a just-registered slot before its own first poll
+ * completes, not yet confirmed either way - deliberately the same muted
+ * tone as New, not the alarm-colored Lost, since it isn't one. */
+.dc-pressure-badge-pending {
+  color: var(--dc-text-muted);
+}
+
 .dc-pressure-badge-collision {
   color: var(--dc-danger);
 }
@@ -951,6 +958,17 @@ body {
 
 .dc-pressure-cancel-btn:hover {
   color: var(--dc-danger);
+}
+
+/* suppressStaleHover() in dashboard.js - briefly disables the hover
+ * colors above right after a row is removed (Delete), so whatever icon
+ * ends up positionally under an unmoved mouse cursor (the click that
+ * triggered this went through a blocking confirm() dialog, not a real
+ * mouse move) doesn't show a "stuck" hover look until the mouse actually
+ * moves. Higher specificity than the plain :hover rules above, wins
+ * regardless of source order. */
+.dc-pressure-table-settling .dc-pressure-icon-btn:hover {
+  color: var(--dc-text-muted);
 }
 
 .dc-pressure-save-btn,

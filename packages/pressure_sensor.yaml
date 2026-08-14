@@ -245,18 +245,25 @@ number:
   # physical Modbus address or which slot this happens to be (still
   # meaningless - see the file header). 0 = "never customized"; the
   # dashboard falls back to sorting by address for any slot still at 0
-  # (web/dashboard.js's orderedRegisteredSlots()). Every registered
-  # slot's own value gets rewritten together by each Up/Down press in the
-  # table (movePressureRow() in dashboard.js) - not a device-side concept
-  # at all, so no set_action needed here beyond the default optimistic
-  # publish/restore every other plain value field in this file also uses.
+  # (web/dashboard.js's orderedRegisteredSlots()).
+  #
+  # Two things ever write this: try_register below assigns each freshly-
+  # registered slot the current water-collector.yaml next_pressure_sort_
+  # order counter (then bumps it) - so a new Add always sorts after every
+  # existing row, not by address among however many are still at 0 -
+  # confirmed a real complaint, 2026-08-13. Every registered slot's own
+  # value also gets rewritten together by each Up/Down press in the table
+  # (movePressureRow() in dashboard.js), collapsing back down to small
+  # sequential ranks (1..N) - the counter (which only ever grows) still
+  # guarantees the next Add sorts after those. max_value matches the
+  # counter's own uint16_t range, well beyond the 8-slot manual-rank case.
   - platform: template
     id: ${id_prefix}_sort_order
     name: "${friendly_name} Sort Order"
     icon: "mdi:sort"
     mode: box
     min_value: 0
-    max_value: 8
+    max_value: 65535
     step: 1
     optimistic: true
     restore_value: true
@@ -382,6 +389,17 @@ script:
             - number.set:
                 id: ${id_prefix}_modbus_address
                 value: !lambda 'return address;'
+            # Claims the current counter value for this slot's own Sort
+            # Order, then bumps it - see that number entity's own
+            # comment for why (a fresh Add always sorts after every
+            # already-registered row, not by address among however many
+            # slots are still uncustomized).
+            - number.set:
+                id: ${id_prefix}_sort_order
+                value: !lambda 'return id(next_pressure_sort_order);'
+            - globals.set:
+                id: next_pressure_sort_order
+                value: !lambda 'return id(next_pressure_sort_order) + 1;'
             - globals.set:
                 id: modbus_add_claimed
                 value: "true"
