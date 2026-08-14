@@ -260,7 +260,16 @@
     }
   }
 
-  function upsertHomeMetric(entity) {
+  // `forceUnavailable` (used by syncPressureHomeCard() for a collision-
+  // flagged slot) shows "--" regardless of entity.value - a *clean,
+  // CRC-valid* read during an active Modbus address collision still
+  // isn't trustworthy, since there's no way to tell which of the two
+  // colliding devices actually answered that particular poll; showing
+  // whatever number happened to come back (real hardware confirmed this
+  // visibly flickering between "-- bar" and an actual reading,
+  // 2026-08-13) would silently attribute it to the wrong sensor just as
+  // often as the right one.
+  function upsertHomeMetric(entity, forceUnavailable) {
     const group = ensureHomeGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
       entity.el = el(
@@ -271,8 +280,8 @@
       group.body.appendChild(entity.el);
     }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
-    entity.el.querySelector(".val").textContent = fmtValue(entity);
-    entity.el.querySelector(".unit").textContent = entity.uom || "";
+    entity.el.querySelector(".val").textContent = forceUnavailable ? "--" : fmtValue(entity);
+    entity.el.querySelector(".unit").textContent = forceUnavailable ? "" : entity.uom || "";
     const label = displayName(entity);
     entity.el.querySelector(".label-text").textContent = label;
     attachHelp(entity.el.querySelector(".l"), HELP_TEXT[label]);
@@ -1050,7 +1059,16 @@
       return;
     }
     const pressureEntity = pressureSlotEntity(groupName, "Pressure");
-    if (pressureEntity) upsertHomeMetric(pressureEntity);
+    if (pressureEntity) {
+      // Same collision signal the Service table's own badge already
+      // uses (latestCollisionAddresses(), fed by the debounced "Scan
+      // Collisions" CSV - see set_scan_collision_address()'s cooldown in
+      // pressure_sensor.yaml) - a slot flagged here shows "--" instead
+      // of whatever its last poll happened to read, see
+      // upsertHomeMetric()'s own comment for why.
+      const collision = latestCollisionAddresses().includes(Math.round(addrEntity.value));
+      upsertHomeMetric(pressureEntity, collision);
+    }
   }
 
   function renderPressureEntity(entity) {

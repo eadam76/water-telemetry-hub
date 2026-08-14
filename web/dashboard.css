@@ -658,7 +658,13 @@ body {
  * generic .dc-fields row. */
 .dc-pressure-toolbar {
   display: flex;
-  align-items: flex-end;
+  /* Was flex-end - fine back when the toolbar only ever held the button
+     itself, but once "Scanning…"+the spinner (.dc-pressure-scan-status,
+     a shorter/smaller-font element next to it) moved in as a sibling,
+     bottom-aligning left it visibly sitting below the button's own
+     center instead of level with it - confirmed on real hardware,
+     2026-08-13. */
+  align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 12px;
