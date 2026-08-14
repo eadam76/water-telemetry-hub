@@ -235,11 +235,28 @@ web_server:
   # way). api_encryption_key/ota_password (below) stay secret - those
   # protect the native API and firmware flashing, unrelated to this.
   sorting_groups:
+    # Umbrella group for the "Pulse Meters" table (web/dashboard.js) -
+    # same role as sorting_group_pressure below (houses the Add/Delete
+    # table itself), positioned just before the two meters' own groups so
+    # the table renders above their (only-shown-once-Registered)
+    # calibration fields. No entity is directly tagged to this group -
+    # unlike the pressure sensors' umbrella (which hosts a shared Scan/Add
+    # button), a water meter's Add doesn't need any shared/cross-meter
+    # entity at all (see water_meter.yaml's own commissioning-model note)
+    # - this id exists purely to anchor the table section's position.
+    - id: sorting_group_pulse_meters
+      name: "Pulse Meters"
+      sorting_weight: 8
     # Names deliberately generic ("Water Meter 1/2", not "Main"/"Garden") -
     # which physical meter is which is a fact about *this* installation,
     # not something to bake into the firmware. Rename via each meter's own
     # "Display Name" field on the Service page instead - see the note next
-    # to friendly_name below.
+    # to friendly_name below. Kept as "Water Meter N" (not renamed to
+    # "Pulse Meter N") specifically to avoid changing these entities'
+    # Home-Assistant-facing entity_ids (ESPHome derives them from `name:`,
+    # not `id:`) on an already-deployed device - purely an internal/
+    # compile-time label either way, invisible in the dashboard itself
+    # (see PULSE_METER_RE/groupLabel() in web/dashboard.js).
     - id: sorting_group_meter1
       name: "Water Meter 1"
       sorting_weight: 10

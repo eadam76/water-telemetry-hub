@@ -643,6 +643,18 @@ body {
   max-width: 900px;
 }
 
+/* Pulse meters table (web/dashboard.js's own "Pulse meter table" section)
+ * - reuses .dc-pressure-table's base styling wholesale (border/input/
+ * disabled/hover rules, all domain-agnostic despite the class name) but
+ * with its own, much narrower group width: just Name + Action columns,
+ * no Address/Status/Order, so it doesn't need anywhere near
+ * .dc-pressure-group's room. Same plain .dc-service-group default (no
+ * override) would actually be fine width-wise, but this makes the
+ * narrower intent explicit rather than relying on the coincidence. */
+.dc-pulsemeter-group {
+  max-width: 480px;
+}
+
 /* Lets the table itself scroll sideways, independent of the rest of the
  * page, if its content ever needs more width than even a widened
  * .dc-pressure-group has to give (a narrow phone screen, or a future

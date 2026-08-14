@@ -42,7 +42,6 @@
     "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
-    "Show on Dashboard": "Shows or hides this meter's card on the Dashboard page. Purely a display preference - pulse counting and every other setting stay in effect either way.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Restart (CR #3, previous round): its confirm dialog already
@@ -229,18 +228,17 @@
     refreshGroupLabel(name);
   }
 
-  // "Show on Dashboard" only ever hides this meter's own Dashboard card -
-  // its Service fields (Reading, Zero-Flow Timeout, Display Name, ...)
-  // stay fully visible/editable regardless, since everything they control
-  // stays in effect either way. Used to also collapse those down to just
-  // the toggle itself (dc-meter-disabled/dc-field-keep-visible) - removed:
-  // that made an already-configured meter harder to fix if it needed to
-  // come back, for a purely cosmetic Dashboard-visibility preference.
-  //
-  // Pressure sensor slots don't go through this at all - their Home card
-  // existence is gated by syncPressureHomeCard() below (never created
-  // until commissioned, not created-then-hidden here) - see that
-  // function's own comment for why.
+  // Generic group-visibility hook - currently dormant (nothing calls
+  // groupEnabled.set(), so groupEnabled.get(name) is always undefined,
+  // and this always leaves dc-hidden off) since the one thing that used
+  // to drive it, water meters' old "Show on Dashboard" switch, was
+  // unified into the Registered-gated create/remove model instead
+  // (2026-08-13, see renderPulseMeterEntity()'s own comment) - same
+  // reasoning pressure sensor slots already used, see
+  // syncPressureHomeCard()'s own comment. Left in place as generic
+  // infrastructure rather than removed outright, in case some future
+  // group ever wants a plain show/hide toggle without the stronger
+  // create/remove semantics.
   function applyGroupVisibility(name) {
     if (!initialSettled) return;
     const enabled = groupEnabled.get(name) !== false;
@@ -1177,6 +1175,380 @@
     syncPressureHomeCard(entity.groupName);
   }
 
+  // --- Pulse meter table (Service page) ---------------------------------
+  //
+  // Same Add/Delete/edit-lock commissioning pattern as the Modbus pressure
+  // sensors above (REQUIREMENTS.md's "Pulse meter" architectural note,
+  // 2026-08-13) - unified so "nothing shows until commissioned" is one
+  // rule, not two slightly-different ones depending on which kind of
+  // device it is. Deliberately much simpler than the pressure table
+  // though: there is no bus, so no scan/discovery/collision concept
+  // applies at all - each meter's identity (which GPIO it reads) is fixed
+  // at compile time (water_meter.yaml), so a "New device" row always
+  // exists for whichever meter isn't yet Registered, no Scan Bus press
+  // needed to find it. Reuses the pressure table's own CSS classes
+  // (dc-pressure-icon-btn/dc-pressure-row-editing/etc. - and the
+  // dc-pressure-table base class itself, for the shared border/input/
+  // disabled/hover-suppression rules) rather than duplicating them under
+  // a parallel name - purely visual/behavioral, nothing pressure-specific
+  // about them despite the name.
+  //
+  // Once Registered, a meter's other fields (Total Consumption/Flow Rate
+  // on the Home page, Reading+Update/Zero-Flow Timeout on the Service
+  // page, Total Pulses on Diagnostics) render through the *same* generic
+  // upsertHomeMetric()/upsertServiceNumber()/upsertServiceButton()/
+  // upsertDiagRow() this file already uses everywhere else - only
+  // Registered/Delete/Display Name are intercepted here, everything else
+  // just needs a single gate (isPulseMeterRegistered()) before falling
+  // through to those unchanged.
+
+  const PULSE_METER_RE = /^Water Meter \d+$/;
+  const PULSE_METER_ADD_GROUP = "Pulse Meters";
+
+  function pulseMeterSlotEntity(groupName, label) {
+    for (const e of entities.values()) {
+      if (e.groupName === groupName && displayName(e) === label) return e;
+    }
+    return null;
+  }
+
+  // Both meters, in a fixed order (alphabetical happens to already be
+  // the right physical order: "Water Meter 1" before "...2") - unlike
+  // the pressure table there's no Sort Order/reordering here, since with
+  // only ever two possible, permanently-fixed items there's no
+  // "physical layout" ambiguity a manual order could represent.
+  function pulseMeterGroups() {
+    const names = new Set();
+    for (const e of entities.values()) {
+      if (e.groupName && PULSE_METER_RE.test(e.groupName)) names.add(e.groupName);
+    }
+    return [...names].sort();
+  }
+
+  function isPulseMeterRegistered(groupName) {
+    const e = pulseMeterSlotEntity(groupName, "Registered");
+    return !!(e && e.value === true);
+  }
+
+  let pulseMeterTableBody = null;
+
+  function ensurePulseMeterTable() {
+    let g = serviceGroups.get(PULSE_METER_ADD_GROUP);
+    if (g) return pulseMeterTableBody;
+    const section = el("div", "dc-service-group dc-pulsemeter-group");
+    const label = el("div", "dc-section-label", PULSE_METER_ADD_GROUP);
+    const table = el(
+      "table",
+      "dc-pressure-table dc-pulsemeter-table",
+      `<thead><tr><th>Name</th><th></th></tr></thead><tbody></tbody>`
+    );
+    section.append(label, table);
+    g = { weight: groupWeights.get(PULSE_METER_ADD_GROUP) ?? 500, section };
+    serviceGroups.set(PULSE_METER_ADD_GROUP, g);
+    document.getElementById("dc-page-service").appendChild(section);
+    reorderServiceGroups();
+    pulseMeterTableBody = table.querySelector("tbody");
+    return pulseMeterTableBody;
+  }
+
+  const pulseMeterTableRows = new Map(); // "reg:"+groupName or "new:"+groupName -> <tr>
+  const pulseMeterNewRowDrafts = new Map(); // groupName -> in-progress typed name
+
+  // A registered meter's row - Name is read-only until the pencil button
+  // is pressed, then editable with an explicit Save/Cancel (and
+  // Enter/Escape - see the pressure table's own row for why), same lock
+  // as the pressure table's rows and for the same reason (an accidental
+  // blur used to write immediately). No Address/Status/Order columns -
+  // nothing here to show (a local GPIO pulse counter has no equivalent
+  // failure mode to "Lost"/"Collision", and there's nothing to reorder).
+  function upsertRegisteredPulseMeterRow(tbody, groupName) {
+    const key = "reg:" + groupName;
+    const nameEntity = pulseMeterSlotEntity(groupName, "Display Name");
+    const delEntity = pulseMeterSlotEntity(groupName, "Delete");
+    let row = pulseMeterTableRows.get(key);
+    if (!row) {
+      row = el("tr", "", `<td class="dc-pressure-name"></td><td class="dc-pressure-action"></td>`);
+      pulseMeterTableRows.set(key, row);
+      tbody.appendChild(row);
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.maxLength = 32;
+      nameInput.disabled = true;
+      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      row._nameInput = nameInput;
+
+      const actionCell = row.querySelector(".dc-pressure-action");
+      const editBtn = el("button", "dc-pressure-icon-btn dc-pressure-edit-btn", svgIcon("pencil"));
+      editBtn.type = "button";
+      editBtn.title = "Edit name";
+      actionCell.appendChild(editBtn);
+
+      const delBtn = el("button", "dc-pressure-icon-btn dc-pressure-del-btn", svgIcon("trash"));
+      delBtn.type = "button";
+      delBtn.title = "Delete";
+      actionCell.appendChild(delBtn);
+      row._delBtn = delBtn;
+
+      const saveBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
+      saveBtn.type = "button";
+      saveBtn.title = "Save";
+      actionCell.appendChild(saveBtn);
+
+      const cancelBtn = el("button", "dc-pressure-icon-btn dc-pressure-cancel-btn", svgIcon("close"));
+      cancelBtn.type = "button";
+      cancelBtn.title = "Cancel";
+      actionCell.appendChild(cancelBtn);
+
+      const enterEdit = () => {
+        row._editOrigName = nameInput.value;
+        nameInput.disabled = false;
+        row.classList.add("dc-pressure-row-editing");
+        row._editing = true;
+        nameInput.focus();
+        nameInput.select();
+      };
+      const exitEdit = () => {
+        nameInput.disabled = true;
+        row.classList.remove("dc-pressure-row-editing");
+        row._editing = false;
+      };
+      editBtn.addEventListener("click", enterEdit);
+      cancelBtn.addEventListener("click", () => {
+        nameInput.value = row._editOrigName;
+        exitEdit();
+      });
+      const handleEditKeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveBtn.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancelBtn.click();
+        }
+      };
+      nameInput.addEventListener("keydown", handleEditKeydown);
+      saveBtn.addEventListener("click", () => {
+        if (!nameInput.value.trim()) {
+          alert("Name can't be empty.");
+          return; // stay in edit mode so it can be fixed
+        }
+        const ne = pulseMeterSlotEntity(groupName, "Display Name");
+        if (!ne) return;
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        fetch(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" }).finally(() => {
+          saveBtn.disabled = false;
+          cancelBtn.disabled = false;
+          exitEdit();
+        });
+      });
+    }
+    // Same reasoning as the pressure table's own Delete wiring - this
+    // entity is intercepted before it would ever reach
+    // upsertServiceButton(), the only other place that sets btnEl.
+    if (delEntity) delEntity.btnEl = row._delBtn;
+    row._delBtn.onclick = () => {
+      if (delEntity) pressButton(delEntity);
+    };
+    if (!row._editing) {
+      row._nameInput.value = (nameEntity && nameEntity.value) || "";
+    }
+  }
+
+  // A not-yet-Registered meter's row - Name is a local draft (nothing is
+  // written until Add is pressed, same as the pressure table's own "New
+  // device" rows), pre-filled from whatever Display Name this meter
+  // already has (Delete deliberately preserves it - see that button's
+  // own comment in water_meter.yaml) so re-adding the same physical
+  // meter doesn't require retyping a name it already had, while still
+  // allowing it to be changed here first. Add stays disabled with no
+  // name typed, same reasoning as the pressure table's own Add.
+  function upsertNewPulseMeterRow(tbody, groupName) {
+    const key = "new:" + groupName;
+    let row = pulseMeterTableRows.get(key);
+    if (!row) {
+      const nameEntity = pulseMeterSlotEntity(groupName, "Display Name");
+      row = el("tr", "", `<td class="dc-pressure-name"></td><td class="dc-pressure-action"></td>`);
+      pulseMeterTableRows.set(key, row);
+      tbody.appendChild(row);
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.maxLength = 32;
+      nameInput.placeholder = "Meter name";
+      nameInput.value = pulseMeterNewRowDrafts.has(groupName)
+        ? pulseMeterNewRowDrafts.get(groupName)
+        : (nameEntity && nameEntity.value) || "";
+      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      row._nameInput = nameInput;
+
+      const addBtn = el("button", "dc-btn dc-btn-compact", "Add");
+      addBtn.type = "button";
+      addBtn.disabled = !nameInput.value.trim();
+      nameInput.addEventListener("input", () => {
+        pulseMeterNewRowDrafts.set(groupName, nameInput.value);
+        if (!addBtn._busy) addBtn.disabled = !nameInput.value.trim();
+      });
+      addBtn.addEventListener("click", () => {
+        if (addBtn.disabled) return;
+        const ne = pulseMeterSlotEntity(groupName, "Display Name");
+        const regEntity = pulseMeterSlotEntity(groupName, "Registered");
+        if (!ne || !regEntity) return;
+        const name = row._nameInput.value.trim();
+        if (!name) return;
+        addBtn._busy = true;
+        addBtn.disabled = true;
+        fetch(`${ne.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
+          .then(() => fetch(`${regEntity.namePath}/turn_on`, { method: "POST" }))
+          .finally(() => {
+            addBtn._busy = false;
+          });
+        pulseMeterNewRowDrafts.delete(groupName);
+      });
+      row._addBtn = addBtn;
+      row.querySelector(".dc-pressure-action").appendChild(addBtn);
+    }
+  }
+
+  // The actual JOIN, same idea as renderPressureTableBody()'s own - a
+  // row is either "registered" (Registered switch on) or "new" (off);
+  // every known meter always has exactly one row, never zero, never
+  // both. Reorders with the same "only move a node when it isn't
+  // already in the right spot" reconciliation as the pressure table,
+  // for the same reason (avoids blurring an in-progress edit on every
+  // unrelated re-render).
+  function renderPulseMeterTableBody() {
+    const tbody = ensurePulseMeterTable();
+    if (!tbody) return;
+    const groups = pulseMeterGroups();
+    const seenKeys = new Set();
+    for (const groupName of groups) {
+      if (isPulseMeterRegistered(groupName)) {
+        seenKeys.add("reg:" + groupName);
+        upsertRegisteredPulseMeterRow(tbody, groupName);
+      } else {
+        seenKeys.add("new:" + groupName);
+        upsertNewPulseMeterRow(tbody, groupName);
+      }
+    }
+    const desiredOrder = groups.map((g) => pulseMeterTableRows.get((isPulseMeterRegistered(g) ? "reg:" : "new:") + g));
+    let anchor = tbody.firstElementChild;
+    for (const row of desiredOrder) {
+      if (anchor === row) anchor = anchor.nextElementSibling;
+      else tbody.insertBefore(row, anchor);
+    }
+    for (const [key, row] of pulseMeterTableRows) {
+      if (!seenKeys.has(key)) {
+        row.remove();
+        pulseMeterTableRows.delete(key);
+      }
+    }
+  }
+
+  // Creates/removes this meter's Home card, Service section (Reading/
+  // Update/Zero-Flow Timeout) and Diagnostics section (Total Pulses) as
+  // a whole, purely from its own Registered state - the unified
+  // counterpart of syncPressureHomeCard(), extended to all three pages
+  // since a water meter (unlike a pressure slot) has real fields on all
+  // of them, not just a Home card.
+  //
+  // Critically, also clears every cached DOM reference this file keeps
+  // on an entity object (.el/.inputEl/.readoutEl/.toggleEl/.btnEl) when
+  // un-registering - without this, re-Registering the same meter later
+  // would silently keep updating detached, invisible nodes from before
+  // instead of rebuilding fresh ones: the exact bug already found and
+  // fixed once for the pressure sensors' own Home card (entity.el going
+  // stale across a remove-then-recreate cycle), generalized here since
+  // a water meter caches several *kinds* of reference across three pages
+  // instead of just one.
+  function syncPulseMeterVisibility(groupName) {
+    if (isPulseMeterRegistered(groupName)) return; // still registered - individual entities (re)build lazily via the generic dispatch in renderPulseMeterEntity()
+    const home = homeGroups.get(groupName);
+    if (home) {
+      home.card.remove();
+      homeGroups.delete(groupName);
+    }
+    const svc = serviceGroups.get(groupName);
+    if (svc) {
+      svc.section.remove();
+      serviceGroups.delete(groupName);
+    }
+    const diag = diagGroups.get(groupName);
+    if (diag) {
+      diag.section.remove();
+      diagGroups.delete(groupName);
+    }
+    for (const e of entities.values()) {
+      if (e.groupName === groupName) {
+        e.el = null;
+        e.inputEl = null;
+        e.readoutEl = null;
+        e.toggleEl = null;
+        e.btnEl = null;
+      }
+    }
+  }
+
+  // Total Consumption/Flow Rate/Reading/Update/Zero-Flow Timeout/Total
+  // Pulses only ever render once Registered - falls through to the exact
+  // same generic dispatch every other entity in this file goes through
+  // otherwise. Split out from renderPulseMeterEntity() below so it can
+  // also be called directly to "catch up" entities whose own update
+  // already arrived and was skipped before Registered was known - see
+  // that function's own comment for why that's needed at all.
+  function renderPulseMeterCalibrationEntity(entity) {
+    if (!isPulseMeterRegistered(entity.groupName)) return;
+    const page = pageFor(entity);
+    if (page === "home") upsertHomeMetric(entity);
+    else if (page === "diagnostics") upsertDiagRow(entity);
+    else if (page === "service") {
+      if (entity.domain === "number") upsertServiceNumber(entity);
+      else if (entity.domain === "button") upsertServiceButton(entity);
+      else if (entity.domain === "switch") upsertServiceSwitch(entity);
+      else if (entity.domain === "text") upsertServiceText(entity);
+    }
+  }
+
+  function renderPulseMeterEntity(entity) {
+    const groupName = entity.groupName;
+    const label = displayName(entity);
+    if (label === "Registered" || label === "Delete" || label === "Display Name") {
+      if (label === "Display Name") {
+        // Mirrors what upsertServiceText() does for every other renamed
+        // group (water meters used to reach it directly for this same
+        // entity, before Display Name was intercepted here) - this
+        // group's Home card header/Service section label has no other
+        // way to learn a renamed Display Name, since it never reaches
+        // that generic path anymore.
+        groupDisplayNames.set(groupName, (entity.value || "").trim());
+        applyGroupLabel(groupName);
+      }
+      renderPulseMeterTableBody();
+      syncPulseMeterVisibility(groupName);
+      // ESPHome dumps entities in a fixed cross-domain order, not
+      // registration order (same phenomenon noted elsewhere in this
+      // file) - "Registered" (switch domain) isn't guaranteed to arrive
+      // before e.g. "Total Consumption" (sensor domain). Without this,
+      // an entity whose own update happened to arrive *before*
+      // Registered was known would be silently skipped by the gate in
+      // renderPulseMeterCalibrationEntity() above and then never
+      // revisited, since nothing else would trigger it again until its
+      // own next unrelated change - potentially a long wait (e.g. Total
+      // Consumption, which only updates on the next pulse). Once
+      // Registered is known, re-run every other already-arrived entity
+      // in this group through the same dispatch to pick up anything
+      // that was missed.
+      if (isPulseMeterRegistered(groupName)) {
+        for (const e of entities.values()) {
+          if (e.groupName === groupName && e !== entity) renderPulseMeterCalibrationEntity(e);
+        }
+      }
+      return;
+    }
+    renderPulseMeterCalibrationEntity(entity);
+  }
+
   // A number entity named "<Meter> Reading" (object_id ...maps to
   // "..._reading") and a button named "<Meter> Update" ("..._update")
   // are two ends of one calibration action - see the naming note next to
@@ -1307,11 +1679,12 @@
     reorderServiceFields(group);
   }
 
-  // Show on Dashboard (CR #9) - a pill toggle. Purely a dashboard
-  // visibility preference (see the YAML comment next to it) - flipping it
-  // shows/hides this meter's Dashboard card, nothing else; its other
-  // Service fields stay visible/editable regardless (see the note on
-  // applyGroupVisibility() for why that changed).
+  // Generic switch field - a pill toggle. Water meters' own "Registered"
+  // switch (which used to reach this, as "Show on Dashboard", CR #9) is
+  // intercepted before it ever gets here now - see
+  // renderPulseMeterEntity()'s own comment for why - so in practice
+  // nothing currently reaches this path, but it's kept as the generic
+  // fallback for any future plain switch-domain field.
   function upsertServiceSwitch(entity) {
     const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
@@ -1336,10 +1709,6 @@
     const on = entity.value === true;
     entity.toggleEl.classList.toggle("dc-toggle-on", on);
     entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
-    if (label === "Show on Dashboard") {
-      groupEnabled.set(entity.groupName, on);
-      applyGroupVisibility(entity.groupName);
-    }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
   }
@@ -1393,7 +1762,7 @@
       const unit = numberEntity && numberEntity.uom ? " " + numberEntity.uom : "";
       return `Set ${entity.groupName} Reading to ${value}${unit}? This overwrites the accumulated total and cannot be undone.`;
     }
-    if (label === "Delete") {
+    if (label === "Delete" && isPressureGroup(entity.groupName)) {
       // entity.groupName here is a pressure slot's internal, deliberately
       // meaningless compile-time id (e.g. "Pressure Sensor 3" - which
       // physical slot a sensor happens to occupy is never supposed to be
@@ -1408,6 +1777,20 @@
         (nameEntity && nameEntity.value && nameEntity.value.trim()) ||
         (addrEntity ? `address ${Math.round(addrEntity.value)}` : "this sensor");
       return `Delete "${shownName}"'s registration? Its Dashboard card disappears until re-added.`;
+    }
+    if (label === "Delete" && PULSE_METER_RE.test(entity.groupName)) {
+      // Unlike a pressure slot's Delete, a water meter's own raw group
+      // name ("Water Meter 1") is a perfectly reasonable fallback here -
+      // it's not an internal/meaningless id the way a pressure slot's is
+      // (see the branch above), a water meter's identity is permanently
+      // tied to its own physical GPIO. Wording also differs on purpose:
+      // pulse counting and the accumulated Total Consumption keep running
+      // in the background, unlike a pressure slot's Delete, which really
+      // does forget the registration outright - see water_meter.yaml's
+      // own Delete comment for why these two domains differ here.
+      const nameEntity = pulseMeterSlotEntity(entity.groupName, "Display Name");
+      const shownName = (nameEntity && nameEntity.value && nameEntity.value.trim()) || entity.groupName;
+      return `Stop showing "${shownName}"? Pulse counting and its accumulated Total Consumption keep running in the background - re-add it later to pick up where it left off.`;
     }
     return "Are you sure?";
   }
@@ -1558,6 +1941,12 @@
     // the "Pressure sensor table" section above for why.
     if (entity.groupName && isPressureGroup(entity.groupName)) {
       renderPressureEntity(entity);
+      return;
+    }
+    // Water meters ("Pulse meters") - same reasoning, see the "Pulse
+    // meter table" section above.
+    if (entity.groupName && PULSE_METER_RE.test(entity.groupName)) {
+      renderPulseMeterEntity(entity);
       return;
     }
     // "Debug Log: Modbus" - mounted into the Log page's own toolbar
