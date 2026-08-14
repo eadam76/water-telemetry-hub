@@ -789,6 +789,20 @@
       nameInput.addEventListener("keydown", handleEditKeydown);
       addrInput.addEventListener("keydown", handleEditKeydown);
       saveBtn.addEventListener("click", () => {
+        // A blank Display Name doesn't just look empty - groupLabel()'s
+        // own fallback (dashboard.js's shared home/section-header logic)
+        // falls straight through to the group's raw compile-time id
+        // (e.g. "Pressure Sensor 3") the moment the stored name is
+        // empty, exactly the internal, deliberately-meaningless string
+        // this whole file goes out of its way to never show elsewhere.
+        // The Add flow already required a name before it would even
+        // fire (upsertNewPressureRow()); confirmed on real hardware,
+        // 2026-08-13, that editing an existing row back to blank was
+        // still wide open to the same problem - required here too.
+        if (!nameInput.value.trim()) {
+          alert("Name can't be empty.");
+          return; // stay in edit mode so it can be fixed
+        }
         const parsed = parseInt(addrInput.value, 10);
         if (Number.isNaN(parsed) || parsed < 1 || parsed > 247) {
           alert("Address must be a number between 1 and 247.");
