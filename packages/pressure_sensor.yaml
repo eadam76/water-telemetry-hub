@@ -373,6 +373,16 @@ script:
   # NOT write anything to the physical sensor, since the address it's
   # given is one the bus scan just found the sensor already answering
   # to.
+  #
+  # Also requires a non-empty name (2026-08-13) - the dashboard's own Add
+  # button already refuses to fire this at all without one, but this is
+  # the actual point where an empty name could otherwise become a real,
+  # persisted Display Name. Used to silently substitute "${friendly_name}"
+  # (this slot's own internal id, e.g. "Pressure Sensor 3") in that case
+  # - direct feedback, same day: that internal id must never end up
+  # anywhere a real Display Name is expected, not even as a one-time
+  # fallback, so an empty name now simply isn't claimed at all rather
+  # than being silently replaced with something else.
   - id: ${id_prefix}_try_register
     mode: single
     parameters:
@@ -381,11 +391,11 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(modbus_add_claimed);'
+            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(modbus_add_claimed) && !name.empty();'
           then:
             - text.set:
                 id: ${id_prefix}_display_name
-                value: !lambda 'return name.empty() ? std::string("${friendly_name}") : name;'
+                value: !lambda 'return name;'
             - number.set:
                 id: ${id_prefix}_modbus_address
                 value: !lambda 'return address;'

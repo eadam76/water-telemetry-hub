@@ -141,8 +141,26 @@
   const groupDisplayNames = new Map();
   let currentPage = "home";
 
+  // A pressure slot's raw compile-time id (e.g. "Pressure Sensor 3") is
+  // deliberately meaningless (see pressure_sensor.yaml's own file
+  // header) and must never be shown anywhere in this UI - not even
+  // transiently while its real Display Name hasn't arrived yet. On a
+  // fresh connection/reconnect, entities arrive gradually, not
+  // atomically (ESPHome dumps them in a fixed cross-domain order, not
+  // registration order - see the note further up on the same
+  // phenomenon affecting group labels generally) - a pressure slot's
+  // Modbus Address (number domain) can easily be known before its
+  // Display Name (text domain) is, which used to flash the raw id as
+  // that card's header for a moment. Confirmed on real hardware,
+  // 2026-08-13 - direct feedback was to show nothing at all rather than
+  // the wrong thing. Every other group's raw name (Water Meter 1,
+  // Network, ...) is fine to show as a fallback - only pressure slots
+  // need this exception, isPressureGroup() is defined further down but
+  // hoisted (function declaration), so it's callable from here.
   function groupLabel(name) {
-    return groupDisplayNames.get(name) || name;
+    const custom = groupDisplayNames.get(name);
+    if (custom) return custom;
+    return isPressureGroup(name) ? "" : name;
   }
 
   // Re-applies a group's current display name to every page that has
