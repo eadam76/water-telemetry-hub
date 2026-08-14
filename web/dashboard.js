@@ -583,37 +583,34 @@
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.idleLabel = displayName(entity);
-      // Label and spinner are separate child elements, not the button's
-      // own textContent, specifically so syncScanButtonBusyState() below
-      // can toggle the spinner without clobbering it every time it
-      // rewrites the label (a plain `btnEl.textContent = ...` replaces
-      // *all* children, spinner included).
-      entity.btnEl = el("button", "dc-btn dc-btn-compact");
-      entity.labelEl = el("span", null, entity.idleLabel);
-      entity.spinnerEl = el("span", "dc-spinner");
-      entity.spinnerEl.hidden = true;
-      entity.btnEl.append(entity.labelEl, entity.spinnerEl);
+      // The button's own label never changes (previously swapped to
+      // "Scanning…", which - being longer than "Scan Bus" - visibly grew
+      // the button itself mid-scan, confirmed to look wrong on real
+      // hardware, 2026-08-13). "Scanning…" + the spinner instead live in
+      // a separate status element next to the button, so the button's
+      // own size is fixed regardless of state.
+      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
         fetch(`${entity.namePath}/press`, { method: "POST" });
       });
-      pressureToolbarEl.appendChild(entity.btnEl);
+      entity.statusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
+      entity.statusEl.hidden = true;
+      pressureToolbarEl.append(entity.btnEl, entity.statusEl);
     }
   }
 
   // Drives the Scan Bus button's busy state from modbus_scan_in_progress
   // (see mountPressureToolbarButton()'s own comment for why this - not
   // the button entity's own fetch() - is the source of truth). A ~6s
-  // scan with only a relabeled button as feedback still read as "did
-  // this actually do anything?" at a glance - the spinner is a second,
-  // more immediately legible "something is happening" signal alongside
-  // the text.
+  // scan with only a disabled button as feedback still read as "did this
+  // actually do anything?" at a glance - the adjacent spinner+label is a
+  // second, more immediately legible "something is happening" signal.
   function syncScanButtonBusyState(inProgress) {
     const scanEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Bus");
     if (!scanEntity || !scanEntity.btnEl) return;
     scanEntity.btnEl.disabled = inProgress;
-    scanEntity.labelEl.textContent = inProgress ? "Scanning…" : scanEntity.idleLabel;
-    scanEntity.spinnerEl.hidden = !inProgress;
+    scanEntity.statusEl.hidden = !inProgress;
   }
 
   const pressureTableRows = new Map(); // "reg:"+groupName or "new:"+address -> <tr>
@@ -1033,6 +1030,23 @@
         home.card.remove();
         homeGroups.delete(groupName);
       }
+      // upsertHomeMetric() below caches the "Pressure" entity's own DOM
+      // row on entity.el and only (re)creates it when that's falsy -
+      // removing the *card* here without also clearing this left a
+      // dangling reference to a now-detached node: a later
+      // re-registration found entity.el already truthy, so it just kept
+      // updating that orphaned, invisible node forever instead of
+      // rebuilding and reattaching a fresh row to the new card. Confirmed
+      // the actual cause of a real symptom - the card's header/icon
+      // reappeared correctly but the pressure value itself never came
+      // back, "fixed" only by a full page reload (which throws away
+      // every cached DOM reference and starts clean) - 2026-08-13. Can
+      // be reached even without ever actually being deleted by the user:
+      // e.g. a brief address-not-yet-settled moment during Add, or
+      // anything else that transiently makes this check true and false
+      // again in quick succession.
+      const pressureEntity = pressureSlotEntity(groupName, "Pressure");
+      if (pressureEntity) pressureEntity.el = null;
       return;
     }
     const pressureEntity = pressureSlotEntity(groupName, "Pressure");

@@ -838,17 +838,28 @@ packages:
   # header for the id_prefix/friendly_name rename caveat and the current
   # (real Modbus RTU over `uart: rs485_uart` above) status.
   #
-  # poll_interval is staggered 40ms apart per slot (520ms..800ms) -
+  # poll_interval is staggered 10ms apart per slot (600ms..670ms) -
   # deliberately not one shared value for all 8 - see
   # packages/pressure_sensor.yaml's own Pressure sensor comment for why
-  # (avoids all 8 slots' polls landing on the same main-loop tick).
+  # (avoids all 8 slots' polls landing on the same main-loop tick). Any 8
+  # distinct fixed values already guarantees that - it doesn't take a
+  # wide spread, and a wide one (520ms..800ms, ~1.5x slowest-to-fastest,
+  # used until 2026-08-13) made the slowest slot refresh noticeably less
+  # often than the fastest for no real benefit; narrowed to keep every
+  # slot close to equally responsive while keeping the same guaranteed-
+  # never-lockstep property (still 8 distinct constants, just closer
+  # together - true per-poll randomization was considered instead and
+  # rejected: unlike this deterministic ladder, it could occasionally
+  # recreate the exact simultaneous-poll collision this exists to avoid,
+  # purely by chance, and would be harder to reason about/debug for an
+  # unclear benefit).
   pressure_slot1: !include
     file: packages/pressure_sensor.yaml
     vars:
       id_prefix: slot1
       friendly_name: "Pressure Sensor 1"
       sorting_group_id: sorting_group_pressure1
-      poll_interval: 520ms
+      poll_interval: 620ms
 
   pressure_slot2: !include
     file: packages/pressure_sensor.yaml
@@ -856,7 +867,7 @@ packages:
       id_prefix: slot2
       friendly_name: "Pressure Sensor 2"
       sorting_group_id: sorting_group_pressure2
-      poll_interval: 560ms
+      poll_interval: 610ms
 
   pressure_slot3: !include
     file: packages/pressure_sensor.yaml
@@ -872,7 +883,7 @@ packages:
       id_prefix: slot4
       friendly_name: "Pressure Sensor 4"
       sorting_group_id: sorting_group_pressure4
-      poll_interval: 640ms
+      poll_interval: 630ms
 
   pressure_slot5: !include
     file: packages/pressure_sensor.yaml
@@ -880,7 +891,7 @@ packages:
       id_prefix: slot5
       friendly_name: "Pressure Sensor 5"
       sorting_group_id: sorting_group_pressure5
-      poll_interval: 680ms
+      poll_interval: 640ms
 
   pressure_slot6: !include
     file: packages/pressure_sensor.yaml
@@ -888,7 +899,7 @@ packages:
       id_prefix: slot6
       friendly_name: "Pressure Sensor 6"
       sorting_group_id: sorting_group_pressure6
-      poll_interval: 720ms
+      poll_interval: 650ms
 
   pressure_slot7: !include
     file: packages/pressure_sensor.yaml
@@ -896,7 +907,7 @@ packages:
       id_prefix: slot7
       friendly_name: "Pressure Sensor 7"
       sorting_group_id: sorting_group_pressure7
-      poll_interval: 760ms
+      poll_interval: 660ms
 
   pressure_slot8: !include
     file: packages/pressure_sensor.yaml
@@ -904,4 +915,4 @@ packages:
       id_prefix: slot8
       friendly_name: "Pressure Sensor 8"
       sorting_group_id: sorting_group_pressure8
-      poll_interval: 800ms
+      poll_interval: 670ms

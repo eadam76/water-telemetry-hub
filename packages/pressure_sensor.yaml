@@ -58,13 +58,22 @@
 #                        own comment below for why.
 
 globals:
-  # How many *consecutive* clean (non-collision) polls this slot has seen
-  # in a row - see the Pressure sensor's own lambda below for why
-  # clearing "Collision" needs more than just the latest poll's result.
-  # Not persisted (restore_value: false) - a reboot has no memory of an
-  # in-progress streak anyway, starting over at 0 is exactly correct.
-  - id: ${id_prefix}_collision_clean_streak
-    type: uint8_t
+  # millis() timestamp of this slot's last collision-flagged poll (0 =
+  # never) - see the Pressure sensor's own lambda below for why clearing
+  # "Collision" needs more than just the latest poll's result. A fixed
+  # *count* of consecutive clean polls (the first version of this,
+  # 2026-08-13) turned out not to be robust enough on its own - with true
+  # bus-arbitration randomness, two clean polls in a row can still happen
+  # by chance while the collision is genuinely ongoing (confirmed a real,
+  # if less frequent, remaining false-"OK" flash on real hardware even
+  # with a streak requirement). A time-based cooldown is stronger: *any*
+  # collision seen during the cooldown window resets it, no matter how
+  # many individual polls in between happened to look clean - see
+  # COLLISION_COOLDOWN_MS below. Not persisted (restore_value: false) - a
+  # reboot has no memory of an in-progress cooldown anyway, starting over
+  # at 0 (= "long enough ago") is exactly correct.
+  - id: ${id_prefix}_last_collision_ms
+    type: uint32_t
     restore_value: false
     initial_value: "0"
 
@@ -121,35 +130,24 @@ sensor:
       bool collision = false;
       bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
       id(${id_prefix}_online).publish_state(ok);
+      // Below this, has to genuinely stay quiet for a while before
+      // "Collision" clears - see COLLISION_COOLDOWN_MS and the global's
+      // own comment for why a poll-count streak alone wasn't enough.
+      const uint32_t COLLISION_COOLDOWN_MS = 2000;
       if (collision) {
-        // Immediate and decisive, no debounce needed on the way *up* - a
-        // garbled reply is real, right now. Resets the clean streak so
-        // any earlier progress toward clearing starts over.
-        id(${id_prefix}_collision_clean_streak) = 0;
+        id(${id_prefix}_last_collision_ms) = millis();
         rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, true);
-      } else if (ok) {
-        // A single clean read is *not* proof the collision is over: on a
-        // shared address, RS485 bus arbitration means any given poll can
-        // land a clean single-device reply purely because the *other*
-        // device didn't happen to answer this exact time, even while it's
-        // still there. Clearing on just one clean poll produced a real,
-        // confirmed symptom - the badge briefly, falsely flashing back to
-        // "OK" for a poll or two before flipping back to Collision, which
-        // is worse than useless since a colliding address is never
-        // actually "OK". Require two clean polls in a row before
-        // actually clearing it; keep it flagged in the meantime, without
-        // ever latching permanently (a poll's own ordinary CRC failure
-        // above still notices as soon as the collision resumes).
-        id(${id_prefix}_collision_clean_streak)++;
-        if (id(${id_prefix}_collision_clean_streak) >= 2) {
-          rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
-        }
+      } else if (ok && millis() - id(${id_prefix}_last_collision_ms) >= COLLISION_COOLDOWN_MS) {
+        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
       }
       // A plain timeout (ok == false, collision == false) is inconclusive
-      // either way - deliberately left alone: doesn't reset the clean
-      // streak (a stray timeout partway through recovery shouldn't have
-      // to restart the count from zero) and doesn't touch the Collision
-      // flag either (no evidence either way this poll).
+      // either way - deliberately left alone: doesn't push the cooldown
+      // out further (a stray timeout partway through recovery shouldn't
+      // delay clearing) and doesn't touch the Collision flag either (no
+      // evidence either way this poll). `millis() - last_collision_ms`
+      // is unsigned wraparound-safe (the standard embedded idiom) even
+      // across millis()'s own ~49-day rollover, unlike comparing against
+      // a stored future "clear-at" timestamp would be.
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}

@@ -316,13 +316,35 @@ inline ScanResult scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_
   ESP_LOGD(TAG, "scan_bus: sweeping addresses %d-%d (~%.1fs total)...", min_address, max_address,
            (max_address - min_address + 1) * per_address_timeout_ms / 1000.0f);
   ScanResult result;
-  for (uint16_t address = min_address; address <= max_address; address++) {
-    switch (probe(bus, static_cast<uint8_t>(address), per_address_timeout_ms)) {
+  for (uint16_t address16 = min_address; address16 <= max_address; address16++) {
+    auto address = static_cast<uint8_t>(address16);
+    ProbeResult first = probe(bus, address, per_address_timeout_ms);
+    if (first == ProbeResult::FOUND) {
+      // A single clean probe isn't proof nothing else shares this
+      // address - RS485 bus arbitration between two colliding devices
+      // means any one probe can land a clean single-device reply purely
+      // by chance, even while a second device is genuinely still there.
+      // Confirmed non-deterministic on real hardware, 2026-08-13: the
+      // exact same wiring (two devices at one address, a third
+      // elsewhere) sometimes needed a second Scan Bus press before the
+      // collision actually showed up. Re-probe once before trusting a
+      // FOUND result - only escalates to COLLISION on a second, *actual*
+      // positive collision signal (a CRC-failed-but-received reply), not
+      // merely a second miss (a lone NO_RESPONSE proves nothing either
+      // way, so it doesn't override an already-confirmed FOUND). Only
+      // ever costs a second probe for addresses that answered at all -
+      // the vast majority of a 1-247 sweep gets pure silence and stays
+      // exactly as cheap as before.
+      if (probe(bus, address, per_address_timeout_ms) == ProbeResult::COLLISION) {
+        first = ProbeResult::COLLISION;
+      }
+    }
+    switch (first) {
       case ProbeResult::FOUND:
-        result.found.push_back(static_cast<uint8_t>(address));
+        result.found.push_back(address);
         break;
       case ProbeResult::COLLISION:
-        result.collisions.push_back(static_cast<uint8_t>(address));
+        result.collisions.push_back(address);
         break;
       case ProbeResult::NO_RESPONSE:
         break;

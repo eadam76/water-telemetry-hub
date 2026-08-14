@@ -592,6 +592,22 @@ body {
   color: #06201d;
 }
 
+/* Without this, a disabled button (e.g. Scan Bus mid-scan) still looked
+ * hoverable/clickable - the accent hover fill above has no :disabled
+ * exception of its own, and a disabled form control doesn't reliably
+ * stop `:hover` from matching in every engine. Reverts back to the
+ * plain (non-hover) look explicitly instead of relying on that,
+ * confirmed necessary on real hardware, 2026-08-13. */
+.dc-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dc-btn:disabled:hover {
+  background: var(--dc-accent-dim);
+  color: var(--dc-accent);
+}
+
 .dc-btn.dc-pressed {
   opacity: 0.6;
 }
@@ -650,23 +666,38 @@ body {
 
 .dc-pressure-toolbar .dc-btn.dc-btn-compact {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
 }
 
-/* Small spinning ring, shown next to the Scan Bus label while a scan is
- * running (syncScanButtonBusyState() in dashboard.js) - `currentColor`
- * so it always matches the button's own (already theme-aware) text
- * color, no separate color token needed. The [hidden] rule is required,
- * not redundant with the browser default - .dc-spinner's own
- * `display: inline-block` below has equal specificity to the UA
- * stylesheet's `[hidden] { display: none }` and, being an author rule,
- * would otherwise win and silently defeat `hidden`. */
+/* "Scanning…" + the spinner - a separate element next to the Scan Bus
+ * button (mountPressureToolbarButton() in dashboard.js), not inside the
+ * button itself, specifically so the button's own width stays fixed
+ * regardless of state (a "Scanning…" label swapped into the button in an
+ * earlier version was longer than "Scan Bus", visibly growing the
+ * button mid-scan - confirmed to look wrong on real hardware,
+ * 2026-08-13). */
+.dc-pressure-scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dc-text-muted);
+  font-size: 13px;
+}
+
+.dc-pressure-scan-status[hidden] {
+  display: none;
+}
+
+/* Small spinning ring - `currentColor` so it always matches whatever
+ * text color surrounds it (theme-aware, no separate color token needed).
+ * The [hidden] rule is required, not redundant with the browser default
+ * - .dc-spinner's own `display: inline-block` below has equal
+ * specificity to the UA stylesheet's `[hidden] { display: none }` and,
+ * being an author rule, would otherwise win and silently defeat
+ * `hidden`. */
 .dc-spinner {
   display: inline-block;
   width: 13px;
   height: 13px;
-  margin-left: 8px;
   border: 2px solid currentColor;
   border-right-color: transparent;
   border-radius: 50%;
