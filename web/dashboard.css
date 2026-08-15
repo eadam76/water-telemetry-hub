@@ -714,9 +714,10 @@ body {
   overflow-x: auto;
 }
 
-/* Scan Bus button (see mountPressureToolbarButton() in dashboard.js) -
- * mounted into its own small toolbar above the table rather than a
- * generic .dc-fields row. */
+/* Add Pulse Meter/Add Modbus Device/Scan Bus (see mountDeviceAddButtons()/
+ * mountPressureToolbarButton() in dashboard.js) - mounted into a small
+ * toolbar BELOW the table (moved from above, 2026-08-13, direct feedback)
+ * rather than a generic .dc-fields row. */
 .dc-pressure-toolbar {
   display: flex;
   /* Was flex-end - fine back when the toolbar only ever held the button
@@ -728,7 +729,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-top: 12px;
 }
 
 .dc-pressure-toolbar .dc-btn.dc-btn-compact {
@@ -1075,6 +1076,66 @@ body {
 .dc-pressure-row-editing .dc-pressure-save-btn,
 .dc-pressure-row-editing .dc-pressure-cancel-btn {
   display: inline-flex;
+}
+
+/* A scan-discovered "New device" row (upsertNewPressureRow()) and the
+ * shared Add row (buildDeviceAddRow()) both reuse the Save(check)/
+ * Cancel(close) icon pair for their own Confirm/Dismiss - 2026-08-13,
+ * direct feedback, replacing a standalone text "Add" button - but
+ * neither carries .dc-pressure-row-editing (that class means something
+ * more specific: an existing registered row mid-edit), so they need
+ * their own override of the hidden-by-default rule above. */
+.dc-pressure-row-new .dc-pressure-save-btn,
+.dc-pressure-row-new .dc-pressure-cancel-btn,
+.dc-device-add-row .dc-pressure-save-btn,
+.dc-device-add-row .dc-pressure-cancel-btn {
+  display: inline-flex;
+}
+
+/* Small per-row icon (gauge = Modbus pressure sensor, water = pulse
+ * meter - upsertRegisteredPressureRow()/upsertNewPressureRow()/
+ * upsertCollisionPressureRow()/upsertRegisteredPulseMeterRow() in
+ * dashboard.js, the same icons already used for each type's Home card
+ * header) - added 2026-08-13, direct feedback: with both device types now
+ * sharing one table, at-a-glance type recognition needs *something*
+ * beyond reading the name, which a renamed device might not hint at at
+ * all (e.g. "Garden Tap" gives no clue whether it's a pressure sensor or
+ * a pulse meter). */
+.dc-device-type-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--dc-text-muted);
+  margin-top: 3px;
+}
+
+.dc-device-type-icon svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Name cell layout: a flex wrapper INSIDE the <td> (not on the <td>
+ * itself - overriding a table cell's own `display: table-cell` to `flex`
+ * would pull it out of the table's column layout entirely) puts the type
+ * icon fixed-width on the left, with everything else (address hint/
+ * collision note/name input, stacked top-to-bottom as normal block flow)
+ * filling the rest - a plain inline icon directly before the input would
+ * otherwise fight the input's own width: 100% (resolves against the
+ * icon-less cell width, not the space actually left beside the icon),
+ * pushing/overlapping it. */
+.dc-pressure-name-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.dc-pressure-name-content {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Whether a row is locked or unlocked needs to be obvious at a glance,

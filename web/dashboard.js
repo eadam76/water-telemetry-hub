@@ -598,9 +598,12 @@
 
   // Registers the unified "Devices" group as a normal serviceGroups entry
   // (reusing reorderServiceGroups()'s existing weight-based interleaving
-  // with the meter/system sections, for free) but with a bespoke body - a
-  // small toolbar (Scan Bus + the client-only Add toggle) above ONE table
-  // - instead of the generic .dc-fields list - built once, on first use.
+  // with the meter/system sections, for free) but with a bespoke body -
+  // the table itself, with a small toolbar BELOW it (Add Pulse Meter/Add
+  // Modbus Device, then Scan Bus - 2026-08-13, direct feedback: the
+  // toolbar used to sit above the table with Scan Bus first; both moved,
+  // see mountDeviceAddButtons()'s own comment for the ordering) - instead
+  // of the generic .dc-fields list - built once, on first use.
   //
   // 2026-08-13, "Devices" table unification: replaces the two previously
   // separate tables (ensurePressureTable()/ensurePulseMeterTable()) with
@@ -630,44 +633,78 @@
     // comment).
     const tableScroll = el("div", "dc-pressure-table-scroll");
     tableScroll.appendChild(table);
-    section.append(label, toolbar, tableScroll);
+    // toolbar AFTER tableScroll (below the table, not above) - direct
+    // feedback, 2026-08-13.
+    section.append(label, tableScroll, toolbar);
     g = { weight: groupWeights.get(PULSE_METER_ANCHOR_GROUP) ?? groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
     serviceGroups.set(DEVICE_TABLE_GROUP, g);
     document.getElementById("dc-page-service").appendChild(section);
     reorderServiceGroups();
     deviceTableBody = table.querySelector("tbody");
     deviceToolbarEl = toolbar;
-    mountDeviceAddButton();
+    mountDeviceAddButtons();
     return deviceTableBody;
   }
 
-  // The client-only "Add" toggle - unlike Scan Bus (a real firmware
-  // button entity), this has no entity of its own at all: it just shows/
-  // hides the in-table Add row below (buildDeviceAddRow()), which is what
-  // actually talks to the device once a type + fields are filled in.
-  // Built once, lazily, from ensureDeviceTable() - inserted via
-  // insertBefore(..., null) (i.e. appended) if Scan Bus hasn't mounted
-  // yet, or the mount order could just as easily go the other way
-  // (ESPHome's fixed-but-not-registration SSE dump order, same recurring
-  // theme as everywhere else in this file) - mountPressureToolbarButton()
-  // below always inserts itself *before* this element specifically, so
-  // the final toolbar order (Scan Bus, then Add) stays deterministic
-  // regardless of which one happens to mount first.
-  let deviceAddBtn = null;
-  function mountDeviceAddButton() {
-    if (deviceAddBtn) return;
-    deviceAddBtn = el("button", "dc-btn dc-btn-compact", "Add");
-    deviceAddBtn.type = "button";
-    deviceAddBtn.addEventListener("click", () => {
-      deviceAddOpen = !deviceAddOpen;
-      renderDeviceTableBody();
-    });
-    deviceToolbarEl.appendChild(deviceAddBtn);
+  // Two client-only toggles - unlike Scan Bus (a real firmware button
+  // entity), neither has an entity of its own at all: each just opens the
+  // in-table Add row below (buildDeviceAddRow()), pre-set to its own
+  // type, which is what actually talks to the device once its fields are
+  // filled in. Two separate buttons instead of one generic "Add" + an
+  // in-row type <select> (2026-08-13, direct feedback: clearer at a
+  // glance, and lets each button disable itself independently - Add
+  // Pulse Meter once both GPIO slots are taken, Add Modbus Device once
+  // all 8 pressure slots are). Built once, lazily, from ensureDeviceTable()
+  // - always BEFORE Scan Bus can possibly mount (that only happens once
+  // its own entity has arrived over SSE, strictly later than this
+  // synchronous call), so a plain append here is enough to guarantee the
+  // final toolbar order (Add Pulse Meter, Add Modbus Device, then Scan
+  // Bus - swapped from the pre-2026-08-13 order, direct feedback) without
+  // needing an insertBefore anchor dance the other way.
+  let addPulseBtn = null;
+  let addModbusBtn = null;
+  function mountDeviceAddButtons() {
+    if (addPulseBtn) return;
+    addPulseBtn = el("button", "dc-btn dc-btn-compact", "Add Pulse Meter");
+    addPulseBtn.type = "button";
+    addPulseBtn.addEventListener("click", () => toggleDeviceAdd("pulse"));
+    addModbusBtn = el("button", "dc-btn dc-btn-compact", "Add Modbus Device");
+    addModbusBtn.type = "button";
+    addModbusBtn.addEventListener("click", () => toggleDeviceAdd("modbus"));
+    deviceToolbarEl.append(addPulseBtn, addModbusBtn);
+  }
+
+  // Opens the Add row pre-set to `type`, or closes it if that type is
+  // already open (a second click on the same button = cancel). Also
+  // force-cancels whichever row is currently mid-edit, if any - direct
+  // feedback, 2026-08-13: starting a new Add should close out an
+  // in-progress edit, the same "only one interactive thing open at a
+  // time" rule the edit lock (deviceEditingRow) already enforces between
+  // rows - see closeDeviceAddRow() below for the reverse direction
+  // (entering edit closes a currently-open Add).
+  function toggleDeviceAdd(type) {
+    if (deviceEditingRow && deviceEditingRow._cancelEdit) deviceEditingRow._cancelEdit();
+    deviceAddType = deviceAddType === type ? null : type;
+    renderDeviceTableBody();
+  }
+
+  // Disables each Add button once its own type has nothing left to add
+  // (mirrors the old in-row type <select>'s per-option disabling) -
+  // called once per renderDeviceTableBody() render, a cheap no-op update
+  // most of the time.
+  function refreshDeviceAddButtons() {
+    if (!addPulseBtn) return;
+    const freePulseSlots = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
+    addPulseBtn.disabled = freePulseSlots.length === 0;
+    addPulseBtn.title = freePulseSlots.length === 0 ? "Both pulse meter slots are already registered." : "";
+    const atCeiling = registeredPressureSlots().length >= PRESSURE_MAX_SLOTS;
+    addModbusBtn.disabled = atCeiling;
+    addModbusBtn.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
   }
 
   // The real "Scan Bus" button (water-collector.yaml -
   // rs485_modbus::scan_bus()) - a plain button mounted into the toolbar
-  // above the table, same wiring as a generic Service field but without
+  // below the table, same wiring as a generic Service field but without
   // pulling in ensureServiceGroup()'s .dc-fields layout. Deliberately
   // NOT routed through the shared pressButton() (its brief ".dc-pressed"
   // flash doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
@@ -693,15 +730,19 @@
       entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
+        // A fresh, deliberate scan supersedes any earlier session-local
+        // dismissal (dismissDeviceAddRow.../dismissedScanAddresses below)
+        // - the user explicitly asked to see the bus's current state
+        // again, not whatever was previously waved away.
+        dismissedScanAddresses.clear();
         fetch(`${entity.namePath}/press`, { method: "POST" });
       });
       entity.statusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
       entity.statusEl.hidden = true;
-      // insertBefore(..., deviceAddBtn || null) - see mountDeviceAddButton()'s
-      // own comment for why this (not a plain append) keeps toolbar order
-      // deterministic regardless of which of the two mounts first.
-      deviceToolbarEl.insertBefore(entity.btnEl, deviceAddBtn || null);
-      deviceToolbarEl.insertBefore(entity.statusEl, deviceAddBtn || null);
+      // Plain append - always lands after the Add buttons (see
+      // mountDeviceAddButtons()'s own comment for why that's guaranteed
+      // regardless of arrival-order timing).
+      deviceToolbarEl.append(entity.btnEl, entity.statusEl);
     }
   }
 
@@ -785,11 +826,18 @@
       deviceTableRows.set(key, row);
       tbody.appendChild(row);
 
+      const nameCell = row.querySelector(".dc-pressure-name");
+      const nameRow = el("div", "dc-pressure-name-row");
+      nameCell.appendChild(nameRow);
+      nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("gauge")));
+      const nameContent = el("div", "dc-pressure-name-content");
+      nameRow.appendChild(nameContent);
+
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
       nameInput.disabled = true;
-      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
 
       const status = el("span", "dc-pressure-badge");
@@ -869,10 +917,14 @@
         // Only one row editable at a time, table-wide (either type) -
         // opening this one force-cancels/closes whichever other row was
         // already open, discarding any unsaved edit there too (same as
-        // if its own Cancel had been pressed).
+        // if its own Cancel had been pressed). Also closes the Add row if
+        // it's open (closeDeviceAddRow()) - same "only one interactive
+        // thing open at once" rule, the other direction (see
+        // toggleDeviceAdd()'s own comment).
         if (deviceEditingRow && deviceEditingRow !== row && deviceEditingRow._cancelEdit) {
           deviceEditingRow._cancelEdit();
         }
+        closeDeviceAddRow();
         deviceEditingRow = row;
         row._editOrigName = nameInput.value;
         row._editOrigAddr = addrInput.value;
@@ -1002,12 +1054,26 @@
   // field - the standalone Address column is gone, 2026-08-13, "Devices"
   // table unification, folded into the Name cell instead, same as the
   // collision row below), Name is a local draft (nothing is written to
-  // the device until Add is pressed), Status is always "New". Add sets
-  // the umbrella group's shared Add Name/Add Target Address scratch
-  // entities and presses its shared Add button - see that button's own
-  // comment in water-collector.yaml for why one shared trigger behind 8
-  // per-row buttons (now also probed server-side first - see that same
-  // comment) is safe and correct.
+  // the device until confirmed), Status is always "New". Confirm sets the
+  // umbrella group's shared Add Name/Add Target Address scratch entities
+  // and presses its shared Add button - see that button's own comment in
+  // water-collector.yaml for why one shared trigger behind 8 per-row
+  // buttons (now also probed server-side first - see that same comment)
+  // is safe and correct.
+  //
+  // Confirm/Dismiss are icon buttons (check/close), not a text "Add" -
+  // 2026-08-13, direct feedback: visually consistent with the rest of the
+  // table's action icons rather than a standalone button that looked like
+  // a second, different kind of control. Dismiss doesn't talk to the
+  // device at all - it only hides this one address from view for the
+  // rest of THIS session (dismissedScanAddresses below), cleared by the
+  // next actual Scan Bus press (mountPressureToolbarButton()'s own click
+  // handler) - explicit feedback, 2026-08-13: a mere scan (and dismissing
+  // one of its results) shouldn't be a persistent action, so a page
+  // reload/reconnect starts clean rather than re-showing what was
+  // dismissed or, for that matter, any stale scan at all - see
+  // renderDeviceTableBody()'s own initialSettled gate for the other half
+  // of that same requirement.
   function upsertNewPressureRow(tbody, address, atCeiling) {
     const key = "new:" + address;
     let row = deviceTableRows.get(key);
@@ -1021,7 +1087,12 @@
       tbody.appendChild(row);
 
       const nameCell = row.querySelector(".dc-pressure-name");
-      nameCell.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
+      const nameRow = el("div", "dc-pressure-name-row");
+      nameCell.appendChild(nameRow);
+      nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("gauge")));
+      const nameContent = el("div", "dc-pressure-name-content");
+      nameRow.appendChild(nameContent);
+      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
 
       const nameInput = document.createElement("input");
       nameInput.type = "text";
@@ -1032,24 +1103,28 @@
         pressureNewRowDrafts.set(address, nameInput.value);
         // Live, not just on the next render - a name typed and then
         // immediately clicked past shouldn't have to wait for an SSE
-        // round trip to unlock Add. atCeiling itself is a snapshot from
-        // this row's creation, same as every other read of it in this
-        // function - reconciled again on the next real render regardless.
-        if (!row._addBtn._busy) row._addBtn.disabled = atCeiling || !nameInput.value.trim();
+        // round trip to unlock Confirm. atCeiling itself is a snapshot
+        // from this row's creation, same as every other read of it in
+        // this function - reconciled again on the next real render
+        // regardless.
+        if (!row._confirmBtn._busy) row._confirmBtn.disabled = atCeiling || !nameInput.value.trim();
       });
-      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
 
-      // Add stays disabled with no name typed - a device isn't
-      // necessarily a pressure sensor (more Modbus device types are
-      // planned), so silently falling back to a generic "Pressure Sensor
-      // N" label on an empty name would be actively wrong for those,
-      // confirmed a problem, 2026-08-13.
-      const addBtn = el("button", "dc-btn dc-btn-compact", "Add");
-      addBtn.type = "button";
-      addBtn.disabled = true;
-      addBtn.addEventListener("click", () => {
-        if (addBtn.disabled) return;
+      const actionCell = row.querySelector(".dc-pressure-action");
+
+      // Disabled with no name typed - a device isn't necessarily a
+      // pressure sensor (more Modbus device types are planned), so
+      // silently falling back to a generic "Pressure Sensor N" label on
+      // an empty name would be actively wrong for those, confirmed a
+      // problem, 2026-08-13.
+      const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
+      confirmBtn.type = "button";
+      confirmBtn.disabled = true;
+      actionCell.appendChild(confirmBtn);
+      confirmBtn.addEventListener("click", () => {
+        if (confirmBtn.disabled) return;
         const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
         const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
         const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
@@ -1060,32 +1135,41 @@
         // chain twice, which (even with the shared-flag fix in
         // pressure_sensor.yaml's try_register) could still let two
         // separate Add presses each claim a slot for the same address.
-        addBtn._busy = true;
-        addBtn.disabled = true;
+        confirmBtn._busy = true;
+        confirmBtn.disabled = true;
         fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
           .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(address)}`, { method: "POST" }))
           .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
           .finally(() => {
-            addBtn._busy = false;
-            addBtn.disabled = atCeiling;
+            confirmBtn._busy = false;
+            confirmBtn.disabled = atCeiling;
           });
         pressureNewRowDrafts.delete(address);
       });
-      row._addBtn = addBtn;
-      row.querySelector(".dc-pressure-action").appendChild(addBtn);
+      row._confirmBtn = confirmBtn;
+
+      const dismissBtn = el("button", "dc-pressure-icon-btn dc-pressure-cancel-btn", svgIcon("close"));
+      dismissBtn.type = "button";
+      dismissBtn.title = "Dismiss (until the next Scan Bus)";
+      actionCell.appendChild(dismissBtn);
+      dismissBtn.addEventListener("click", () => {
+        dismissedScanAddresses.add(address);
+        pressureNewRowDrafts.delete(address);
+        renderDeviceTableBody();
+      });
     }
     // Never overrides an in-flight request's own disabled state (see the
     // click handler's _busy flag above) - a re-render (any SSE update)
     // landing mid-request would otherwise reset disabled back to
     // whatever atCeiling says here, undoing that guard.
-    if (!row._addBtn._busy) {
+    if (!row._confirmBtn._busy) {
       const nameEmpty = !row._nameInput.value.trim();
-      row._addBtn.disabled = atCeiling || nameEmpty;
-      row._addBtn.title = atCeiling
+      row._confirmBtn.disabled = atCeiling || nameEmpty;
+      row._confirmBtn.title = atCeiling
         ? "All 8 sensor slots are already registered - delete one first to add another."
         : nameEmpty
           ? "Enter a name first."
-          : "";
+          : "Add";
     }
   }
 
@@ -1111,8 +1195,13 @@
       deviceTableRows.set(key, row);
       tbody.appendChild(row);
       const nameCell = row.querySelector(".dc-pressure-name");
-      nameCell.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
-      nameCell.appendChild(el("span", "dc-pressure-collision-note", "Multiple devices may share this address"));
+      const nameRow = el("div", "dc-pressure-name-row");
+      nameCell.appendChild(nameRow);
+      nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("gauge")));
+      const nameContent = el("div", "dc-pressure-name-content");
+      nameRow.appendChild(nameContent);
+      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
+      nameContent.appendChild(el("span", "dc-pressure-collision-note", "Multiple devices may share this address"));
     }
   }
 
@@ -1122,13 +1211,21 @@
       placeholder = el(
         "tr",
         "dc-pressure-empty",
-        `<td colspan="4">No devices yet – press "Scan Bus" to find a Modbus sensor, or "Add" to add one manually.</td>`
+        `<td colspan="4">No devices yet - press "Scan Bus" to find a Modbus sensor, or use one of the "Add" buttons below.</td>`
       );
       tbody.appendChild(placeholder);
     } else if (!isEmpty && placeholder) {
       placeholder.remove();
     }
   }
+
+  // Addresses a scan found but the user explicitly dismissed this session
+  // (upsertNewPressureRow()'s own Dismiss icon) - session-local only, on
+  // purpose (2026-08-13, direct feedback): cleared by the next real Scan
+  // Bus press, and implicitly reset on a page reload too, since this is
+  // never persisted anywhere (a plain in-memory Set, gone the moment this
+  // tab's JS re-runs).
+  const dismissedScanAddresses = new Set();
 
   function suppressStaleHover(tbody) {
     tbody.classList.add("dc-pressure-table-settling");
@@ -1149,12 +1246,16 @@
   // and renderPulseMeterEntity() (still separate dispatch entry points,
   // still triggered by their own respective entities' SSE updates - only
   // what they render into is now shared). Also owns the Add row's own
-  // position (always first, whenever it's open) - the two type-specific
+  // position (always LAST, whenever it's open, right above the toolbar
+  // that opens it - moved from first to last the same day the toolbar
+  // itself moved below the table, direct feedback, so the row stays
+  // spatially close to the button that opened it) - the two type-specific
   // render loops didn't need this since neither used to have anything
   // pinned to a fixed position outside their own tracked rows.
   function renderDeviceTableBody() {
     const tbody = ensureDeviceTable();
     if (!tbody) return;
+    refreshDeviceAddButtons();
     const registered = registeredPressureSlots();
     const registeredAddresses = new Set(registered.map((s) => s.address));
     const scanAddresses = latestScanAddresses();
@@ -1164,15 +1265,6 @@
 
     const seenKeys = new Set();
     const desiredOrder = [];
-
-    if (deviceAddOpen) {
-      if (!deviceAddRow) deviceAddRow = buildDeviceAddRow();
-      refreshDeviceAddRow();
-      if (!deviceAddRow.isConnected) tbody.appendChild(deviceAddRow);
-      desiredOrder.push(deviceAddRow);
-    } else if (deviceAddRow && deviceAddRow.isConnected) {
-      deviceAddRow.remove();
-    }
 
     const orderedRegistered = orderedRegisteredDevices();
     orderedRegistered.forEach((d, i) => {
@@ -1197,19 +1289,46 @@
       if (row && row._editing && row._expandedRow) desiredOrder.push(row._expandedRow);
     });
 
-    const newAddresses = [...new Set(scanAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b);
+    // Gated on initialSettled (see that flag's own comment further up) -
+    // direct feedback, 2026-08-13: merely scanning the bus shouldn't be a
+    // persistent action, so a stale "Scan Results"/"Scan Collisions"
+    // value already sitting on the device from before THIS page load (or
+    // a previous session entirely) must not resurrect "New device" rows
+    // the moment a fresh client connects. Entities that arrive as part of
+    // the initial SSE dump (initialSettled still false at that point) are
+    // exactly that kind of pre-existing state; only a genuinely fresh
+    // update - this client's own Scan Bus press, or another client's,
+    // arriving strictly after the dump has settled - should ever make
+    // these rows appear. Since nothing re-triggers a render exactly at
+    // the settle boundary, a stale scan simply stays hidden forever
+    // unless an actual new scan happens - which is the whole point, not
+    // an oversight.
+    const newAddresses = initialSettled
+      ? [...new Set(scanAddresses)]
+          .filter((a) => !registeredAddresses.has(a) && !dismissedScanAddresses.has(a))
+          .sort((a, b) => a - b)
+      : [];
     for (const address of newAddresses) {
       seenKeys.add("new:" + address);
       upsertNewPressureRow(tbody, address, atCeiling);
       desiredOrder.push(deviceTableRows.get("new:" + address));
     }
-    const unclaimedCollisions = [...new Set(collisionAddresses)]
-      .filter((a) => !registeredAddresses.has(a))
-      .sort((a, b) => a - b);
+    const unclaimedCollisions = initialSettled
+      ? [...new Set(collisionAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b)
+      : [];
     for (const address of unclaimedCollisions) {
       seenKeys.add("collision:" + address);
       upsertCollisionPressureRow(tbody, address);
       desiredOrder.push(deviceTableRows.get("collision:" + address));
+    }
+
+    if (deviceAddType) {
+      if (!deviceAddRow) deviceAddRow = buildDeviceAddRow();
+      refreshDeviceAddRow();
+      if (!deviceAddRow.isConnected) tbody.appendChild(deviceAddRow);
+      desiredOrder.push(deviceAddRow);
+    } else if (deviceAddRow && deviceAddRow.isConnected) {
+      deviceAddRow.remove();
     }
 
     // upsert*Row() above only appends a row to the DOM the first time
@@ -1265,18 +1384,27 @@
     resyncDeviceHomeCardOrder();
   }
 
-  // --- The "Add" row (shared toolbar toggle above) -----------------------
+  // --- The "Add" row (opened from the toolbar below the table) -----------
   //
-  // 2026-08-13, "Devices" table unification - the user's own proposal: one
-  // shared Add flow for either device type, with a type selector revealing
-  // type-specific fields once chosen. A single in-table row (not a modal),
-  // consistent with everything else in this table already living as rows.
-  // Built once, lazily; its own DOM nodes persist across re-renders (only
-  // its position and the Pulse Meter slot dropdown's options get touched
-  // on every renderDeviceTableBody() call) so a typed-but-not-yet-
-  // submitted name never gets blown away by an unrelated background poll,
-  // same activeElement-safety reasoning as every editable row in this file.
-  let deviceAddOpen = false;
+  // 2026-08-13, "Devices" table unification. Originally one "Add" button +
+  // an in-row type <select>; replaced the same day, direct feedback, with
+  // two dedicated toolbar buttons (Add Pulse Meter/Add Modbus Device -
+  // see mountDeviceAddButtons()) that each open this same row pre-set to
+  // their own type - clearer at a glance than a dropdown, and each button
+  // can disable itself independently once its own type has nothing left
+  // to add. A single in-table row (not a modal), consistent with
+  // everything else in this table already living as rows. Built once,
+  // lazily; its own DOM nodes persist across re-renders (only which
+  // sub-form is visible and the Pulse Meter slot dropdown's options get
+  // touched on every renderDeviceTableBody() call) so a typed-but-not-
+  // yet-submitted name never gets blown away by an unrelated background
+  // poll, same activeElement-safety reasoning as every editable row in
+  // this file.
+  //
+  // deviceAddType is the single source of truth for both "is the row
+  // open" (non-null) and "which sub-form is showing" - no separate open/
+  // closed flag needed.
+  let deviceAddType = null; // null | "modbus" | "pulse"
   let deviceAddRow = null;
   // Set right before firing the manual "Add -> Modbus" flow's own request
   // chain, cleared by handleManualAddResult() below - distinguishes "the
@@ -1288,10 +1416,19 @@
   // alert for someone else's failed manual Add.
   let pendingManualAddAlert = false;
 
+  // Closes the Add row, if open, without going through a full
+  // renderDeviceTableBody() - called from enterEdit() (either row type)
+  // so starting an edit closes a currently-open Add, the reverse of
+  // toggleDeviceAdd()'s own "opening Add closes a currently-open edit".
+  function closeDeviceAddRow() {
+    if (deviceAddType === null) return;
+    deviceAddType = null;
+    if (deviceAddRow && deviceAddRow.isConnected) deviceAddRow.remove();
+  }
+
   function updateDeviceAddSubformVisibility(row) {
-    const isModbus = row._typeSelect.value === "modbus";
-    row._modbusForm.hidden = !isModbus;
-    row._pulseForm.hidden = isModbus;
+    row._modbusForm.hidden = deviceAddType !== "modbus";
+    row._pulseForm.hidden = deviceAddType !== "pulse";
   }
 
   function buildDeviceAddRow() {
@@ -1302,11 +1439,6 @@
 
     const form = el("div", "dc-device-add-form");
     cell.appendChild(form);
-
-    const typeLabel = el("span", "dc-pulsemeter-expanded-label", "Type");
-    const typeSelect = document.createElement("select");
-    typeSelect.innerHTML = `<option value="modbus">Modbus</option><option value="pulse">Pulse Meter</option>`;
-    form.append(typeLabel, typeSelect);
 
     // Modbus sub-form - a hand-typed address, unlike a scan-discovered
     // row (which already knows the address answers something - see
@@ -1326,10 +1458,7 @@
     modbusAddr.max = 247;
     modbusAddr.step = 1;
     modbusAddr.placeholder = "Address";
-    const modbusAddBtn = el("button", "dc-btn dc-btn-compact", "Add");
-    modbusAddBtn.type = "button";
-    const modbusError = el("span", "dc-device-add-error", "");
-    modbusForm.append(modbusName, modbusAddr, modbusAddBtn, modbusError);
+    modbusForm.append(modbusName, modbusAddr);
 
     // Pulse Meter sub-form - a slot picker instead of a free-typed
     // address: there's no discovery step at all here, just whichever of
@@ -1343,83 +1472,90 @@
     pulseName.maxLength = 32;
     pulseName.placeholder = "Device name";
     const pulseSelect = document.createElement("select");
-    const pulseAddBtn = el("button", "dc-btn dc-btn-compact", "Add");
-    pulseAddBtn.type = "button";
-    pulseAddBtn.disabled = true;
-    pulseForm.append(pulseName, pulseSelect, pulseAddBtn);
+    pulseForm.append(pulseName, pulseSelect);
 
+    const errorEl = el("span", "dc-device-add-error", "");
+
+    // Confirm/Cancel icon buttons, shared by both sub-forms - branches on
+    // deviceAddType at click time rather than each sub-form having its
+    // own text "Add" button, 2026-08-13, direct feedback: visually
+    // consistent with the row's own Save/Cancel icon pair used everywhere
+    // else in this table during an edit, instead of looking like a
+    // second, different kind of "Add" control.
+    const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
+    confirmBtn.type = "button";
+    confirmBtn.title = "Add";
     const cancelBtn = el("button", "dc-pressure-icon-btn dc-pressure-cancel-btn", svgIcon("close"));
     cancelBtn.type = "button";
     cancelBtn.title = "Cancel";
 
-    form.append(modbusForm, pulseForm, cancelBtn);
+    form.append(modbusForm, pulseForm, confirmBtn, cancelBtn, errorEl);
 
-    row._typeSelect = typeSelect;
     row._modbusForm = modbusForm;
     row._pulseForm = pulseForm;
     row._modbusName = modbusName;
     row._modbusAddr = modbusAddr;
-    row._modbusAddBtn = modbusAddBtn;
-    row._modbusError = modbusError;
     row._pulseName = pulseName;
     row._pulseSelect = pulseSelect;
-    row._pulseAddBtn = pulseAddBtn;
-
-    typeSelect.addEventListener("change", () => updateDeviceAddSubformVisibility(row));
-    pulseName.addEventListener("input", () => {
-      row._pulseAddBtn.disabled = !pulseSelect.value || !pulseName.value.trim();
-    });
+    row._errorEl = errorEl;
 
     cancelBtn.addEventListener("click", () => {
-      deviceAddOpen = false;
+      deviceAddType = null;
       renderDeviceTableBody();
     });
 
-    modbusAddBtn.addEventListener("click", () => {
-      const name = modbusName.value.trim();
-      const addr = parseInt(modbusAddr.value, 10);
-      modbusError.textContent = "";
-      if (!name) {
-        modbusError.textContent = "Enter a name.";
-        return;
+    confirmBtn.addEventListener("click", () => {
+      errorEl.textContent = "";
+      if (deviceAddType === "modbus") {
+        const name = modbusName.value.trim();
+        const addr = parseInt(modbusAddr.value, 10);
+        if (!name) {
+          errorEl.textContent = "Enter a name.";
+          return;
+        }
+        if (Number.isNaN(addr) || addr < 1 || addr > 247) {
+          errorEl.textContent = "Address must be 1-247.";
+          return;
+        }
+        if (registeredPressureSlots().length >= PRESSURE_MAX_SLOTS) {
+          errorEl.textContent = "All 8 sensor slots are already registered - delete one first to add another.";
+          return;
+        }
+        const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
+        const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
+        const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
+        if (!nameEntity || !addrEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
+        confirmBtn.disabled = true;
+        pendingManualAddAlert = true;
+        fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
+          .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(addr)}`, { method: "POST" }))
+          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
+          .finally(() => {
+            confirmBtn.disabled = false;
+          });
+      } else if (deviceAddType === "pulse") {
+        const name = pulseName.value.trim();
+        const groupName = pulseSelect.value;
+        if (!name) {
+          errorEl.textContent = "Enter a name.";
+          return;
+        }
+        if (!groupName) {
+          errorEl.textContent = "No free pulse meter slot.";
+          return;
+        }
+        const nameEntity = pulseMeterSlotEntity(groupName, "Add Name");
+        const addEntity = pulseMeterSlotEntity(groupName, "Add");
+        if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
+        confirmBtn.disabled = true;
+        fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
+          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
+          .finally(() => {
+            confirmBtn.disabled = false;
+            deviceAddType = null;
+            renderDeviceTableBody();
+          });
       }
-      if (Number.isNaN(addr) || addr < 1 || addr > 247) {
-        modbusError.textContent = "Address must be 1-247.";
-        return;
-      }
-      if (registeredPressureSlots().length >= PRESSURE_MAX_SLOTS) {
-        modbusError.textContent = "All 8 sensor slots are already registered - delete one first to add another.";
-        return;
-      }
-      const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
-      const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
-      const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
-      if (!nameEntity || !addrEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
-      modbusAddBtn.disabled = true;
-      pendingManualAddAlert = true;
-      fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-        .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(addr)}`, { method: "POST" }))
-        .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-        .finally(() => {
-          modbusAddBtn.disabled = false;
-        });
-    });
-
-    pulseAddBtn.addEventListener("click", () => {
-      const name = pulseName.value.trim();
-      const groupName = pulseSelect.value;
-      if (!name || !groupName) return;
-      const nameEntity = pulseMeterSlotEntity(groupName, "Add Name");
-      const addEntity = pulseMeterSlotEntity(groupName, "Add");
-      if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
-      pulseAddBtn.disabled = true;
-      fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-        .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-        .finally(() => {
-          pulseAddBtn.disabled = false;
-          deviceAddOpen = false;
-          renderDeviceTableBody();
-        });
     });
 
     updateDeviceAddSubformVisibility(row);
@@ -1428,34 +1564,22 @@
 
   // Refreshes the Pulse Meter slot dropdown's options to whichever GPIO
   // slots aren't currently Registered (2026-08-13, direct feedback: offer
-  // only whichever of the two fixed slots remains, and disable the whole
-  // "Pulse Meter" type option once both are already taken - not yet a
-  // generic "enable more GPIOs" setup screen, deliberately deferred). Runs
-  // on every render while the Add row is open, cheap (0-2 options) and
-  // never touches the Name/Address inputs the user might be mid-typing.
+  // only whichever of the two fixed slots remains - not yet a generic
+  // "enable more GPIOs" setup screen, deliberately deferred). Runs on
+  // every render while the Add row is open, cheap (0-2 options) and never
+  // touches the Name/Address inputs the user might be mid-typing. Whether
+  // the row can even be opened for a type that's run out of room (both
+  // pulse slots taken, or all 8 pressure slots registered) is handled
+  // earlier, by disabling the toolbar button itself (refreshDeviceAddButtons()).
   function refreshDeviceAddRow() {
     const row = deviceAddRow;
-    const free = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
-    const select = row._pulseSelect;
-    const prevPulse = select.value;
-    select.innerHTML = free.map((g) => `<option value="${g}">${g}</option>`).join("");
-    if (free.includes(prevPulse)) select.value = prevPulse;
-    const pulseOption = row._typeSelect.querySelector('option[value="pulse"]');
-    pulseOption.disabled = free.length === 0;
-    pulseOption.title = free.length === 0 ? "Both pulse meter slots are already registered." : "";
-    if (free.length === 0 && row._typeSelect.value === "pulse") row._typeSelect.value = "modbus";
-    row._pulseAddBtn.disabled = !select.value || !row._pulseName.value.trim();
-
-    // Same ceiling the scan-discovered rows' own Add already respects
-    // (upsertNewPressureRow()) - mirrored here so the type selector
-    // itself steers away from a manual Add that would just fail
-    // server-side, same reasoning as the Pulse Meter option above.
-    const atCeiling = registeredPressureSlots().length >= PRESSURE_MAX_SLOTS;
-    const modbusOption = row._typeSelect.querySelector('option[value="modbus"]');
-    modbusOption.disabled = atCeiling;
-    modbusOption.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
-    if (atCeiling && row._typeSelect.value === "modbus" && !pulseOption.disabled) row._typeSelect.value = "pulse";
-
+    if (deviceAddType === "pulse") {
+      const free = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
+      const select = row._pulseSelect;
+      const prevPulse = select.value;
+      select.innerHTML = free.map((g) => `<option value="${g}">${g}</option>`).join("");
+      if (free.includes(prevPulse)) select.value = prevPulse;
+    }
     updateDeviceAddSubformVisibility(row);
   }
 
@@ -1470,14 +1594,14 @@
     if (!pendingManualAddAlert) return;
     pendingManualAddAlert = false;
     if (entity.value === "no_response") {
-      if (deviceAddRow) deviceAddRow._modbusError.textContent = "No response from that address - check the wiring/address and try again.";
+      if (deviceAddRow) deviceAddRow._errorEl.textContent = "No response from that address - check the wiring/address and try again.";
       return;
     }
-    deviceAddOpen = false;
+    deviceAddType = null;
     if (deviceAddRow) {
       deviceAddRow._modbusName.value = "";
       deviceAddRow._modbusAddr.value = "";
-      deviceAddRow._modbusError.textContent = "";
+      deviceAddRow._errorEl.textContent = "";
     }
     renderDeviceTableBody();
   }
@@ -1675,11 +1799,18 @@
       deviceTableRows.set(key, row);
       tbody.appendChild(row);
 
+      const nameCell = row.querySelector(".dc-pressure-name");
+      const nameRow = el("div", "dc-pressure-name-row");
+      nameCell.appendChild(nameRow);
+      nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("water")));
+      const nameContent = el("div", "dc-pressure-name-content");
+      nameRow.appendChild(nameContent);
+
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
       nameInput.disabled = true;
-      row.querySelector(".dc-pressure-name").appendChild(nameInput);
+      nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
 
       const status = el("span", "dc-pressure-badge dc-pressure-badge-ok", "Ready");
@@ -1766,10 +1897,13 @@
         // device types (deviceEditingRow, shared with the pressure
         // rows) - opening this one force-cancels/closes whichever other
         // row was already open, discarding any unsaved name edit there
-        // too (same as if its own Cancel had been pressed).
+        // too (same as if its own Cancel had been pressed). Also closes
+        // the Add row if it's open - see the pressure row's own
+        // enterEdit() comment.
         if (deviceEditingRow && deviceEditingRow !== row && deviceEditingRow._cancelEdit) {
           deviceEditingRow._cancelEdit();
         }
+        closeDeviceAddRow();
         deviceEditingRow = row;
         row._editOrigName = nameInput.value;
         nameInput.disabled = false;
