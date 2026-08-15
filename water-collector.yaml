@@ -99,7 +99,7 @@ external_components:
   - source:
       type: local
       path: components
-    components: [web_server_idf]
+    components: [web_server_idf, log_ring_buffer]
 
 # Checkpoint mechanism: every restore_value: true global/number persists
 # through this. flash_write_interval already defaults to 60s, spelled out
@@ -167,6 +167,17 @@ logger:
   id: logger_id
   level: VERY_VERBOSE
   initial_level: DEBUG
+
+# RAM-only ring buffer of recent log lines, downloadable as a plain text
+# file at GET /log.txt (components/log_ring_buffer/ - see that component's
+# own __init__.py for the full "why RAM, not flash" reasoning). Direct
+# feedback, 2026-08-15: the Log page only ever showed what happened to
+# arrive over SSE while a browser tab was connected; this covers the same
+# since-boot horizon retroactively. web/dashboard.js's Log page links to
+# this with a plain static <a href="/log.txt"> - no JS needed, the
+# Content-Disposition header the component sets is what makes the browser
+# download it instead of just navigating there.
+log_ring_buffer:
 
 api:
   encryption:

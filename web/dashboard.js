@@ -363,7 +363,7 @@
     const section = el("div", "dc-diag-group");
     const label = el("div", "dc-section-label", groupLabel(name));
     const list = el("div", "dc-list");
-    const fields = el("div", "dc-fields dc-diag-fields");
+    const fields = el("div", "dc-diag-actions");
     section.append(label, list, fields);
     g = { weight: groupWeights.get(name) ?? 500, section, list, fields };
     diagGroups.set(name, g);
@@ -405,21 +405,26 @@
   // Devices page had become just the Devices table in every way but name,
   // so system-level actions - which aren't about any one device - moved
   // to sit alongside the rest of the "System" diagnostics they act on).
-  // Otherwise identical to upsertServiceButton(): same pressButton()/
-  // confirm-dialog/help-text wiring, just a different target container.
+  //
+  // Deliberately NOT wrapped in a bordered .dc-field card the way a
+  // Devices-page button is (contrast upsertServiceButton()) - a first
+  // version reused that exact layout and the button ended up stretched
+  // (.dc-btn's own width: 100%) across the FULL page width, since
+  // .dc-diag-group (unlike .dc-service-group) has no max-width - looked
+  // clearly wrong, confirmed 2026-08-15. Rendered instead as a plain,
+  // intrinsically-sized (.dc-btn-compact) button directly in a flex row
+  // (.dc-diag-actions below), same weight class as the toolbar buttons on
+  // the Devices page - neither of these two has HELP_TEXT anyway (see
+  // that map's own comment), so there's no help-icon layout to preserve.
   function upsertDiagButton(entity) {
     const group = ensureDiagGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.btnEl) {
-      entity.el = el("div", "dc-field");
-      const row = el("div", "dc-field-row");
-      entity.btnEl = el("button", "dc-btn", entity.name);
+      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.name);
+      entity.btnEl.type = "button";
       entity.btnEl.addEventListener("click", () => pressButton(entity));
-      row.appendChild(entity.btnEl);
-      attachHelp(row, HELP_TEXT[displayName(entity)]);
-      entity.el.appendChild(row);
-      group.fields.appendChild(entity.el);
+      group.fields.appendChild(entity.btnEl);
     }
-    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    entity.btnEl.dataset.weight = entity.groupWeight ?? 500;
     reorderDiagFields(group);
   }
 
@@ -693,7 +698,11 @@
     let g = serviceGroups.get(DEVICE_TABLE_GROUP);
     if (g) return deviceTableBody;
     const section = el("div", "dc-service-group dc-pressure-group");
-    const label = el("div", "dc-section-label", "Devices");
+    // No "Devices" section label here (removed 2026-08-15, direct
+    // feedback: it's the ONLY section on this page, right below a page
+    // title that already says "Devices" - a plain duplicate, not a
+    // useful heading). If a second section ever gets added to this page,
+    // this one may need a label back, but that's not the case today.
     const toolbar = el("div", "dc-pressure-toolbar");
     const table = el(
       "table",
@@ -715,7 +724,7 @@
     // 2026-08-13.
     const card = el("div", "dc-devices-card");
     card.append(tableScroll, toolbar);
-    section.append(label, card);
+    section.append(card);
     g = { weight: groupWeights.get(PULSE_METER_ANCHOR_GROUP) ?? groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
     serviceGroups.set(DEVICE_TABLE_GROUP, g);
     document.getElementById("dc-page-service").appendChild(section);
@@ -2181,14 +2190,30 @@
     );
   }
 
+  // Pulse Rate/Total Pulses/Sort Order never get a System-page row -
+  // direct feedback, 2026-08-15: raw/uncalibrated diagnostic clutter, one
+  // per registered meter, with no counterpart for pressure sensors (which
+  // never reach the System page at all - see renderPressureEntity() above)
+  // to make the asymmetry worse. Each one's actual information already
+  // shows up somewhere better: Pulse Rate/Total Pulses are the raw,
+  // uncalibrated versions of Flow Rate/Total Consumption (Home/Devices
+  // page); Sort Order's only real effect (row position) is already
+  // visible in the Devices table itself, the raw counter behind it isn't
+  // meaningful on its own. Still perfectly normal, disabled_by_default
+  // entities for Home Assistant - this is purely a dashboard-local
+  // suppression, same pattern as HIDDEN_FROM_DIAG-style filters
+  // elsewhere in this file (e.g. isHiddenFromUi()).
+  const HIDDEN_FROM_PULSE_DIAG = new Set(["Pulse Rate", "Total Pulses", "Sort Order"]);
+
   function renderPulseMeterCalibrationEntity(entity) {
     if (!isPulseMeterRegistered(entity.groupName)) return;
     const label = displayName(entity);
-    if (label === "Total Pulses") flashPulseMeterActivity(entity.groupName); // side effect only - still falls through to Diagnostics below
+    if (label === "Total Pulses") flashPulseMeterActivity(entity.groupName); // side effect only, even though the row itself is now suppressed below
     if (label === "Reading" || label === "Update" || label === "Zero-Flow Timeout") {
       upsertPulseMeterExpandedField(entity, label);
       return;
     }
+    if (HIDDEN_FROM_PULSE_DIAG.has(label)) return;
     const page = pageFor(entity);
     if (page === "home") upsertHomeMetric(entity);
     else if (page === "diagnostics") upsertDiagRow(entity);
@@ -2904,7 +2929,21 @@
         <section id="dc-page-service" class="dc-page"></section>
         <section id="dc-page-diagnostics" class="dc-page"></section>
         <section id="dc-page-log" class="dc-page">
-          <div id="dc-log-toolbar"><button id="dc-log-clear" class="dc-btn">Clear</button></div>
+          <div id="dc-log-toolbar">
+            <button id="dc-log-clear" class="dc-btn">Clear</button>
+            <!-- Plain link, no JS needed - components/log_ring_buffer/ (a
+                 local ESPHome component, same pattern as this project's
+                 own web_server_idf fork) serves a RAM-only ring buffer of
+                 recent log lines at this URL with a Content-Disposition:
+                 attachment header, so the browser just downloads it like
+                 any other file link. Independent of "Clear" above (which
+                 only clears what THIS tab has rendered from SSE) and of
+                 whatever's currently on screen - always the device's own,
+                 separately-kept copy since last boot. #dc-log-toolbar
+                 .dc-btn (dashboard.css) already sizes this to content,
+                 same as the Clear button, no dc-btn-compact needed. -->
+            <a id="dc-log-download" class="dc-btn" href="/log.txt">Download Log</a>
+          </div>
           <pre id="dc-log"></pre>
         </section>
       </main>`;

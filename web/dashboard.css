@@ -468,6 +468,22 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* Device-level action buttons (Reboot Device/Forget Wi-Fi - see
+ * upsertDiagButton() in dashboard.js) that moved onto this page,
+ * 2026-08-15. Stacked, intrinsically sized - NOT the .dc-service-group/
+ * .dc-fields bordered-card layout (that stretches to the full row width
+ * via .dc-btn's own width: 100%, fine inside .dc-service-group's capped
+ * 560px, but this page has no such cap and it looked clearly too wide,
+ * confirmed on real hardware). Only present at all once at least one
+ * button has actually been appended (empty otherwise, zero height). */
+.dc-diag-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 /* --- Service page: calibration + device actions --- */
 
 .dc-service-group {
@@ -633,6 +649,16 @@ body {
 }
 
 .dc-btn {
+  /* inline-flex + text-decoration: none (2026-08-15) - .dc-btn now also
+     styles a plain <a> (the Log page's "Download Log" link, no JS needed
+     for it - see buildShell()), not just <button>s. A <button> is
+     already inline-block-ish by default so this changes nothing visible
+     there; an <a> is plain inline by default, which would otherwise
+     ignore width/vertical padding and keep its underline. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
   background: var(--dc-accent-dim);
   color: var(--dc-accent);
   border: 1px solid var(--dc-accent);
