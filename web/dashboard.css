@@ -1264,13 +1264,13 @@ body {
   font-style: italic;
 }
 
-/* The shared Add row (buildDeviceAddRow() in dashboard.js, 2026-08-13
- * "Devices" table unification) - Modbus/Pulse Meter sub-forms, all
- * inside a single full-width cell rather than fitting into the table's
- * normal 4-column grid (nothing here maps cleanly onto Name/Status/
- * Action/Order). Which sub-form is visible is decided by which toolbar
- * button opened it (Add Pulse Meter/Add Modbus Device - a redesign-round
- * change from an earlier in-row type <select>, see mountDeviceAddButtons()). */
+/* The shared Add row (buildDeviceAddRow() in dashboard.js) - Name + IO
+ * slot picker, all inside a single full-width cell rather than fitting
+ * into the table's normal 4-column grid (nothing here maps cleanly onto
+ * Name/Status/Action/Order). Pulse-Meter-only (2026-08-13, direct
+ * feedback - the earlier Modbus/Pulse Meter dual sub-form is gone, see
+ * that function's own comment for why), so this is one flat form now,
+ * no per-type sub-form indirection needed. */
 .dc-device-add-row td {
   background: var(--dc-accent-dim);
 }
@@ -1282,31 +1282,7 @@ body {
   gap: 10px;
 }
 
-.dc-device-add-form select {
-  background: var(--dc-surface-2);
-  border: 1px solid var(--dc-border);
-  color: var(--dc-text);
-  border-radius: var(--dc-radius-sm);
-  padding: 7px 9px;
-  font-size: 14px;
-}
-
-/* Modbus (Name + Address) or Pulse Meter (Name + GPIO slot) fields - only
- * the sub-form matching the Add row's own type is ever visible
- * (updateDeviceAddSubformVisibility() in dashboard.js). */
-.dc-device-add-subform {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  flex: 1 1 auto;
-}
-
-.dc-device-add-subform[hidden] {
-  display: none;
-}
-
-.dc-device-add-subform input[type="text"] {
+.dc-device-add-form input[type="text"] {
   flex: 1 1 140px;
   min-width: 0;
   background: var(--dc-surface-2);
@@ -1317,17 +1293,13 @@ body {
   font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input elsewhere */
 }
 
-.dc-device-add-subform input[type="number"] {
-  flex: 0 0 6em;
+.dc-device-add-form select {
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
   color: var(--dc-text);
   border-radius: var(--dc-radius-sm);
   padding: 7px 9px;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 16px;
-  text-align: right;
+  font-size: 14px;
 }
 
 /* Manual "Add -> Modbus" probe failure (handleManualAddResult() in

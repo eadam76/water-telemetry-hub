@@ -206,6 +206,22 @@
   let initialSettled = false;
   let settleQuietTimer = null;
 
+  // Narrower than initialSettled, and NOT the same guard: initialSettled
+  // is one-time and permanent, so once it flips true it no longer
+  // distinguishes "this render was triggered by a genuinely new scan"
+  // from "this render just happens to be running after settle, for some
+  // completely unrelated reason (e.g. a routine pressure-sensor poll)".
+  // The latter still reads whatever "Scan Results"/"Scan Collisions"
+  // currently hold - which, if no scan has happened yet THIS session,
+  // is still the stale pre-session value initialSettled was supposed to
+  // hide. Confirmed in the field, 2026-08-15: the "Collision" note
+  // survived a page refresh with no bus check in sight. This flag only
+  // goes true when one of those two entities actually receives an
+  // update while initialSettled is already true, i.e. a real scan this
+  // session - see renderPressureEntity()'s "Scan Results"/"Scan
+  // Collisions" branch, the only place this is set.
+  let scanResultsFresh = false;
+
   function scheduleSettle() {
     if (initialSettled) return;
     clearTimeout(settleQuietTimer);
@@ -652,68 +668,62 @@
     return deviceTableBody;
   }
 
-  // Two client-only toggles - unlike Scan Bus (a real firmware button
-  // entity), neither has an entity of its own at all: each just opens the
-  // in-table Add row below (buildDeviceAddRow()), pre-set to its own
-  // type, which is what actually talks to the device once its fields are
-  // filled in. Two separate buttons instead of one generic "Add" + an
-  // in-row type <select> (2026-08-13, direct feedback: clearer at a
-  // glance, and lets each button disable itself independently - Add
-  // Pulse Meter once both GPIO slots are taken, Add Modbus Device once
-  // all 8 pressure slots are). Built once, lazily, from ensureDeviceTable()
-  // - always BEFORE Scan Bus can possibly mount (that only happens once
-  // its own entity has arrived over SSE, strictly later than this
-  // synchronous call), so a plain append here is enough to guarantee the
-  // final toolbar order (Add Pulse Meter, Add Modbus Device, then Scan
-  // Bus - swapped from the pre-2026-08-13 order, direct feedback) without
-  // needing an insertBefore anchor dance the other way.
+  // The client-only "Add Pulse Meter" toggle - unlike Scan Bus (a real
+  // firmware button entity), it has no entity of its own at all: it just
+  // opens the in-table Add row below (buildDeviceAddRow()), which is what
+  // actually talks to the device once its fields are filled in. There
+  // used to be a second, matching "Add Modbus Device" button (2026-08-13)
+  // opening a manual, hand-typed-address sub-form - removed the same day,
+  // direct feedback: it caused more trouble than it solved (see the
+  // duplicate-address hard-block added to the edit-save flow below, and
+  // REQUIREMENTS.md's own writeup) - adding a Modbus device is scan-only
+  // again, exactly like before that button ever existed. Built once,
+  // lazily, from ensureDeviceTable() - always BEFORE Scan Bus can
+  // possibly mount (that only happens once its own entity has arrived
+  // over SSE, strictly later than this synchronous call), so a plain
+  // append here is enough to guarantee the final toolbar order (Add
+  // Pulse Meter, then Scan Bus) without needing an insertBefore anchor
+  // dance the other way.
   let addPulseBtn = null;
-  let addModbusBtn = null;
   function mountDeviceAddButtons() {
     if (addPulseBtn) return;
     addPulseBtn = el("button", "dc-btn dc-btn-compact", "Add Pulse Meter");
     addPulseBtn.type = "button";
-    addPulseBtn.addEventListener("click", () => toggleDeviceAdd("pulse"));
-    addModbusBtn = el("button", "dc-btn dc-btn-compact", "Add Modbus Device");
-    addModbusBtn.type = "button";
-    addModbusBtn.addEventListener("click", () => toggleDeviceAdd("modbus"));
-    deviceToolbarEl.append(addPulseBtn, addModbusBtn);
+    addPulseBtn.addEventListener("click", () => toggleDeviceAdd());
+    deviceToolbarEl.append(addPulseBtn);
   }
 
-  // Opens the Add row pre-set to `type`, or closes it if that type is
-  // already open (a second click on the same button = cancel). Also
-  // force-cancels whichever row is currently mid-edit, if any - direct
-  // feedback, 2026-08-13: starting a new Add should close out an
-  // in-progress edit, the same "only one interactive thing open at a
-  // time" rule the edit lock (deviceEditingRow) already enforces between
-  // rows - see closeDeviceAddRow() below for the reverse direction
-  // (entering edit closes a currently-open Add).
-  function toggleDeviceAdd(type) {
+  // Opens the Add row, or closes it if already open (a second click =
+  // cancel). Also force-cancels whichever row is currently mid-edit, if
+  // any - direct feedback, 2026-08-13: starting a new Add should close
+  // out an in-progress edit, the same "only one interactive thing open
+  // at a time" rule the edit lock (deviceEditingRow) already enforces
+  // between rows - see closeDeviceAddRow() below for the reverse
+  // direction (entering edit closes a currently-open Add).
+  function toggleDeviceAdd() {
     if (deviceEditingRow && deviceEditingRow._cancelEdit) deviceEditingRow._cancelEdit();
-    deviceAddType = deviceAddType === type ? null : type;
+    deviceAddOpen = !deviceAddOpen;
     renderDeviceTableBody();
   }
 
-  // Disables each Add button once its own type has nothing left to add
-  // (mirrors the old in-row type <select>'s per-option disabling) -
-  // called once per renderDeviceTableBody() render, a cheap no-op update
-  // most of the time.
+  // Disables the Add button once there's nothing left to add (both GPIO
+  // slots already registered) - called once per renderDeviceTableBody()
+  // render, a cheap no-op update most of the time.
   function refreshDeviceAddButtons() {
     if (!addPulseBtn) return;
     const freePulseSlots = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
     addPulseBtn.disabled = freePulseSlots.length === 0;
     addPulseBtn.title = freePulseSlots.length === 0 ? "Both pulse meter slots are already registered." : "";
-    const atCeiling = registeredPressureSlots().length >= PRESSURE_MAX_SLOTS;
-    addModbusBtn.disabled = atCeiling;
-    addModbusBtn.title = atCeiling ? "All 8 sensor slots are already registered - delete one first to add another." : "";
   }
 
-  // The real "Scan Bus" button (water-collector.yaml -
-  // rs485_modbus::scan_bus()) - a plain button mounted into the toolbar
-  // below the table, same wiring as a generic Service field but without
-  // pulling in ensureServiceGroup()'s .dc-fields layout. Deliberately
-  // NOT routed through the shared pressButton() (its brief ".dc-pressed"
-  // flash doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
+  // The real "Find Modbus Devices" button (water-collector.yaml -
+  // rs485_modbus::scan_bus(); renamed from "Scan Bus" 2026-08-15, direct
+  // feedback: "Scan Bus" didn't read as clearly as what the button
+  // actually does) - a plain button mounted into the toolbar below the
+  // table, same wiring as a generic Service field but without pulling in
+  // ensureServiceGroup()'s .dc-fields layout. Deliberately NOT routed
+  // through the shared pressButton() (its brief ".dc-pressed" flash
+  // doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
   // instead, driven by its own live "Scan In Progress" binary_sensor
   // (see syncScanButtonBusyState() below), NOT the fetch() promise's own
   // lifetime - tried that first, but confirmed on real hardware,
@@ -759,7 +769,7 @@
   // actually do anything?" at a glance - the adjacent spinner+label is a
   // second, more immediately legible "something is happening" signal.
   function syncScanButtonBusyState(inProgress) {
-    const scanEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Bus");
+    const scanEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Find Modbus Devices");
     if (!scanEntity || !scanEntity.btnEl) return;
     scanEntity.btnEl.disabled = inProgress;
     scanEntity.statusEl.hidden = !inProgress;
@@ -995,14 +1005,20 @@
           alert("Address must be a number between 1 and 247.");
           return; // stay in edit mode so the value can be fixed
         }
+        // Hard block, not a dismissable confirm() - this is the path that
+        // actually reprograms a real, already-registered physical sensor
+        // (change_address_and_save(), rs485_modbus.h), so setting it to an
+        // address another registered slot already claims causes a genuine
+        // electrical/protocol bus collision, not just a bookkeeping clash.
+        // Confirmed in the field, 2026-08-15: recovering from that needed
+        // physically disconnecting and reconnecting hardware. A soft,
+        // click-through warning here is not an acceptable safeguard.
         const dupe = findPressureAddressOwner(parsed, groupName);
-        if (
-          dupe &&
-          !confirm(
-            `Address ${parsed} is already registered as "${dupe}". This only checks sensors already registered here, not the physical bus - set it anyway?`
-          )
-        ) {
-          return; // stay in edit mode
+        if (dupe) {
+          alert(
+            `Address ${parsed} is already registered as "${dupe}". Setting it here would reprogram this sensor onto an address already in use, causing a real bus collision - choose a different address, or change/remove "${dupe}" first.`
+          );
+          return; // stay in edit mode - no override allowed
         }
         const ne = pressureSlotEntity(groupName, "Display Name");
         const ae = pressureSlotEntity(groupName, "Modbus Address");
@@ -1098,12 +1114,13 @@
       nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("gauge")));
       const nameContent = el("div", "dc-pressure-name-content");
       nameRow.appendChild(nameContent);
-      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
+      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Modbus address: ${address}`));
 
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
       nameInput.placeholder = "Device name";
+      nameInput.autocomplete = "off";
       nameInput.value = pressureNewRowDrafts.get(address) || "";
       nameInput.addEventListener("input", () => {
         pressureNewRowDrafts.set(address, nameInput.value);
@@ -1156,12 +1173,22 @@
 
       const dismissBtn = el("button", "dc-pressure-icon-btn dc-pressure-cancel-btn", svgIcon("close"));
       dismissBtn.type = "button";
-      dismissBtn.title = "Dismiss (until the next Scan Bus)";
+      dismissBtn.title = "Dismiss (until the next scan)";
       actionCell.appendChild(dismissBtn);
       dismissBtn.addEventListener("click", () => {
         dismissedScanAddresses.add(address);
         pressureNewRowDrafts.delete(address);
         renderDeviceTableBody();
+      });
+
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          confirmBtn.click();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          dismissBtn.click();
+        }
       });
     }
     // Never overrides an in-flight request's own disabled state (see the
@@ -1206,7 +1233,7 @@
       nameRow.appendChild(el("span", "dc-device-type-icon", svgIcon("gauge")));
       const nameContent = el("div", "dc-pressure-name-content");
       nameRow.appendChild(nameContent);
-      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Address ${address}`));
+      nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Modbus address: ${address}`));
       nameContent.appendChild(el("span", "dc-pressure-collision-note", "Multiple devices may share this address"));
     }
   }
@@ -1217,7 +1244,7 @@
       placeholder = el(
         "tr",
         "dc-pressure-empty",
-        `<td colspan="4">No devices yet - press "Scan Bus" to find a Modbus sensor, or use one of the "Add" buttons below.</td>`
+        `<td colspan="4">No devices yet - press "Find Modbus Devices" to scan for a Modbus sensor, or use the "Add Pulse Meter" button below.</td>`
       );
       tbody.appendChild(placeholder);
     } else if (!isEmpty && placeholder) {
@@ -1295,21 +1322,16 @@
       if (row && row._editing && row._expandedRow) desiredOrder.push(row._expandedRow);
     });
 
-    // Gated on initialSettled (see that flag's own comment further up) -
-    // direct feedback, 2026-08-13: merely scanning the bus shouldn't be a
-    // persistent action, so a stale "Scan Results"/"Scan Collisions"
-    // value already sitting on the device from before THIS page load (or
-    // a previous session entirely) must not resurrect "New device" rows
-    // the moment a fresh client connects. Entities that arrive as part of
-    // the initial SSE dump (initialSettled still false at that point) are
-    // exactly that kind of pre-existing state; only a genuinely fresh
-    // update - this client's own Scan Bus press, or another client's,
-    // arriving strictly after the dump has settled - should ever make
-    // these rows appear. Since nothing re-triggers a render exactly at
-    // the settle boundary, a stale scan simply stays hidden forever
-    // unless an actual new scan happens - which is the whole point, not
-    // an oversight.
-    const newAddresses = initialSettled
+    // Gated on scanResultsFresh, NOT initialSettled (see scanResultsFresh's
+    // own comment further up) - direct feedback, 2026-08-13: merely
+    // scanning the bus shouldn't be a persistent action, so a stale "Scan
+    // Results"/"Scan Collisions" value already sitting on the device from
+    // before THIS page load (or a previous session entirely) must not
+    // resurrect "New device"/"Collision" rows just because some unrelated
+    // render happens to run later. Only a genuinely fresh update - this
+    // client's own scan press, or another client's, landing after the
+    // initial dump has settled - should ever make these rows appear.
+    const newAddresses = scanResultsFresh
       ? [...new Set(scanAddresses)]
           .filter((a) => !registeredAddresses.has(a) && !dismissedScanAddresses.has(a))
           .sort((a, b) => a - b)
@@ -1319,7 +1341,7 @@
       upsertNewPressureRow(tbody, address, atCeiling);
       desiredOrder.push(deviceTableRows.get("new:" + address));
     }
-    const unclaimedCollisions = initialSettled
+    const unclaimedCollisions = scanResultsFresh
       ? [...new Set(collisionAddresses)].filter((a) => !registeredAddresses.has(a)).sort((a, b) => a - b)
       : [];
     for (const address of unclaimedCollisions) {
@@ -1328,7 +1350,7 @@
       desiredOrder.push(deviceTableRows.get("collision:" + address));
     }
 
-    if (deviceAddType) {
+    if (deviceAddOpen) {
       if (!deviceAddRow) deviceAddRow = buildDeviceAddRow();
       refreshDeviceAddRow();
       if (!deviceAddRow.isConnected) tbody.appendChild(deviceAddRow);
@@ -1390,51 +1412,37 @@
     resyncDeviceHomeCardOrder();
   }
 
-  // --- The "Add" row (opened from the toolbar below the table) -----------
+  // --- The "Add" row (opened from the "Add Pulse Meter" toolbar button) --
   //
-  // 2026-08-13, "Devices" table unification. Originally one "Add" button +
-  // an in-row type <select>; replaced the same day, direct feedback, with
-  // two dedicated toolbar buttons (Add Pulse Meter/Add Modbus Device -
-  // see mountDeviceAddButtons()) that each open this same row pre-set to
-  // their own type - clearer at a glance than a dropdown, and each button
-  // can disable itself independently once its own type has nothing left
-  // to add. A single in-table row (not a modal), consistent with
+  // 2026-08-13, "Devices" table unification, since simplified back down:
+  // there used to be a second flow here (manual "Add Modbus Device", a
+  // hand-typed address, no scan involved) - removed the same day, direct
+  // feedback: it caused more trouble than it solved (no protection at
+  // all against typing an address another registered slot already used -
+  // see the hard block added to the edit-save flow below for the actual
+  // fix that replaced it) and wasn't needed anyway, since Modbus devices
+  // are still addable the original way (a scan-discovered row's own
+  // Confirm icon, upsertNewPressureRow() above). This row is Pulse Meter
+  // -only now. A single in-table row (not a modal), consistent with
   // everything else in this table already living as rows. Built once,
-  // lazily; its own DOM nodes persist across re-renders (only which
-  // sub-form is visible and the Pulse Meter slot dropdown's options get
-  // touched on every renderDeviceTableBody() call) so a typed-but-not-
-  // yet-submitted name never gets blown away by an unrelated background
-  // poll, same activeElement-safety reasoning as every editable row in
-  // this file.
-  //
-  // deviceAddType is the single source of truth for both "is the row
-  // open" (non-null) and "which sub-form is showing" - no separate open/
-  // closed flag needed.
-  let deviceAddType = null; // null | "modbus" | "pulse"
+  // lazily; its own DOM nodes persist across re-renders (only the slot
+  // dropdown's options get touched on every renderDeviceTableBody() call,
+  // and only when the underlying free-slot set actually changed - see
+  // refreshDeviceAddRow()'s own comment for why that guard matters) so a
+  // typed-but-not-yet-submitted name never gets blown away by an
+  // unrelated background poll, same activeElement-safety reasoning as
+  // every editable row in this file.
+  let deviceAddOpen = false;
   let deviceAddRow = null;
-  // Set right before firing the manual "Add -> Modbus" flow's own request
-  // chain, cleared by handleManualAddResult() below - distinguishes "the
-  // Add Result value that just arrived is a reaction to what *this*
-  // client's own manual-add row just did" from an unrelated SSE dump of
-  // whatever that entity's value happened to already be (e.g. right after
-  // page load, or from a completely different client's own Add) - without
-  // this, every client watching the dashboard would show the same error
-  // alert for someone else's failed manual Add.
-  let pendingManualAddAlert = false;
 
   // Closes the Add row, if open, without going through a full
   // renderDeviceTableBody() - called from enterEdit() (either row type)
   // so starting an edit closes a currently-open Add, the reverse of
   // toggleDeviceAdd()'s own "opening Add closes a currently-open edit".
   function closeDeviceAddRow() {
-    if (deviceAddType === null) return;
-    deviceAddType = null;
+    if (!deviceAddOpen) return;
+    deviceAddOpen = false;
     if (deviceAddRow && deviceAddRow.isConnected) deviceAddRow.remove();
-  }
-
-  function updateDeviceAddSubformVisibility(row) {
-    row._modbusForm.hidden = deviceAddType !== "modbus";
-    row._pulseForm.hidden = deviceAddType !== "pulse";
   }
 
   function buildDeviceAddRow() {
@@ -1446,48 +1454,29 @@
     const form = el("div", "dc-device-add-form");
     cell.appendChild(form);
 
-    // Modbus sub-form - a hand-typed address, unlike a scan-discovered
-    // row (which already knows the address answers something - see
-    // upsertNewPressureRow() above). Goes through the exact same shared
-    // "Pressure Sensors Add" button (water-collector.yaml), which now
-    // probes the address first either way - see that button's own
-    // comment for why a manual entry needs this and a scan-discovered
-    // one doesn't strictly need it but harmlessly gets it too.
-    const modbusForm = el("div", "dc-device-add-subform");
-    const modbusName = document.createElement("input");
-    modbusName.type = "text";
-    modbusName.maxLength = 32;
-    modbusName.placeholder = "Device name";
-    const modbusAddr = document.createElement("input");
-    modbusAddr.type = "number";
-    modbusAddr.min = 1;
-    modbusAddr.max = 247;
-    modbusAddr.step = 1;
-    modbusAddr.placeholder = "Address";
-    modbusForm.append(modbusName, modbusAddr);
-
-    // Pulse Meter sub-form - a slot picker instead of a free-typed
-    // address: there's no discovery step at all here, just whichever of
-    // the (currently exactly two) fixed GPIO slots isn't already
-    // Registered - see refreshDeviceAddRow() below for how the option
-    // list is kept current, and water_meter.yaml's own per-meter Add
-    // button for what this actually fires.
-    const pulseForm = el("div", "dc-device-add-subform");
-    const pulseName = document.createElement("input");
-    pulseName.type = "text";
-    pulseName.maxLength = 32;
-    pulseName.placeholder = "Device name";
-    const pulseSelect = document.createElement("select");
-    pulseForm.append(pulseName, pulseSelect);
+    // A slot picker instead of a free-typed address/id: there's no
+    // discovery step at all here, just whichever of the (currently
+    // exactly two) fixed GPIO slots isn't already Registered - see
+    // refreshDeviceAddRow() below for how the option list is kept
+    // current, and water_meter.yaml's own per-meter Add button for what
+    // this actually fires. Labeled "IO 1"/"IO 2" (pulseSlotOptionLabel()
+    // below), not the internal "Pulse Meter 1/2" group name - direct
+    // feedback, 2026-08-13: that read as an odd, meaningless choice at
+    // Add time; "IO N" matches what's actually printed on the board
+    // itself next to the SH1.0 connector.
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.maxLength = 32;
+    nameInput.placeholder = "Device name";
+    nameInput.autocomplete = "off";
+    const slotSelect = document.createElement("select");
 
     const errorEl = el("span", "dc-device-add-error", "");
 
-    // Confirm/Cancel icon buttons, shared by both sub-forms - branches on
-    // deviceAddType at click time rather than each sub-form having its
-    // own text "Add" button, 2026-08-13, direct feedback: visually
-    // consistent with the row's own Save/Cancel icon pair used everywhere
-    // else in this table during an edit, instead of looking like a
-    // second, different kind of "Add" control.
+    // Confirm/Cancel icon buttons - reuses the row's own Save/Cancel icon
+    // pair (2026-08-13, direct feedback: visually consistent with every
+    // other confirm/cancel action in this table, instead of a standalone
+    // text "Add" button that looked like a different kind of control).
     const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
     confirmBtn.type = "button";
     confirmBtn.title = "Add";
@@ -1495,121 +1484,96 @@
     cancelBtn.type = "button";
     cancelBtn.title = "Cancel";
 
-    form.append(modbusForm, pulseForm, confirmBtn, cancelBtn, errorEl);
+    form.append(nameInput, slotSelect, confirmBtn, cancelBtn, errorEl);
 
-    row._modbusForm = modbusForm;
-    row._pulseForm = pulseForm;
-    row._modbusName = modbusName;
-    row._modbusAddr = modbusAddr;
-    row._pulseName = pulseName;
-    row._pulseSelect = pulseSelect;
+    row._nameInput = nameInput;
+    row._slotSelect = slotSelect;
     row._errorEl = errorEl;
 
-    cancelBtn.addEventListener("click", () => {
-      deviceAddType = null;
+    const cancel = () => {
+      deviceAddOpen = false;
       renderDeviceTableBody();
-    });
+    };
+    cancelBtn.addEventListener("click", cancel);
 
-    confirmBtn.addEventListener("click", () => {
+    const confirm = () => {
       errorEl.textContent = "";
-      if (deviceAddType === "modbus") {
-        const name = modbusName.value.trim();
-        const addr = parseInt(modbusAddr.value, 10);
-        if (!name) {
-          errorEl.textContent = "Enter a name.";
-          return;
-        }
-        if (Number.isNaN(addr) || addr < 1 || addr > 247) {
-          errorEl.textContent = "Address must be 1-247.";
-          return;
-        }
-        if (registeredPressureSlots().length >= PRESSURE_MAX_SLOTS) {
-          errorEl.textContent = "All 8 sensor slots are already registered - delete one first to add another.";
-          return;
-        }
-        const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
-        const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
-        const addEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add");
-        if (!nameEntity || !addrEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
-        confirmBtn.disabled = true;
-        pendingManualAddAlert = true;
-        fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-          .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(addr)}`, { method: "POST" }))
-          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-          .finally(() => {
-            confirmBtn.disabled = false;
-          });
-      } else if (deviceAddType === "pulse") {
-        const name = pulseName.value.trim();
-        const groupName = pulseSelect.value;
-        if (!name) {
-          errorEl.textContent = "Enter a name.";
-          return;
-        }
-        if (!groupName) {
-          errorEl.textContent = "No free pulse meter slot.";
-          return;
-        }
-        const nameEntity = pulseMeterSlotEntity(groupName, "Add Name");
-        const addEntity = pulseMeterSlotEntity(groupName, "Add");
-        if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
-        confirmBtn.disabled = true;
-        fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-          .finally(() => {
-            confirmBtn.disabled = false;
-            deviceAddType = null;
-            renderDeviceTableBody();
-          });
+      const name = nameInput.value.trim();
+      const groupName = slotSelect.value;
+      if (!name) {
+        errorEl.textContent = "Enter a name.";
+        return;
       }
-    });
+      if (!groupName) {
+        errorEl.textContent = "No free pulse meter slot.";
+        return;
+      }
+      const nameEntity = pulseMeterSlotEntity(groupName, "Add Name");
+      const addEntity = pulseMeterSlotEntity(groupName, "Add");
+      if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
+      confirmBtn.disabled = true;
+      fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
+        .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
+        .finally(() => {
+          confirmBtn.disabled = false;
+          deviceAddOpen = false;
+          renderDeviceTableBody();
+        });
+    };
+    confirmBtn.addEventListener("click", confirm);
 
-    updateDeviceAddSubformVisibility(row);
+    // Enter = Confirm, Escape = Cancel - same pair every other editable
+    // row in this table already wires (see upsertRegisteredPressureRow()'s
+    // own handleEditKeydown for the original).
+    const handleKeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirm();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    };
+    nameInput.addEventListener("keydown", handleKeydown);
+    slotSelect.addEventListener("keydown", handleKeydown);
+
     return row;
   }
 
-  // Refreshes the Pulse Meter slot dropdown's options to whichever GPIO
-  // slots aren't currently Registered (2026-08-13, direct feedback: offer
-  // only whichever of the two fixed slots remains - not yet a generic
-  // "enable more GPIOs" setup screen, deliberately deferred). Runs on
-  // every render while the Add row is open, cheap (0-2 options) and never
-  // touches the Name/Address inputs the user might be mid-typing. Whether
-  // the row can even be opened for a type that's run out of room (both
-  // pulse slots taken, or all 8 pressure slots registered) is handled
-  // earlier, by disabling the toolbar button itself (refreshDeviceAddButtons()).
-  function refreshDeviceAddRow() {
-    const row = deviceAddRow;
-    if (deviceAddType === "pulse") {
-      const free = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
-      const select = row._pulseSelect;
-      const prevPulse = select.value;
-      select.innerHTML = free.map((g) => `<option value="${g}">${g}</option>`).join("");
-      if (free.includes(prevPulse)) select.value = prevPulse;
-    }
-    updateDeviceAddSubformVisibility(row);
+  // "Pulse Meter N" -> "IO N" - the label actually printed on the board
+  // next to the SH1.0 pulse connector (docs/hardver/esp32-s3-rs485-can-
+  // board.md), not the internal group name.
+  function pulseSlotOptionLabel(groupName) {
+    const m = /^Pulse Meter (\d+)$/.exec(groupName);
+    return m ? `IO ${m[1]}` : groupName;
   }
 
-  // "Pressure Sensors Add Result" (water-collector.yaml) reporting the
-  // outcome of the manual "Add -> Modbus" flow's own probe - see that
-  // text_sensor's own comment. pendingManualAddAlert guards against
-  // reacting to a scan-discovered row's own Add (fires the exact same
-  // underlying button/entity, but that flow already has its own
-  // "New"/removed-from-list feedback and doesn't need a second, redundant
-  // one here) or a stale value from before this client connected.
-  function handleManualAddResult(entity) {
-    if (!pendingManualAddAlert) return;
-    pendingManualAddAlert = false;
-    if (entity.value === "no_response") {
-      if (deviceAddRow) deviceAddRow._errorEl.textContent = "No response from that address - check the wiring/address and try again.";
-      return;
+  // Refreshes the slot dropdown's options to whichever GPIO slots aren't
+  // currently Registered (2026-08-13, direct feedback: offer only
+  // whichever of the two fixed slots remains - not yet a generic "enable
+  // more GPIOs" setup screen, deliberately deferred). Runs on every
+  // render while the Add row is open - but only actually touches the
+  // <select>'s DOM when the underlying free-slot set has changed
+  // (row._slotKey below), not unconditionally. Rebuilding a <select>'s
+  // options while it's open/focused (the previous version did this on
+  // every single call) confirmed a real bug on real hardware, 2026-08-13:
+  // the native dropdown popup got confused about its own content
+  // changing out from under it and wouldn't reliably release focus
+  // afterwards. The free-slot set only ever changes when a meter gets
+  // Registered/Deleted elsewhere - genuinely rare while this row happens
+  // to be open - so skipping the rebuild the rest of the time costs
+  // nothing and fixes the bug outright.
+  function refreshDeviceAddRow() {
+    const row = deviceAddRow;
+    const free = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
+    const freeKey = free.join(",");
+    if (row._slotKey !== freeKey) {
+      row._slotKey = freeKey;
+      const select = row._slotSelect;
+      const prevValue = select.value;
+      select.innerHTML = free.map((g) => `<option value="${g}">${pulseSlotOptionLabel(g)}</option>`).join("");
+      if (free.includes(prevValue)) select.value = prevValue;
     }
-    deviceAddType = null;
-    if (deviceAddRow) {
-      deviceAddRow._modbusName.value = "";
-      deviceAddRow._modbusAddr.value = "";
-      deviceAddRow._errorEl.textContent = "";
-    }
-    renderDeviceTableBody();
   }
 
   // Home card existence, gated purely on Modbus Address != 0 - see this
@@ -1692,14 +1656,20 @@
     if (entity.groupName === PRESSURE_ADD_GROUP) {
       ensureDeviceTable(); // make sure the toolbar + table exist even with zero scan results yet
       const label = displayName(entity);
-      if (label === "Scan Bus") mountPressureToolbarButton(entity);
-      else if (label === "Scan Results" || label === "Scan Collisions") renderDeviceTableBody();
-      else if (label === "Scan In Progress") syncScanButtonBusyState(entity.value === true);
-      else if (label === "Add Result") handleManualAddResult(entity);
+      if (label === "Find Modbus Devices") mountPressureToolbarButton(entity);
+      else if (label === "Scan Results" || label === "Scan Collisions") {
+        // See scanResultsFresh's own comment further up - only an update
+        // arriving after the initial dump has already settled counts as
+        // an actual new scan; one that arrives as part of the dump
+        // itself (initialSettled still false here) is old, persisted
+        // state, not a fresh result.
+        if (initialSettled) scanResultsFresh = true;
+        renderDeviceTableBody();
+      } else if (label === "Scan In Progress") syncScanButtonBusyState(entity.value === true);
       // Add Name / Add Target Address / Add itself have no visible UI of
-      // their own - they're write-only targets set by each new-device
-      // row's own Add button (or the manual Add row's own Modbus
-      // sub-form) above, never rendered directly.
+      // their own - they're write-only targets set by each scan-
+      // discovered new-device row's own Confirm icon above, never
+      // rendered directly.
       return;
     }
     renderDeviceTableBody();

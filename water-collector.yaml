@@ -515,7 +515,7 @@ sensor:
 
 binary_sensor:
   # Live/ephemeral, never persisted - true for the ~6s a "Pressure
-  # Sensors Scan Bus" press actually takes, see that button's own
+  # Sensors Find Modbus Devices" press actually takes, see that button's own
   # on_press: above. Not pressure-specific in spirit (scan_bus() sweeps
   # the whole Modbus bus, any device type), kept under the "Pressure
   # Sensors" heading for now only because that's still the only Add flow
@@ -733,7 +733,7 @@ button:
   # not from this button.
   - platform: template
     id: pressure_scan
-    name: "Pressure Sensors Scan Bus"
+    name: "Pressure Sensors Find Modbus Devices"
     icon: "mdi:radar"
     entity_category: config
     disabled_by_default: true
