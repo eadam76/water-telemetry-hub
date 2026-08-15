@@ -620,52 +620,51 @@ body {
   padding: 9px 16px;
 }
 
-/* --- Pressure sensor table (Service page) - see dashboard.js's own
- * "Pressure sensor table" section for why this is a compact table
- * (Name | Address | Status | edit/delete | reorder) instead of a
- * .dc-fields block per slot like every other Service section above. A
- * row is either "registered" (a real slot - Name/Address are locked
- * read-only until its own pencil button is pressed, see
- * .dc-pressure-icon-btn below) or "new" (a scanned-but-unregistered
- * address, read-only Address + a per-row Add) - see .dc-pressure-badge-*
- * below for the Status pill each renders. */
+/* --- Unified "Devices" table (Service page) - see dashboard.js's own
+ * ensureDeviceTable()/renderDeviceTableBody() for why this is one compact
+ * table (Name | Status | edit/delete | reorder) shared by BOTH device
+ * types (Modbus pressure sensors and local GPIO pulse meters,
+ * 2026-08-13 unification - previously two separate, near-identical
+ * tables) instead of a .dc-fields block per slot like every other
+ * Service section above. A row is either "registered" (a real device -
+ * Name, and for Modbus rows Address too, are locked read-only until its
+ * own pencil button is pressed, see .dc-pressure-icon-btn below) or, for
+ * a scan-discovered Modbus address only, "new" (read-only, a per-row
+ * Add) - see .dc-pressure-badge-* below for the Status pill each
+ * renders. Type-specific detail (Modbus Address / Reading+Zero-Flow
+ * Timeout) lives in a second, expand-only <tr> beneath a row while it's
+ * being edited - see .dc-pulsemeter-expanded below (name predates the
+ * unification, kept since the pattern itself is domain-agnostic). */
 
 .dc-pressure-group {
-  /* Deliberately wider than a plain .dc-service-group now (was matched
-     to it at 420px, 2026-08-13, to fix an *unintentional* mismatch) -
-     this one holds an actual multi-column table, not a single stacked
-     field, so it benefits from the extra room in a way a form field
-     doesn't; a future extra column (see the table-scroll wrapper's own
-     comment in dashboard.js) needs the room even more. Still just a
-     max-width - shrinks to fit a narrow viewport same as every other
-     card, this only raises the ceiling on wider screens ("desktopon
-     jóval szélesebb táblázat is működhet", direct feedback, same day). */
+  /* Deliberately wider than a plain .dc-service-group (was matched to it
+     at 420px, 2026-08-13, to fix an *unintentional* mismatch) - this one
+     holds an actual multi-column table, not a single stacked field, so
+     it benefits from the extra room in a way a form field doesn't; a
+     future extra column (see the table-scroll wrapper's own comment in
+     dashboard.js) needs the room even more. Still just a max-width -
+     shrinks to fit a narrow viewport same as every other card, this only
+     raises the ceiling on wider screens ("desktopon jóval szélesebb
+     táblázat is működhet", direct feedback, same day). */
   max-width: 900px;
 }
 
-/* Pulse meters table (web/dashboard.js's own "Pulse meter table" section)
- * - reuses .dc-pressure-table's base styling wholesale (border/input/
- * disabled/hover rules, all domain-agnostic despite the class name).
- * Same width as .dc-pressure-group, not its own narrower one (used to be
- * 480px, on the reasoning that this table only ever needs Name + Action
- * columns - direct feedback, 2026-08-13, was that the two commissioning
- * tables should just visually match, not each size itself to its own
- * current column count). */
-.dc-pulsemeter-group {
-  max-width: 900px;
-}
-
-/* Reading/Update/Zero-Flow Timeout's inline detail area (only in the DOM
- * while its own row is being edited - see upsertRegisteredPulseMeterRow()
- * in dashboard.js). border-top: none joins it seamlessly to the row
- * above (no visible seam), and the matching accent-tinted background
- * (same token .dc-pressure-row-editing already uses on the row itself)
- * is what actually answers "which fields belong to which meter" -
- * direct feedback, 2026-08-13. Higher specificity than the plain
- * `.dc-pressure-table td` rule (equal class+type count alone wouldn't
- * reliably win on source order), so it isn't a stylesheet-order
- * accident. */
-.dc-pulsemeter-table tr.dc-pulsemeter-expanded td {
+/* Reading/Update/Zero-Flow Timeout (pulse meter rows) or Modbus Address
+ * (pressure rows) - either type's inline detail area, only in the DOM
+ * while its own row is being edited (see upsertRegisteredPulseMeterRow()/
+ * upsertRegisteredPressureRow() in dashboard.js). border-top: none joins
+ * it seamlessly to the row above (no visible seam), and the matching
+ * accent-tinted background (same token .dc-pressure-row-editing already
+ * uses on the row itself) is what actually answers "which fields belong
+ * to which device" - direct feedback, 2026-08-13. Higher specificity
+ * than the plain `.dc-pressure-table td` rule (equal class+type count
+ * alone wouldn't reliably win on source order), so it isn't a
+ * stylesheet-order accident. Class name predates the "Devices" table
+ * unification (this pattern started on the pulse meters, then got
+ * reused for pressure's own Modbus Address field too) - kept rather than
+ * renamed, since the pattern itself was always domain-agnostic despite
+ * the name, same reasoning as .dc-pressure-* throughout this file. */
+.dc-pressure-table tr.dc-pulsemeter-expanded td {
   border-top: none;
   background: var(--dc-accent-dim);
   padding-top: 2px;
@@ -799,11 +798,12 @@ body {
   padding: 0 8px 6px;
 }
 
+/* Status column header - centered to match the badge itself
+   (.dc-pressure-table td.dc-pressure-status below). Was right-aligned,
+   for the old dedicated Address column that column used to be - gone,
+   2026-08-13, "Devices" table unification (folded into a small hint
+   inside the Name cell instead, see .dc-pressure-addr-hint below). */
 .dc-pressure-table thead th:nth-child(2) {
-  text-align: right;
-}
-
-.dc-pressure-table thead th:nth-child(3) {
   text-align: center;
 }
 
@@ -861,10 +861,16 @@ body {
   min-width: 0;
 }
 
-.dc-pressure-table td.dc-pressure-addr {
-  width: 5.5em;
-  text-align: right;
-  color: var(--dc-text);
+/* A scan-discovered/collision row's known address - folded into the Name
+ * cell as a small hint above the (draft) name input/note, 2026-08-13,
+ * "Devices" table unification (replaces the old dedicated Address
+ * column - see upsertNewPressureRow()/upsertCollisionPressureRow() in
+ * dashboard.js). */
+.dc-pressure-addr-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--dc-text-muted);
+  margin-bottom: 3px;
 }
 
 .dc-pressure-table input[type="number"] {
@@ -971,6 +977,29 @@ body {
 
 .dc-pressure-badge-collision {
   color: var(--dc-danger);
+}
+
+/* A pulse meter's steady "Ready" badge (upsertRegisteredPulseMeterRow() -
+ * always .dc-pressure-badge-ok once registered, a local GPIO pulse
+ * counter has no "unreachable" concept) gains this ring, briefly, on top
+ * of the dot whenever a real pulse actually lands - see
+ * flashPulseMeterActivity() in dashboard.js. Direct feedback, 2026-08-13:
+ * "configured" (steady dot) and "a pulse just arrived" (dot + ring) need
+ * to read as visibly different states, not the same badge. Grows/fades a
+ * ring in currentColor around the dot rather than changing its color -
+ * keeps "Ready" itself unambiguous throughout. */
+.dc-pressure-badge.dc-pulse-flash::before {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: dc-pulse-ring 0.7s ease-out;
+}
+
+@keyframes dc-pulse-ring {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 6px transparent;
+  }
 }
 
 /* Row action icons (pencil/trash/check/close - see
@@ -1087,6 +1116,83 @@ body {
   color: var(--dc-text-muted);
   font-size: 12.5px;
   font-style: italic;
+}
+
+/* The shared "Add" row (buildDeviceAddRow() in dashboard.js, 2026-08-13
+ * "Devices" table unification) - a type selector plus one of two
+ * type-specific sub-forms, all inside a single full-width cell rather
+ * than fitting into the table's normal 4-column grid (nothing here maps
+ * cleanly onto Name/Status/Action/Order). */
+.dc-device-add-row td {
+  background: var(--dc-accent-dim);
+}
+
+.dc-device-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.dc-device-add-form select {
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 7px 9px;
+  font-size: 14px;
+}
+
+/* Modbus (Name + Address) or Pulse Meter (Name + GPIO slot) fields - only
+ * one sub-form visible at a time, toggled by the type <select> above
+ * (updateDeviceAddSubformVisibility() in dashboard.js). */
+.dc-device-add-subform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+}
+
+.dc-device-add-subform[hidden] {
+  display: none;
+}
+
+.dc-device-add-subform input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 7px 9px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input elsewhere */
+}
+
+.dc-device-add-subform input[type="number"] {
+  flex: 0 0 6em;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 7px 9px;
+  font-size: 16px;
+  text-align: right;
+}
+
+/* Manual "Add -> Modbus" probe failure (handleManualAddResult() in
+ * dashboard.js) - inline, next to the fields it applies to, rather than
+ * a native alert() (which every other irreversible action in this file
+ * gates with a confirm() instead - an alert() here would be the only
+ * plain informational one, out of place). */
+.dc-device-add-error {
+  color: var(--dc-danger);
+  font-size: 12.5px;
+  flex: 1 1 100%;
+}
+
+.dc-device-add-error:empty {
+  display: none;
 }
 
 /* --- Log page --- */

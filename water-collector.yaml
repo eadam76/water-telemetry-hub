@@ -122,21 +122,34 @@ globals:
     restore_value: false
     initial_value: "false"
 
-  # Monotonically-increasing counter, handed out (and bumped) by
-  # whichever slot's try_register script actually claims a new
-  # registration (packages/pressure_sensor.yaml) - gives every freshly-
-  # added device a Sort Order strictly higher than any previously issued
-  # one, so it always lands at the bottom of the dashboard's table by
-  # default, matching plain add-order, rather than falling back to
-  # address order among however many still-uncustomized (Sort Order == 0)
-  # slots happen to exist - confirmed a real complaint, 2026-08-13.
+  # Scratch result of "Pressure Sensors Add"'s own probe() call (see that
+  # button's on_press) - not persisted, only ever read within the same
+  # button press that just wrote it.
+  - id: pressure_add_probe_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Monotonically-increasing counter, SHARED across every device type
+  # (2026-08-13, "Devices" table unification - see web/dashboard.js and
+  # REQUIREMENTS.md) - handed out (and bumped) by whichever slot's
+  # try_register-style logic actually claims a new registration
+  # (packages/pressure_sensor.yaml's try_register script, water_meter.yaml's
+  # own per-meter Add button). Gives every freshly-added device, of
+  # *either* type, a Sort Order strictly higher than any previously
+  # issued one, so it always lands at the bottom of the unified table by
+  # default, matching plain add-order across the whole device list, not
+  # just within its own type - confirmed a real complaint, 2026-08-13.
+  # Renamed from next_pressure_sort_order the same day, once pulse meters
+  # started participating in the same ordering scheme too - a name that's
+  # still pressure-specific would be actively misleading now.
   # restore_value: true - a reboot must not reissue a smaller value than
   # is already sitting on an existing slot (which could put a *new* add
-  # ahead of older ones after a restart). uint16_t, not uint8_t: only 8
-  # slots exist at once, but this never decreases even across delete/re-
-  # add cycles over the device's whole lifetime, so it needs more
-  # headroom than the slot count itself.
-  - id: next_pressure_sort_order
+  # ahead of older ones after a restart). uint16_t, not uint8_t: only 10
+  # slots exist at once (8 pressure + 2 pulse meter), but this never
+  # decreases even across delete/re-add cycles over the device's whole
+  # lifetime, so it needs more headroom than the slot count itself.
+  - id: next_device_sort_order
     type: uint16_t
     restore_value: true
     initial_value: "1"
@@ -554,6 +567,23 @@ text_sensor:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 3.5
 
+  # "ok"/"no_response" - published once, right after every "Pressure
+  # Sensors Add" press (see that button's own comment) - lets the
+  # dashboard's manual "Add -> Modbus" flow (web/dashboard.js) show a
+  # real error instead of the row just silently never appearing when a
+  # hand-typed address doesn't answer. Not meaningful on its own before
+  # the first Add press this session (starts empty) - the dashboard only
+  # ever reads this value reactively, right after firing that same Add.
+  - platform: template
+    id: pressure_add_result
+    name: "Pressure Sensors Add Result"
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.2
+
   - platform: wifi_info
     ip_address:
       name: "IP Address"
@@ -736,9 +766,27 @@ button:
   # Registers the first still-free pressure sensor slot (out of the 8 in
   # packages/pressure_sensor.yaml) with the address+name set in "Pressure
   # Sensors Add Target Address"/"...Add Name" below - the dashboard sets
-  # both of those (from a scan-discovered "New device" row) immediately
-  # before pressing this, so from the user's perspective it looks like a
-  # per-row "Add" button, even though underneath it's one shared trigger.
+  # both of those immediately before pressing this, so from the user's
+  # perspective it looks like a per-row "Add" button, even though
+  # underneath it's one shared trigger. Fires from two different UI
+  # paths now (2026-08-13, "Devices" table unification): a scan-
+  # discovered "New device" row's own one-click Add (address already
+  # known to answer, from the last Scan Bus), and the unified table's
+  # manual "Add -> Modbus" flow (a hand-typed address, never scanned) -
+  # both go through this exact same button/sequence, no separate code
+  # path needed for either.
+  #
+  # Probes the target address first (rs485_modbus::probe(), same
+  # three-way FOUND/COLLISION/NO_RESPONSE signal scan_bus() itself uses)
+  # and only actually registers on a clean FOUND - direct feedback,
+  # 2026-08-13: a hand-typed address has no prior scan to already
+  # guarantee something answers there (unlike a scan-discovered row's
+  # Add, which - now redundantly, but harmlessly, since a repeat probe
+  # of an address confirmed seconds ago is cheap and still correct -
+  # goes through the exact same check). A mistyped/nonexistent address
+  # now simply isn't registered at all, rather than creating a slot that
+  # would only ever show Lost - cheaper to notice immediately (nothing
+  # happened) than to notice `later` (a phantom slot stuck on Lost).
   #
   # Resets modbus_add_claimed to false first, so exactly one of the 8
   # try_register calls below claims the slot - see that global's own
@@ -757,47 +805,59 @@ button:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 20
     on_press:
-      - globals.set:
-          id: modbus_add_claimed
-          value: "false"
-      - script.execute:
-          id: slot1_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot2_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot3_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot4_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot5_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot6_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot7_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
-      - script.execute:
-          id: slot8_try_register
-          name: !lambda 'return id(pressure_add_name).state;'
-          address: !lambda 'return (int) id(pressure_add_address).state;'
+      - lambda: |-
+          uint8_t address = (uint8_t) id(pressure_add_address).state;
+          auto result = rs485_modbus::probe(id(rs485_uart), address, 50);
+          id(pressure_add_probe_ok) = (result == rs485_modbus::ProbeResult::FOUND);
+          if (!id(pressure_add_probe_ok)) {
+            ESP_LOGW("pressure", "Add: no clean response from address %d (result=%d) - not registering", address, (int) result);
+          }
+      - if:
+          condition:
+            lambda: 'return id(pressure_add_probe_ok);'
+          then:
+            - globals.set:
+                id: modbus_add_claimed
+                value: "false"
+            - script.execute:
+                id: slot1_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot2_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot3_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot4_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot5_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot6_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot7_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+            - script.execute:
+                id: slot8_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
       - text.set:
           id: pressure_add_name
           value: ""
       - number.set:
           id: pressure_add_address
           value: 0
+      - lambda: 'id(pressure_add_result).publish_state(id(pressure_add_probe_ok) ? "ok" : "no_response");'
 
 text:
   # Set by the dashboard (not typed by hand in normal use) immediately

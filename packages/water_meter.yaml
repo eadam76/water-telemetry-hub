@@ -5,17 +5,24 @@
 # manual calibration sync. See REQUIREMENTS.md (Hungarian) at the repo root
 # for the full rationale.
 #
-# COMMISSIONING MODEL (2026-08-13): the "Registered" switch below is the
-# single source of truth for "commissioned or not" - unified with the
-# Modbus pressure sensors' Add/Delete/edit-lock pattern (web/dashboard.js's
-# "Pulse Meters" table, water-collector.yaml). Every entity here is still
+# COMMISSIONING MODEL (2026-08-13, extended 2026-08-13 for the unified
+# "Devices" table): the "Registered" switch below is the single source of
+# truth for "commissioned or not" - unified with the Modbus pressure
+# sensors' Add/Delete/edit-lock pattern (web/dashboard.js's single
+# "Devices" table, water-collector.yaml). Every entity here is still
 # always compiled-in and always sent, exactly like a pressure slot's
 # entities - only whether the dashboard actually *renders* something from
 # it is conditional on Registered, not whether it exists at all. Unlike a
 # pressure slot, there is no bus scan/discovery step here at all - each
 # meter's identity (which physical GPIO it reads) is fixed at compile
-# time, so "Add" just means "give it a name and flip Registered on", with
-# no address/claiming ambiguity to resolve.
+# time, so "Add" (the per-meter Add button below) just means "give it a
+# name, claim a Sort Order, flip Registered on", with no address/claiming
+# ambiguity to resolve - the dashboard picks which specific still-free
+# "Pulse Meter N" slot to add by pressing *that* meter's own Add button,
+# not a shared one (contrast the pressure sensors' shared "first still-
+# free slot wins" Add). Sort Order (below) participates in the exact same
+# cross-type ordering scheme as the pressure sensors now, via the shared
+# water-collector.yaml next_device_sort_order counter.
 #
 # Instantiate per meter from the top-level config (water-collector.yaml)
 # via `!include ... vars:`. Required vars:
@@ -269,7 +276,56 @@ text:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 6
 
+  # Set by the dashboard (not typed by hand in normal use) immediately
+  # before pressing the Add button below - same pattern as the pressure
+  # sensors' shared "Pressure Sensors Add Name" (water-collector.yaml),
+  # just one of these per meter instead of one shared field, since the
+  # unified Devices table (web/dashboard.js) already knows exactly which
+  # meter/GPIO slot it's adding (no discovery/claim-race to resolve, see
+  # the Add button's own comment). Not persisted: transient, cleared back
+  # to empty right after Add fires.
+  - platform: template
+    id: ${id_prefix}_add_name
+    name: "${friendly_name} Add Name"
+    icon: "mdi:form-textbox"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 93
+
 number:
+  # Pure dashboard-side ordering - see pressure_sensor.yaml's own Sort
+  # Order entity for the full reasoning (2026-08-13, "Devices" table
+  # unification: pulse meters now participate in the exact same
+  # cross-type Sort Order scheme as the Modbus pressure sensors, sharing
+  # water-collector.yaml's next_device_sort_order counter). 0 = never
+  # customized - the dashboard falls back to plain group-name order
+  # ("Pulse Meter 1" before "...2") for any meter still at 0. Written by
+  # the Add button below (claims the current counter value, then bumps
+  # it) and reset back to 0 by Delete, same two write sites as a
+  # pressure slot's own copy.
+  - platform: template
+    id: ${id_prefix}_sort_order
+    name: "${friendly_name} Sort Order"
+    icon: "mdi:sort"
+    mode: box
+    min_value: 0
+    max_value: 65535
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 91
+
   # Physical meter reading entry (m3) - input only, does nothing by
   # itself; the "Update" button below reads it.
   #
@@ -368,6 +424,50 @@ button:
           global_preferences->sync();
           id(${id_prefix}_total_consumption).publish_state(target);
 
+  # Registers this meter - counterpart of the pressure sensors' shared
+  # "Pressure Sensors Add" (water-collector.yaml), but simpler: the
+  # unified Devices table's Add flow (web/dashboard.js) already knows
+  # exactly which meter/GPIO slot it's adding (the user picks a specific
+  # still-free "Pulse Meter N" slot, there's no scan/discovery step at
+  # all - see the file header) so there's no cross-slot claim race to
+  # guard against here, unlike the pressure sensors' 8-slot "first free
+  # one wins" scramble. One button per meter instead of one shared
+  # trigger for the same reason. No-ops (silently) if already registered
+  # or the name is empty - the dashboard's own Add control already
+  # prevents both, this is just the same belt-and-braces guard the
+  # pressure sensors' try_register script has.
+  - platform: template
+    id: ${id_prefix}_add
+    name: "${friendly_name} Add"
+    icon: "mdi:plus"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 94
+    on_press:
+      - if:
+          condition:
+            lambda: 'return !id(${id_prefix}_enabled).state && !id(${id_prefix}_add_name).state.empty();'
+          then:
+            - text.set:
+                id: ${id_prefix}_display_name
+                value: !lambda 'return id(${id_prefix}_add_name).state;'
+            # Claims the current counter value for this meter's own Sort
+            # Order, then bumps it - see that number entity's own
+            # comment (shared next_device_sort_order counter, same
+            # scheme a pressure slot's try_register uses).
+            - number.set:
+                id: ${id_prefix}_sort_order
+                value: !lambda 'return id(next_device_sort_order);'
+            - globals.set:
+                id: next_device_sort_order
+                value: !lambda 'return id(next_device_sort_order) + 1;'
+            - switch.turn_on: ${id_prefix}_enabled
+      - text.set:
+          id: ${id_prefix}_add_name
+          value: ""
+
   # Un-commissions this meter (see the Registered switch's own comment
   # for why this only hides it, on purpose - pulse counting and Total
   # Consumption keep running/accumulating untouched). Deliberately also
@@ -375,7 +475,10 @@ button:
   # pressure slot's Delete) - a water meter's GPIO is always the same
   # physical meter, so there's no "someone else might occupy this slot
   # next" ambiguity to protect against; keeping the name means Adding it
-  # back later can reuse it instead of having to retype it.
+  # back later can reuse it instead of having to retype it. DOES reset
+  # Sort Order back to 0 though (2026-08-13, matching a pressure slot's
+  # own Delete) - a re-added meter starts fresh at the bottom of any
+  # custom order rather than silently inheriting a stale rank.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -387,6 +490,9 @@ button:
       sorting_weight: 95
     on_press:
       - switch.turn_off: ${id_prefix}_enabled
+      - number.set:
+          id: ${id_prefix}_sort_order
+          value: 0
 
 interval:
   # Zero-flow watchdog: if no new pulse has arrived for `timeout` seconds,

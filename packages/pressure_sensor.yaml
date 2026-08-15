@@ -248,15 +248,17 @@ number:
   # (web/dashboard.js's orderedRegisteredSlots()).
   #
   # Two things ever write this: try_register below assigns each freshly-
-  # registered slot the current water-collector.yaml next_pressure_sort_
+  # registered slot the current water-collector.yaml next_device_sort_
   # order counter (then bumps it) - so a new Add always sorts after every
   # existing row, not by address among however many are still at 0 -
   # confirmed a real complaint, 2026-08-13. Every registered slot's own
-  # value also gets rewritten together by each Up/Down press in the table
-  # (movePressureRow() in dashboard.js), collapsing back down to small
-  # sequential ranks (1..N) - the counter (which only ever grows) still
-  # guarantees the next Add sorts after those. max_value matches the
-  # counter's own uint16_t range, well beyond the 8-slot manual-rank case.
+  # value also gets rewritten together by each Up/Down press in the
+  # unified devices table (moveDeviceRow() in dashboard.js), collapsing
+  # back down to small sequential ranks (1..N) - the counter (which only
+  # ever grows, and is now SHARED with the pulse meters - see
+  # water-collector.yaml's own comment) still guarantees the next Add, of
+  # either device type, sorts after those. max_value matches the
+  # counter's own uint16_t range, well beyond the small manual-rank case.
   - platform: template
     id: ${id_prefix}_sort_order
     name: "${friendly_name} Sort Order"
@@ -406,10 +408,10 @@ script:
             # slots are still uncustomized).
             - number.set:
                 id: ${id_prefix}_sort_order
-                value: !lambda 'return id(next_pressure_sort_order);'
+                value: !lambda 'return id(next_device_sort_order);'
             - globals.set:
-                id: next_pressure_sort_order
-                value: !lambda 'return id(next_pressure_sort_order) + 1;'
+                id: next_device_sort_order
+                value: !lambda 'return id(next_device_sort_order) + 1;'
             # Publishes Online optimistically, right now, instead of
             # waiting for this slot's first real poll (up to its own
             # ~600-670ms interval away) - justified because Add only ever
