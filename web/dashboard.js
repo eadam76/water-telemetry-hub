@@ -58,12 +58,24 @@
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
+    "MQTT Broker": "Host, host:port, or scheme://host:port (e.g. \"homeassistant.local\" or \"homeassistant.local:1884\"). No port given defaults to 1883. MQTT-over-TLS (mqtts://) isn't implemented - a scheme prefix is accepted but doesn't change how the connection is made.",
+    "MQTT Topic Prefix": "Every topic this device publishes/subscribes to starts with this, followed by \"/\". Defaults to the device's own name.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Reboot Device (CR #3, previous round): its confirm dialog
     // already explains the consequence when it matters - a permanent "?"
     // would just be redundant clutter, and (found this round) also threw
     // off this button's row width relative to Reboot Device's plain one.
   };
+
+  // The exact placeholder water-collector.yaml's "MQTT Password" field
+  // publishes when a password is stored but not currently being edited -
+  // see that field's own comment for why this couldn't just be
+  // mode: password (ESPHome's own web_server masks a mode: password
+  // field's *actual* value unconditionally, which would make "nothing
+  // set" and "something set" look identical from here). Kept as one
+  // named constant, not a literal repeated in two places, so the
+  // firmware and dashboard.js can't silently drift out of sync.
+  const MQTT_PASSWORD_PLACEHOLDER = "••••••••";
 
   // Buttons/fields whose action isn't easily undone get an explicit
   // confirmation before firing (CR #4, #6) - matched by displayName(),
@@ -91,6 +103,16 @@
     close: '<path d="M5 5l14 14M19 5L5 19"/>',
     chevronUp: '<path d="M6 15l6-6 6 6"/>',
     chevronDown: '<path d="M6 9l6 6 6-6"/>',
+    // Password reveal toggle (upsertServiceText()'s "MQTT Password"
+    // special-case below) - standard eye/eye-with-slash pair.
+    eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff:
+      '<path d="M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M6.6 6.7C4.1 8.4 2 12 2 12s3.5 7 10 7a10 10 0 0 0 3.4-.6M17.4 17.4C19.9 15.7 22 12 22 12a17 17 0 0 0-4-4.9"/>',
+    // Header MQTT status icon (updateMqttStatusIcon() below) - two
+    // "server" bars linked by a line, a generic-enough "broker
+    // connection" glyph rather than anything MQTT-logo-specific.
+    mqttNode:
+      '<rect x="7" y="3" width="10" height="6" rx="1.5"/><rect x="7" y="15" width="10" height="6" rx="1.5"/><path d="M12 9v6"/><circle cx="12" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="18" r="1" fill="currentColor" stroke="none"/>',
   };
   // Keyed on the group's real (compile-time) name, never on its
   // renameable Display Name override (CR "generic naming") - so a rename
@@ -373,7 +395,16 @@
     const label = el("div", "dc-section-label", groupLabel(name));
     const list = el("div", "dc-list");
     const actions = el("div", "dc-diag-actions");
-    const fields = el("div", "dc-fields dc-fields-capped");
+    // The "MQTT" group's fields lay out as a 2-column grid (Broker/Topic
+    // Prefix full-width, Username/Password paired) instead of the
+    // generic one-field-per-row stack every other group uses - direct
+    // feedback, 2026-08-15, "az URL egy sorban, a következő sor pedig
+    // user/pass" (the URL on one line, the next line Username/Password).
+    // See .dc-fields-mqtt/.dc-field-span-2 in dashboard.css, and
+    // upsertServiceText()'s own matching special-case for which fields
+    // get the span class.
+    const fieldsClass = name === "MQTT" ? "dc-fields dc-fields-capped dc-fields-mqtt" : "dc-fields dc-fields-capped";
+    const fields = el("div", fieldsClass);
     section.append(label, list, actions, fields);
     g = { weight: groupWeights.get(name) ?? 500, section, list, actions, fields };
     diagGroups.set(name, g);
@@ -2384,6 +2415,7 @@
   // meter's Home card and Service/Diagnostics section headers.
   function upsertServiceText(entity, ensureGroupFn = ensureServiceGroup) {
     const group = ensureGroupFn(entity.groupName ?? FALLBACK_GROUP);
+    const label = displayName(entity);
     if (!entity.el) {
       entity.el = el(
         "div",
@@ -2398,16 +2430,52 @@
         fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
       });
       entity.inputEl = input;
+      // "MQTT Password" - matched by name, not entity.mode (this field
+      // is mode: text, deliberately not mode: password - see that
+      // field's own comment in water-collector.yaml for why). Masked by
+      // default like any password input, with an eye toggle to reveal
+      // what's currently typed (direct feedback, 2026-08-15) - purely a
+      // local, client-side reveal of THIS input's current content, never
+      // a request to the device for the real stored value (which this
+      // dashboard never receives at all, on purpose).
+      if (label === "MQTT Password") {
+        input.type = "password";
+        input.autocomplete = "new-password";
+        // The resting value is either "" or the fixed dots placeholder
+        // (never the real password) - clearing on focus means typing
+        // always starts fresh, instead of the browser inserting new
+        // characters into/before the placeholder text.
+        input.addEventListener("focus", () => {
+          if (input.value === MQTT_PASSWORD_PLACEHOLDER) input.value = "";
+        });
+        const eyeBtn = el("button", "dc-field-eye-btn", svgIcon("eye"));
+        eyeBtn.type = "button";
+        eyeBtn.setAttribute("aria-label", "Show password");
+        eyeBtn.addEventListener("click", () => {
+          const revealing = input.type === "password";
+          input.type = revealing ? "text" : "password";
+          eyeBtn.innerHTML = svgIcon(revealing ? "eyeOff" : "eye");
+          eyeBtn.setAttribute("aria-label", revealing ? "Hide password" : "Show password");
+        });
+        row.appendChild(eyeBtn);
+      }
       group.fields.appendChild(entity.el);
     }
     if (entity.maxLength !== undefined) entity.inputEl.maxLength = entity.maxLength;
-    const label = displayName(entity);
     entity.el.querySelector(".label-text").textContent = label;
     attachHelp(entity.el.querySelector(".label"), HELP_TEXT[label]);
     if (document.activeElement !== entity.inputEl) entity.inputEl.value = entity.value ?? "";
     if (label === "Display Name") {
       groupDisplayNames.set(entity.groupName, (entity.value || "").trim());
       applyGroupLabel(entity.groupName);
+    }
+    // Lays these two out as a full-width row each (paired against
+    // Username/Password's own two half-width rows below them) - see
+    // .dc-fields-mqtt in dashboard.css, and ensureDiagGroup()'s own
+    // comment for why only the "MQTT" group's fields container is a
+    // grid at all.
+    if (label === "MQTT Broker" || label === "MQTT Topic Prefix") {
+      entity.el.classList.add("dc-field-span-2");
     }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
@@ -2704,23 +2772,32 @@
       upsertDiagButton(entity);
       return;
     }
-    // MQTT's settings (Enabled/Broker/Port/Username/Password) - 2026-08-
-    // 15, same reasoning as Reboot Device/Forget Wi-Fi just above: this
-    // isn't about any one device row, it belongs with the rest of the
-    // "System" info/actions, not the Devices table. Unlike those two
-    // (plain action buttons), these need real inputs, so this routes
-    // through the normal upsertService*() field-builders - just pointed
-    // at ensureDiagGroup instead of their Devices-page default
-    // (ensureServiceGroup), rendering into that group's own .dc-fields
-    // area (see ensureDiagGroup()'s own comment). "MQTT Status" (a plain
-    // diagnostic text_sensor) needs no special-casing here - entity_category:
-    // diagnostic already routes it to upsertDiagRow() below, in the same
-    // group, for free.
+    // MQTT's settings (Enabled/Broker/Username/Password/Topic Prefix/
+    // Connect/Disconnect) - 2026-08-15, same reasoning as Reboot Device/
+    // Forget Wi-Fi just above: this isn't about any one device row, it
+    // belongs with the rest of the "System" info/actions, not the
+    // Devices table. The field-domain entities (number/switch/text) need
+    // real inputs, so they route through the normal upsertService*()
+    // field-builders - just pointed at ensureDiagGroup instead of their
+    // Devices-page default (ensureServiceGroup), rendering into that
+    // group's own .dc-fields area (see ensureDiagGroup()'s own comment).
+    // The two buttons (Connect/Disconnect) instead go through
+    // upsertDiagButton() - the same compact-action-row renderer Reboot
+    // Device/Forget Wi-Fi already use, not a settings field. "MQTT
+    // Status" (a plain diagnostic text_sensor) needs no special-casing
+    // at all - entity_category: diagnostic already routes it to
+    // upsertDiagRow() below, in the same group, for free.
     if (entity.groupName === "MQTT") {
       if (entity.domain === "number") upsertServiceNumber(entity, ensureDiagGroup);
       else if (entity.domain === "switch") upsertServiceSwitch(entity, ensureDiagGroup);
       else if (entity.domain === "text") upsertServiceText(entity, ensureDiagGroup);
+      else if (entity.domain === "button") upsertDiagButton(entity);
       else upsertDiagRow(entity); // the "MQTT Status" text_sensor
+      // Only "MQTT Enabled" (switch) and "MQTT Status" (text_sensor)
+      // actually change what this shows, but re-running it on every MQTT
+      // entity update is a cheap no-op the rest of the time - simpler
+      // than threading a label check through here too.
+      updateMqttStatusIcon();
       return;
     }
     const page = pageFor(entity);
@@ -2869,6 +2946,35 @@
     wrap.title = `Wi-Fi signal: ${text}`;
   }
 
+  // Header MQTT status icon, next to the Wi-Fi one - direct feedback,
+  // 2026-08-15: "Mqtt státusz jelző ikon kéne a wifi mellé (ha enabled
+  // akkor van ikon, ha connected lesz akkor kikékül, ha disconnected
+  // akkor szürke)" (there should be an MQTT status icon next to Wi-Fi -
+  // if enabled, the icon shows; once connected it turns blue; if
+  // disconnected, grey). Reads "MQTT Enabled"/"MQTT Status" straight out
+  // of `entities` rather than being pushed a value directly - simpler
+  // than threading two more parameters through render()'s dispatch for
+  // something that only needs to run on the rare MQTT-entity update, not
+  // on every render.
+  function mqttEntity(label) {
+    for (const e of entities.values()) {
+      if (e.groupName === "MQTT" && displayName(e) === label) return e;
+    }
+    return null;
+  }
+  function updateMqttStatusIcon() {
+    const wrap = document.getElementById("dc-mqtt-status");
+    if (!wrap) return;
+    const enabledEntity = mqttEntity("MQTT Enabled");
+    const enabled = !!enabledEntity && enabledEntity.value === true;
+    wrap.hidden = !enabled;
+    if (!enabled) return;
+    const statusEntity = mqttEntity("MQTT Status");
+    const status = (statusEntity && statusEntity.value) || "";
+    wrap.classList.toggle("dc-mqtt-connected", status === "Connected");
+    wrap.title = `MQTT: ${status || "unknown"}`;
+  }
+
   function selectPage(id) {
     currentPage = id;
     for (const p of PAGES) {
@@ -2956,13 +3062,14 @@
           <h1 id="dc-title">Home</h1>
           <div id="dc-header-right">
             <div id="dc-wifi-signal" data-tier="0">
-              <svg viewBox="0 0 20 16" aria-hidden="true">
-                <rect class="bar bar-1" x="0" y="10" width="3" height="6" rx="1"/>
-                <rect class="bar bar-2" x="5.5" y="7" width="3" height="9" rx="1"/>
-                <rect class="bar bar-3" x="11" y="4" width="3" height="12" rx="1"/>
-                <rect class="bar bar-4" x="16.5" y="1" width="3" height="15" rx="1"/>
+              <svg viewBox="0 0 24 22" aria-hidden="true">
+                <path class="arc arc-3" d="M3 8.5a15 15 0 0 1 18 0"/>
+                <path class="arc arc-2" d="M6.3 12a10.5 10.5 0 0 1 11.4 0"/>
+                <path class="arc arc-1" d="M9.5 15.5a6 6 0 0 1 5 0"/>
+                <circle class="dot" cx="12" cy="18.5" r="1.4"/>
               </svg>
             </div>
+            <div id="dc-mqtt-status" hidden title="MQTT">${svgIcon("mqttNode")}</div>
             <div id="dc-status"><span class="dot"></span><span class="label">Connecting…</span></div>
           </div>
         </div>

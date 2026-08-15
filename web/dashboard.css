@@ -229,15 +229,24 @@ body {
   background: var(--dc-status-good);
 }
 
-/* Header Wi-Fi signal bars - see updateSignalBars() in dashboard.js for
- * what drives this and why it's a separate thing from #dc-status above
- * (browser<->device link vs. the device's own upstream Wi-Fi RSSI). Exact
- * dBm is a hover/long-press tooltip (title attribute) plus its own
- * Diagnostics-page row, not shown as text here - bars alone read cleaner
- * at a glance. Bars default to --dc-border (unfilled/grey) and only pick
- * up a tier color via the [data-tier] attribute selectors below, so an
- * unknown/no-reading-yet state (tier 0, set on load and whenever the SSE
- * link itself drops) reads as "no bars", not as an error color. */
+/* Header Wi-Fi signal indicator - see updateSignalBars() in dashboard.js
+ * for what drives this and why it's a separate thing from #dc-status
+ * above (browser<->device link vs. the device's own upstream Wi-Fi
+ * RSSI). Exact dBm is a hover/long-press tooltip (title attribute) plus
+ * its own Diagnostics-page row, not shown as text here.
+ *
+ * Classic concentric-arc "wifi" glyph (2026-08-15, direct feedback:
+ * "A wifi legyen függőleges csíkok helyett az köríves megoldás" - arcs,
+ * not vertical bars) - reuses the exact paths already drawn for the nav/
+ * group "wifi" icon (ICONS.wifi, dashboard.js) rather than a second,
+ * slightly-different piece of art, just split into individually
+ * colorable pieces here. Also no longer tiered by color (red/amber/
+ * green) - direct feedback, same round: "az is kék" (that too should be
+ * blue) - now a single accent-blue for every filled tier, default
+ * --dc-border (unfilled/grey) otherwise, so an unknown/no-reading-yet
+ * state (tier 0, set on load and whenever the SSE link itself drops)
+ * still reads as "nothing lit", just no longer implying "bad" via color
+ * the way red/amber used to. */
 #dc-wifi-signal {
   display: flex;
   align-items: center;
@@ -245,37 +254,72 @@ body {
 }
 
 #dc-wifi-signal svg {
-  width: 18px;
-  height: 15px;
+  width: 19px;
+  height: 17px;
+  fill: none;
 }
 
-#dc-wifi-signal .bar {
+#dc-wifi-signal .arc {
+  stroke: var(--dc-border);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  fill: none;
+  transition: stroke 0.2s;
+}
+
+#dc-wifi-signal .dot {
   fill: var(--dc-border);
+  stroke: none;
   transition: fill 0.2s;
 }
 
-/* Weak (tier 1): red. Fair (tier 2): amber. Good/excellent (tier 3-4):
- * status-good (redesign round - used to reuse the accent here; a signal
- * strength reading is a health/status indicator, the same category as
- * every other status color on this page, not the app's interactive
- * color doing double duty). */
-#dc-wifi-signal[data-tier="1"] .bar-1 {
-  fill: var(--dc-danger);
+#dc-wifi-signal[data-tier="1"] .dot,
+#dc-wifi-signal[data-tier="2"] .dot,
+#dc-wifi-signal[data-tier="3"] .dot,
+#dc-wifi-signal[data-tier="4"] .dot {
+  fill: var(--dc-accent);
 }
 
-#dc-wifi-signal[data-tier="2"] .bar-1,
-#dc-wifi-signal[data-tier="2"] .bar-2 {
-  fill: var(--dc-warning);
+#dc-wifi-signal[data-tier="2"] .arc-1,
+#dc-wifi-signal[data-tier="3"] .arc-1,
+#dc-wifi-signal[data-tier="4"] .arc-1 {
+  stroke: var(--dc-accent);
 }
 
-#dc-wifi-signal[data-tier="3"] .bar-1,
-#dc-wifi-signal[data-tier="3"] .bar-2,
-#dc-wifi-signal[data-tier="3"] .bar-3 {
-  fill: var(--dc-status-good);
+#dc-wifi-signal[data-tier="3"] .arc-2,
+#dc-wifi-signal[data-tier="4"] .arc-2 {
+  stroke: var(--dc-accent);
 }
 
-#dc-wifi-signal[data-tier="4"] .bar {
-  fill: var(--dc-status-good);
+#dc-wifi-signal[data-tier="4"] .arc-3 {
+  stroke: var(--dc-accent);
+}
+
+/* Header MQTT status icon, next to Wi-Fi - updateMqttStatusIcon() in
+ * dashboard.js. hidden (the attribute, not just CSS) while MQTT isn't
+ * enabled at all - simplest way to make "no icon" mean "not in use",
+ * distinct from "in use but not connected" (grey) and "connected"
+ * (blue, .dc-mqtt-connected). */
+#dc-mqtt-status {
+  display: flex;
+  align-items: center;
+  margin-right: 10px;
+  color: var(--dc-text-faint);
+  transition: color 0.2s;
+}
+
+#dc-mqtt-status svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#dc-mqtt-status.dc-mqtt-connected {
+  color: var(--dc-accent);
 }
 
 .dc-page {
@@ -543,7 +587,8 @@ body {
 }
 
 .dc-field input[type="number"],
-.dc-field input[type="text"] {
+.dc-field input[type="text"],
+.dc-field input[type="password"] {
   flex: 1 1 auto;
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
@@ -565,9 +610,66 @@ body {
 }
 
 .dc-field input[type="number"]:focus,
-.dc-field input[type="text"]:focus {
+.dc-field input[type="text"]:focus,
+.dc-field input[type="password"]:focus {
   outline: none;
   border-color: var(--dc-accent);
+}
+
+/* Password reveal toggle (upsertServiceText()'s "MQTT Password" special-
+ * case, dashboard.js) - a plain icon button sitting in the same
+ * .dc-field-row as the input, not inside it (no absolute positioning -
+ * this field never had a unit/suffix competing for that space, so a
+ * flex sibling is simpler than an overlay). */
+.dc-field-eye-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 4px;
+  color: var(--dc-text-faint);
+  cursor: pointer;
+}
+
+.dc-field-eye-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dc-field-eye-btn:hover {
+  color: var(--dc-text);
+}
+
+/* "MQTT" group's own fields area (ensureDiagGroup() in dashboard.js) -
+ * 2 columns instead of the generic 1-per-row stack every other group's
+ * .dc-fields uses, so Username/Password can sit side by side while
+ * Broker/Topic Prefix (.dc-field-span-2, upsertServiceText()'s own
+ * special-case) each still take the full row - direct feedback,
+ * 2026-08-15. Below ~420px (a narrow phone) collapses back to a single
+ * column - two side-by-side text inputs get uncomfortably cramped
+ * before that, same breakpoint reasoning as other narrow-viewport rules
+ * in this file. */
+.dc-fields-mqtt {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 12px;
+}
+
+.dc-fields-mqtt .dc-field-span-2 {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 420px) {
+  .dc-fields-mqtt {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dc-field input[type="range"] {
