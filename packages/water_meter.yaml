@@ -194,14 +194,15 @@ switch:
   # until commissioned" model exactly, rather than the two domains having
   # two different rules for the same idea.
   #
-  # Still deliberately does NOT stop pulse counting or reset accumulated
-  # Total Consumption/pulse_count - explicit choice, 2026-08-13: "Delete"
-  # here means "stop showing it", not "forget everything" (unlike a
-  # pressure slot's Delete, which really does forget an address mapping
-  # that could later mean something else entirely - a water meter's own
-  # GPIO is permanently and only ever *this* meter, there's no equivalent
-  # ambiguity to protect against). There's no cost to leaving pulse
-  # counting running on an unconnected GPIO either way.
+  # This switch itself does NOT stop pulse counting while on (counting
+  # keeps running regardless of Registered) - but Delete (the button
+  # below), which turns this off, DOES also reset the accumulated
+  # Total Consumption/pulse_count/Display Name back to zero/default -
+  # reversed, 2026-08-13, from the original "Delete only hides it, never
+  # forgets accumulated data" design (see that button's own comment for
+  # the full reasoning: a stale reading left over from whatever used to
+  # be plugged into this GPIO would otherwise silently carry over into a
+  # different physical meter's fresh Add).
   #
   # restore_mode: RESTORE_DEFAULT_OFF - a genuinely fresh board now starts
   # with both meters uncommissioned, matching how a fresh pressure slot
@@ -468,17 +469,34 @@ button:
           id: ${id_prefix}_add_name
           value: ""
 
-  # Un-commissions this meter (see the Registered switch's own comment
-  # for why this only hides it, on purpose - pulse counting and Total
-  # Consumption keep running/accumulating untouched). Deliberately also
-  # does NOT reset Display Name back to "${friendly_name}" (unlike a
-  # pressure slot's Delete) - a water meter's GPIO is always the same
-  # physical meter, so there's no "someone else might occupy this slot
-  # next" ambiguity to protect against; keeping the name means Adding it
-  # back later can reuse it instead of having to retype it. DOES reset
-  # Sort Order back to 0 though (2026-08-13, matching a pressure slot's
-  # own Delete) - a re-added meter starts fresh at the bottom of any
-  # custom order rather than silently inheriting a stale rank.
+  # Un-commissions this meter AND resets everything it accumulated -
+  # reversed, 2026-08-13, explicit user override of the original
+  # 2026-08-13 design (see git history for the original reasoning: "no
+  # equivalent ambiguity to a pressure slot's Delete, since a water
+  # meter's own GPIO is permanently and only ever *this* meter"). Direct
+  # feedback: since the physical sensor at this GPIO isn't actually
+  # forgotten/reconfigured either way, a stale pulse_count/offset_m3/
+  # Display Name left over from whatever used to be plugged in there
+  # would otherwise silently carry over into a *different* physical
+  # meter's fresh Add - confirmed a real problem, not just a theoretical
+  # one, 2026-08-13. Accepted cost: Delete now genuinely loses the
+  # accumulated Total Consumption, not just hides it - explicitly fine
+  # per the user's own reasoning, since a re-added meter's reading can
+  # simply be re-entered via "Reading" + "Update" right after, and
+  # there's no calibration data valuable enough to be worth silently
+  # smuggling across what might be a completely different physical
+  # device.
+  #
+  # offset_m3 is reset BEFORE the total-pulses reset below, not after -
+  # pulse_meter.set_total_pulses's own on_value cascade (see the total:
+  # sub-sensor's on_value in the sensor: section above) synchronously
+  # recomputes Total Consumption from offset_m3 + the now-zeroed pulse
+  # count, so offset_m3 needs to already be 0 by the time that runs, or
+  # the recomputed value would briefly reflect the *old* calibration
+  # instead. pulse_count itself doesn't need a separate explicit reset -
+  # that same on_value cascade already sets it from the total: sensor's
+  # own (now zeroed) absolute count, exactly like on_boot's own seeding
+  # lambda relies on.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -493,6 +511,21 @@ button:
       - number.set:
           id: ${id_prefix}_sort_order
           value: 0
+      - text.set:
+          id: ${id_prefix}_display_name
+          value: "${friendly_name}"
+      - lambda: |-
+          id(${id_prefix}_offset_m3) = 0;
+          static auto pref = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+          pref.save(&id(${id_prefix}_offset_m3));
+          global_preferences->sync();
+      - pulse_meter.set_total_pulses:
+          id: ${id_prefix}_pulse_rate
+          value: 0
+      - lambda: |-
+          id(${id_prefix}_last_pulse_ms) = 0;
+          id(${id_prefix}_pulse_rate).publish_state(0);
+          id(${id_prefix}_flow_rate).publish_state(0);
 
 interval:
   # Zero-flow watchdog: if no new pulse has arrived for `timeout` seconds,

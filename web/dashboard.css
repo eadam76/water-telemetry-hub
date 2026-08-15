@@ -988,15 +988,26 @@ body {
  * "configured" (steady dot) and "a pulse just arrived" (dot + ring) need
  * to read as visibly different states, not the same badge. Grows/fades a
  * ring in currentColor around the dot rather than changing its color -
- * keeps "Ready" itself unambiguous throughout. */
+ * keeps "Ready" itself unambiguous throughout.
+ *
+ * Deliberately no color-mix() (2026-08-13, revised - the first version
+ * used it in the "from" keyframe to start the ring semi-transparent):
+ * color-mix() support isn't universal on older WebKit/iOS, and an
+ * unrecognized function value in a `box-shadow` declaration makes that
+ * whole declaration invalid, silently dropping the entire keyframe (not
+ * just falling back to something reasonable) - confirmed the likely
+ * cause of "the flash never shows" reported on real hardware. Starting
+ * fully opaque at zero spread and fading to `transparent` at full spread
+ * is the same well-supported "ping" technique used everywhere else (no
+ * alpha-channel math needed at all - browsers already interpolate any
+ * color to `transparent` natively) and reads visually the same. */
 .dc-pressure-badge.dc-pulse-flash::before {
-  box-shadow: 0 0 0 0 currentColor;
-  animation: dc-pulse-ring 0.7s ease-out;
+  animation: dc-pulse-ring 0.6s ease-out;
 }
 
 @keyframes dc-pulse-ring {
   from {
-    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);
+    box-shadow: 0 0 0 0 currentColor;
   }
   to {
     box-shadow: 0 0 0 6px transparent;

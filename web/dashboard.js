@@ -2107,11 +2107,22 @@
   function flashPulseMeterActivity(groupName) {
     const row = deviceTableRows.get("reg:" + groupName);
     if (!row || !row._statusEl) return;
-    row._statusEl.classList.add("dc-pulse-flash");
+    const badge = row._statusEl;
+    // Force-restart the CSS animation even if a pulse arrives while the
+    // previous one is still mid-flash (real flow can easily be faster
+    // than the ~0.6s animation) - re-adding a class that's already
+    // present is a no-op in the DOM, so classList.add() alone wouldn't
+    // retrigger anything. Removing the class, forcing a synchronous
+    // layout read (the classic reflow trick - the read itself is what
+    // matters, the discarded value is not used for anything else), then
+    // re-adding it is what actually restarts a CSS animation on demand.
+    badge.classList.remove("dc-pulse-flash");
+    void badge.offsetWidth;
+    badge.classList.add("dc-pulse-flash");
     clearTimeout(pulseFlashTimers.get(groupName));
     pulseFlashTimers.set(
       groupName,
-      setTimeout(() => row._statusEl.classList.remove("dc-pulse-flash"), 700)
+      setTimeout(() => badge.classList.remove("dc-pulse-flash"), 600)
     );
   }
 
