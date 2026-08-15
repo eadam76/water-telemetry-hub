@@ -599,6 +599,16 @@ text_sensor:
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 30
+    # Direct feedback, 2026-08-15: useful on its own for anything that
+    # identifies the device by MAC (router client lists, DHCP reservations,
+    # network scanners) rather than having to cross-reference the IP.
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 40
 
   # Kept, despite the fair "what's the point if you can't update from
   # here" objection - this isn't meant to claim "you're up to date", just
@@ -656,11 +666,13 @@ switch:
           tag: "modbus"
 
 button:
-  # entity_category: config -> dashboard "Service" page, alongside the
-  # meters' own Update buttons (a device-level action still belongs there,
-  # not on Diagnostics, which is read-only info).
+  # entity_category: config, same as it's always been - the dashboard's
+  # own JS special-cases this by name to render it on the "System" page
+  # instead of the generic config-goes-to-Devices rule (2026-08-15, see
+  # web/dashboard.js's render()) now that the Devices page is just the
+  # unified device table and this isn't about any one row in it.
   - platform: restart
-    name: "Restart"
+    name: "Reboot Device"
     entity_category: config
     disabled_by_default: true
     web_server:

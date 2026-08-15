@@ -900,7 +900,11 @@ body {
  * confirmed on real hardware, 2026-08-13 (a *different* symptom, from
  * before this round, but the same underlying reason this stays on <td>). */
 .dc-pressure-table td {
-  padding: 10px 12px;
+  /* Tighter than the original 10px 12px (2026-08-15, direct feedback:
+     rows read as too spread out for what's meant to feel like a compact
+     data table) - still comfortably tappable on a phone, just closer to
+     how GitHub/Linear/Notion-style dense tables actually space rows. */
+  padding: 7px 12px;
   background: var(--dc-surface);
   border-top: 1px solid var(--dc-border-subtle);
 }
@@ -1187,12 +1191,14 @@ body {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--dc-text-faint);
-  margin-top: 3px;
 }
 
 .dc-device-type-icon svg {
-  width: 15px;
-  height: 15px;
+  /* Bumped from 15px (2026-08-15, direct feedback: read as slightly too
+     small next to the name text) - stroke-width stays 1.5, matched to
+     every other icon in this file, rather than thickening along with it. */
+  width: 17px;
+  height: 17px;
   stroke: currentColor;
   fill: none;
   stroke-width: 1.5;
@@ -1211,7 +1217,13 @@ body {
  * pushing/overlapping it. */
 .dc-pressure-name-row {
   display: flex;
-  align-items: flex-start;
+  /* center, not flex-start (2026-08-15, direct feedback: the icon read as
+     not aligned to the row's middle) - true top-alignment only ever
+     mattered for the two-line New/Collision rows (address hint above the
+     name), and even there centering against the icon reads fine; for the
+     far more common single-line registered row it's the difference
+     between "obviously off" and correct. */
+  align-items: center;
   gap: 6px;
 }
 

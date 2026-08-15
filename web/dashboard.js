@@ -5,20 +5,35 @@
  * does. Talks only to ESPHome's existing, stable REST/SSE API (documented
  * at https://esphome.io/web-api/) - no external requests, no build step.
  *
- * Four fixed pages, not one tab per sorting_group:
- *   - Home        - the meters' own readings (what the device is *for*)
- *   - Service     - meter calibration ("Reading" + "Update") and device
- *                   actions (Restart) - things you do occasionally
- *   - Diagnostics - everything else (network, system, per-meter raw
- *                   pulse data), as plain label/value rows
- *   - Log         - live debug output
+ * Four fixed pages, not one tab per sorting_group - internal page ids
+ * ("service"/"diagnostics", element ids, function names like
+ * ensureServiceGroup()/upsertDiagRow()) are unchanged from when these
+ * were more literally what they say; only the NAV LABELS were renamed
+ * (2026-08-15) once what each page actually shows had drifted from that:
+ *   - Home     - the meters' own readings (what the device is *for*)
+ *   - Devices  ("service" internally) - now just the unified pressure
+ *              sensor + pulse meter table (calibration fields live inside
+ *              each row's own expanded edit view, not a separate list
+ *              here anymore - see the "Devices table" section below)
+ *   - System   ("diagnostics" internally) - everything else about the
+ *              unit itself: network/system diagnostics as plain label/
+ *              value rows, PLUS the device-level action buttons (Reboot
+ *              Device, Forget Wi-Fi) that don't belong to any one row in
+ *              the Devices table - see upsertDiagButton() and render()'s
+ *              own special-case for those two.
+ *   - Log      - live debug output
  *
- * Which page an entity lands on is driven entirely by its `domain` and
+ * Which page an entity lands on by default is driven by its `domain` and
  * `entity_category` from the YAML (see pageFor()) - adding a new sensor
- * (e.g. the planned pressure sensors) just works here without touching
- * this file, as long as it's tagged the same way (no entity_category for
- * a primary reading, `entity_category: diagnostic` for raw/debug data,
- * `entity_category: config` for calibration/actions).
+ * just works here without touching this file, as long as it's tagged the
+ * same way (no entity_category for a primary reading, `entity_category:
+ * diagnostic` for raw/debug data, `entity_category: config` for
+ * calibration/actions). A handful of entities (the Debug Log switch,
+ * Reboot Device, Forget Wi-Fi) are matched by name in render() instead,
+ * to override that default when it's not where the entity should
+ * actually be shown - their entity_category in the YAML is left alone
+ * (still correct for Home Assistant's own categorization), this is
+ * purely a dashboard-local placement choice.
  */
 (function () {
   "use strict";
@@ -33,10 +48,10 @@
   // covers the entity in every meter's group without repeating it.
   // Nothing here for an entity that isn't in this map - the "?" just
   // doesn't render, rather than showing an empty hint.
-  // Update/Restart deliberately have no entry here (CR #3 in the previous
-  // round): the confirm dialog they already show on press explains the
-  // consequence right when it matters - a permanent "?" next to them was
-  // redundant clutter, not help.
+  // Update/Reboot Device deliberately have no entry here (CR #3 in the
+  // previous round): the confirm dialog they already show on press
+  // explains the consequence right when it matters - a permanent "?" next
+  // to them was redundant clutter, not help.
   const HELP_TEXT = {
     "Total Consumption": "Cumulative water use, calculated from the pulse count and the last calibration - not a live meter photograph.",
     "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
@@ -44,16 +59,16 @@
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
-    // Update/Restart (CR #3, previous round): its confirm dialog already
-    // explains the consequence when it matters - a permanent "?" would
-    // just be redundant clutter, and (found this round) also threw off
-    // this button's row width relative to Restart's plain one.
+    // Update/Reboot Device (CR #3, previous round): its confirm dialog
+    // already explains the consequence when it matters - a permanent "?"
+    // would just be redundant clutter, and (found this round) also threw
+    // off this button's row width relative to Reboot Device's plain one.
   };
 
   // Buttons/fields whose action isn't easily undone get an explicit
   // confirmation before firing (CR #4, #6) - matched by displayName(),
   // so it applies uniformly across meters without hardcoding names.
-  const CONFIRM_ON_PRESS = new Set(["Update", "Restart", "Forget Wi-Fi", "Delete"]);
+  const CONFIRM_ON_PRESS = new Set(["Update", "Reboot Device", "Forget Wi-Fi", "Delete"]);
   const CONFIRM_ON_CHANGE = new Set(["Zero-Flow Timeout"]);
 
   // Small hand-drawn icon set (24x24, stroke-based) - deliberately not an
@@ -98,14 +113,20 @@
     if (name.startsWith("Pressure Sensor")) return "gauge";
     return "dot";
   }
-  // id stays "home" internally (localStorage key, #dc-page-home element id,
-  // routing throughout this file) - only the displayed label changed to
-  // "Dashboard" per the "Show on Dashboard" naming below, so the toggle's
-  // own name and the page it controls visibility on now match each other.
+  // ids stay "home"/"service"/"diagnostics" internally (localStorage key,
+  // #dc-page-* element ids, routing/function names throughout this file) -
+  // only the displayed labels changed: "home" -> "Dashboard" per the "Show
+  // on Dashboard" naming below (so the toggle's own name and the page it
+  // controls visibility on match each other), and "service"/"diagnostics"
+  // -> "Devices"/"System" (2026-08-15, direct feedback: "Service" had
+  // drifted into meaning just the unified Devices table, and once the
+  // device-level action buttons moved onto "Diagnostics" too - see this
+  // file's own header comment - "Diagnostics" undersold what that page
+  // now does, "System" covers both the readouts and the actions).
   const PAGES = [
     { id: "home", label: "Dashboard", icon: "water" },
-    { id: "service", label: "Service", icon: "wrench" },
-    { id: "diagnostics", label: "Diagnostics", icon: "list" },
+    { id: "service", label: "Devices", icon: "wrench" },
+    { id: "diagnostics", label: "System", icon: "list" },
     { id: "log", label: "Log", icon: "terminal" },
   ];
 
@@ -326,9 +347,15 @@
     });
   }
 
-  // --- Diagnostics page: grouped label/value rows ----------------------
+  // --- Diagnostics ("System") page: grouped label/value rows, plus a
+  // `fields` area for the handful of device-level action buttons that
+  // moved here from the Devices page (Reboot Device, Forget Wi-Fi - see
+  // the special-case in render() and upsertDiagButton() below). Mirrors
+  // ensureServiceGroup()'s own `fields` container/styling (.dc-fields/
+  // .dc-field are generic, not scoped to .dc-service-group) rather than
+  // inventing a second, near-identical button layout.
 
-  const diagGroups = new Map(); // groupName -> { weight, section, list }
+  const diagGroups = new Map(); // groupName -> { weight, section, list, fields }
 
   function ensureDiagGroup(name) {
     let g = diagGroups.get(name);
@@ -336,8 +363,9 @@
     const section = el("div", "dc-diag-group");
     const label = el("div", "dc-section-label", groupLabel(name));
     const list = el("div", "dc-list");
-    section.append(label, list);
-    g = { weight: groupWeights.get(name) ?? 500, section, list };
+    const fields = el("div", "dc-fields dc-diag-fields");
+    section.append(label, list, fields);
+    g = { weight: groupWeights.get(name) ?? 500, section, list, fields };
     diagGroups.set(name, g);
     document.getElementById("dc-page-diagnostics").appendChild(section);
     reorderDiagGroups();
@@ -363,6 +391,36 @@
     for (const r of [...group.list.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight))) {
       group.list.appendChild(r);
     }
+  }
+
+  function reorderDiagFields(group) {
+    for (const r of [...group.fields.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight))) {
+      group.fields.appendChild(r);
+    }
+  }
+
+  // "Reboot Device"/"Forget Wi-Fi" - device-level action buttons that
+  // render here instead of upsertServiceButton()'s Devices-page list, see
+  // render()'s own special-case for why (2026-08-15, direct feedback: the
+  // Devices page had become just the Devices table in every way but name,
+  // so system-level actions - which aren't about any one device - moved
+  // to sit alongside the rest of the "System" diagnostics they act on).
+  // Otherwise identical to upsertServiceButton(): same pressButton()/
+  // confirm-dialog/help-text wiring, just a different target container.
+  function upsertDiagButton(entity) {
+    const group = ensureDiagGroup(entity.groupName ?? FALLBACK_GROUP);
+    if (!entity.btnEl) {
+      entity.el = el("div", "dc-field");
+      const row = el("div", "dc-field-row");
+      entity.btnEl = el("button", "dc-btn", entity.name);
+      entity.btnEl.addEventListener("click", () => pressButton(entity));
+      row.appendChild(entity.btnEl);
+      attachHelp(row, HELP_TEXT[displayName(entity)]);
+      entity.el.appendChild(row);
+      group.fields.appendChild(entity.el);
+    }
+    entity.el.dataset.weight = entity.groupWeight ?? 500;
+    reorderDiagFields(group);
   }
 
   // --- Service page: calibration fields + device action buttons --------
@@ -1442,7 +1500,14 @@
   function closeDeviceAddRow() {
     if (!deviceAddOpen) return;
     deviceAddOpen = false;
-    if (deviceAddRow && deviceAddRow.isConnected) deviceAddRow.remove();
+    if (deviceAddRow) {
+      // See buildDeviceAddRow()'s own resetForm() comment - this row is
+      // reused across open/close cycles, so a typed-but-unconfirmed name
+      // must be cleared here too, not just on Cancel/successful Add.
+      if (deviceAddRow._nameInput) deviceAddRow._nameInput.value = "";
+      if (deviceAddRow._errorEl) deviceAddRow._errorEl.textContent = "";
+      if (deviceAddRow.isConnected) deviceAddRow.remove();
+    }
   }
 
   function buildDeviceAddRow() {
@@ -1490,8 +1555,21 @@
     row._slotSelect = slotSelect;
     row._errorEl = errorEl;
 
+    // This row (and its inputs) is built once and reused for every open/
+    // close cycle (see the `if (!deviceAddRow)` cache further down) - a
+    // typed name that's never explicitly cleared just sits in the DOM
+    // node and reappears next time the row reopens. Confirmed as a real
+    // bug, 2026-08-15: add "pm1", confirm, reopen for the next slot - the
+    // name field still says "pm1". Both exit paths (successful Add, and
+    // Cancel) reset the form back to blank.
+    const resetForm = () => {
+      nameInput.value = "";
+      errorEl.textContent = "";
+    };
+
     const cancel = () => {
       deviceAddOpen = false;
+      resetForm();
       renderDeviceTableBody();
     };
     cancelBtn.addEventListener("click", cancel);
@@ -1517,6 +1595,7 @@
         .finally(() => {
           confirmBtn.disabled = false;
           deviceAddOpen = false;
+          resetForm();
           renderDeviceTableBody();
         });
     };
@@ -2358,9 +2437,9 @@
 
   // Update's confirmation names the actual value about to be applied
   // (read straight off the paired Reading field's input) rather than a
-  // generic "are you sure?" - Restart just needs a plain yes/no.
+  // generic "are you sure?" - Reboot Device just needs a plain yes/no.
   function confirmMessageForPress(entity, label) {
-    if (label === "Restart") return "Restart the device now?";
+    if (label === "Reboot Device") return "Reboot the device now?";
     if (label === "Forget Wi-Fi")
       return "Forget the current Wi-Fi network and restart into setup mode? Calibration and other settings are kept - only the network changes.";
     if (label === "Update") {
@@ -2562,6 +2641,20 @@
     // own comment for why.
     if (entity.domain === "switch" && entity.name === "Debug Log: Modbus") {
       mountLogDebugToggle(entity);
+      return;
+    }
+    // "Reboot Device"/"Forget Wi-Fi" - device-level action buttons, moved
+    // from the Devices page to the "System" (Diagnostics) page, 2026-08-
+    // 15: neither is about any one row in the Devices table, and once the
+    // Devices page stopped having anything else on it, keeping them there
+    // just because entity_category: config says "not read-only" no longer
+    // made sense. Left as entity_category: config in water-collector.yaml
+    // (still correct for Home Assistant's own categorization - these
+    // really are actions, not diagnostic data) - this is purely a
+    // dashboard-local placement override, same pattern as the Debug Log
+    // switch just above.
+    if (entity.domain === "button" && (entity.name === "Reboot Device" || entity.name === "Forget Wi-Fi")) {
+      upsertDiagButton(entity);
       return;
     }
     const page = pageFor(entity);
@@ -2848,8 +2941,8 @@
     document.title = "Water Data Collector";
   }
 
-  // On an abrupt device reboot (crash, power cycle, Restart button - any
-  // path that isn't a clean TCP close) the browser's existing socket gets
+  // On an abrupt device reboot (crash, power cycle, Reboot Device button -
+  // any path that isn't a clean TCP close) the browser's existing socket gets
   // no FIN/RST at all, just silence - nothing tells the EventSource
   // anything is wrong, so it never fires onerror and never auto-
   // reconnects, and #dc-status is left stuck showing "Connected" forever.
