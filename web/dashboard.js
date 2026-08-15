@@ -633,9 +633,15 @@
     // comment).
     const tableScroll = el("div", "dc-pressure-table-scroll");
     tableScroll.appendChild(table);
-    // toolbar AFTER tableScroll (below the table, not above) - direct
-    // feedback, 2026-08-13.
-    section.append(label, tableScroll, toolbar);
+    // Card wrapper around BOTH the table and the toolbar (2026-08-13,
+    // redesign pass) - one continuous bordered/rounded surface, toolbar
+    // separated from the table only by a hairline (dashboard.css), not a
+    // second freestanding card floating below the first. toolbar AFTER
+    // tableScroll (below the table, not above) - direct feedback,
+    // 2026-08-13.
+    const card = el("div", "dc-devices-card");
+    card.append(tableScroll, toolbar);
+    section.append(label, card);
     g = { weight: groupWeights.get(PULSE_METER_ANCHOR_GROUP) ?? groupWeights.get(PRESSURE_ADD_GROUP) ?? 500, section };
     serviceGroups.set(DEVICE_TABLE_GROUP, g);
     document.getElementById("dc-page-service").appendChild(section);

@@ -38,19 +38,52 @@ body {
   overflow-x: hidden;
 }
 
+/* Recolored 2026-08-13 (visual redesign round) on checked values, not
+ * eyeballed - see the redesign artifact linked from REQUIREMENTS.md for
+ * the actual contrast numbers.
+ *
+ * Neutrals + status colors (--dc-status-good/--dc-warning/--dc-danger)
+ * are this project's own dataviz skill's reference palette's validated
+ * dark-mode steps (contrast-checked against these exact surfaces, not
+ * picked by eye). --dc-accent is a fresh, separate pick (sky blue, not
+ * the old teal) - also contrast-checked (7.3-9.1:1 against every
+ * surface it sits on).
+ *
+ * The one change in MEANING, not just hue: status colors are now
+ * deliberately distinct from the accent. "OK/Ready" used to share the
+ * exact same teal as every button/link/focus ring - a status reading and
+ * "this is clickable" were the same color, which a real status palette
+ * (this project's own dataviz skill included) exists to prevent: status
+ * colors are reserved, never doubling as the interactive/brand color.
+ * --dc-status-good and --dc-accent sit far enough apart on the wheel
+ * (~80deg) to be unambiguous even as same-sized dots. --dc-danger/
+ * --dc-warning were already semantic-only before this round and keep
+ * that role, just with updated (also validated) hex values. */
 :root {
-  --dc-bg: #14161a;
-  --dc-surface: #1c2028;
-  --dc-surface-2: #242a34;
-  --dc-border: #2c313c;
-  --dc-text: #eef1f5;
-  --dc-text-muted: #8b93a1;
-  --dc-accent: #2dd4bf;
-  --dc-accent-dim: #205f58;
-  --dc-danger: #f87171;
-  --dc-warning: #fbbf24;
+  --dc-bg: #0d0d0d;
+  --dc-surface: #1a1a19;
+  --dc-surface-2: #232322;
+  --dc-border: rgba(255, 255, 255, 0.14);
+  --dc-border-subtle: rgba(255, 255, 255, 0.09);
+  --dc-text: #ffffff;
+  --dc-text-muted: #c3c2b7;
+  --dc-text-faint: #898781;
+
+  --dc-accent: #38bdf8;
+  --dc-accent-strong: #7dd3fc;
+  --dc-accent-dim: #1e3138;
+
+  --dc-status-good: #0ca30c;
+  --dc-status-good-dim: #182d17;
+
+  --dc-danger: #d03b3b;
+  --dc-danger-dim: #371f1e;
+  --dc-warning: #fab219;
+  --dc-warning-dim: #392f19;
+
   --dc-radius: 14px;
   --dc-radius-sm: 9px;
+  --dc-radius-xs: 6px;
 }
 
 #dc-root,
@@ -114,7 +147,7 @@ body {
   height: 22px;
   stroke: currentColor;
   fill: none;
-  stroke-width: 1.6;
+  stroke-width: 1.5;
 }
 
 .dc-nav-item span {
@@ -190,7 +223,10 @@ body {
 }
 
 #dc-status.connected .dot {
-  background: var(--dc-accent);
+  /* Status color, not the accent (redesign round) - "connected" is a
+     health reading, same category as the pressure table's own OK badge,
+     not an interactive/brand element. */
+  background: var(--dc-status-good);
 }
 
 /* Header Wi-Fi signal bars - see updateSignalBars() in dashboard.js for
@@ -218,9 +254,11 @@ body {
   transition: fill 0.2s;
 }
 
-/* Weak (tier 1): red. Fair (tier 2): amber. Good/excellent (tier 3-4): the
- * app's own accent color - reusing it here doubles as "this is a healthy
- * state" rather than introducing a third, unrelated green. */
+/* Weak (tier 1): red. Fair (tier 2): amber. Good/excellent (tier 3-4):
+ * status-good (redesign round - used to reuse the accent here; a signal
+ * strength reading is a health/status indicator, the same category as
+ * every other status color on this page, not the app's interactive
+ * color doing double duty). */
 #dc-wifi-signal[data-tier="1"] .bar-1 {
   fill: var(--dc-danger);
 }
@@ -233,11 +271,11 @@ body {
 #dc-wifi-signal[data-tier="3"] .bar-1,
 #dc-wifi-signal[data-tier="3"] .bar-2,
 #dc-wifi-signal[data-tier="3"] .bar-3 {
-  fill: var(--dc-accent);
+  fill: var(--dc-status-good);
 }
 
 #dc-wifi-signal[data-tier="4"] .bar {
-  fill: var(--dc-accent);
+  fill: var(--dc-status-good);
 }
 
 .dc-page {
@@ -278,8 +316,12 @@ body {
   height: 16px;
   stroke: currentColor;
   fill: none;
-  stroke-width: 1.6;
-  color: var(--dc-accent);
+  stroke-width: 1.5;
+  /* Muted, not accent (redesign round) - matches the Devices table's own
+     per-row type icon (.dc-device-type-icon): a category glyph, not an
+     interactive control, so it shouldn't compete visually with actual
+     buttons/links for the one color that means "clickable". */
+  color: var(--dc-text-muted);
 }
 
 .dc-meter-card-header span {
@@ -305,7 +347,11 @@ body {
   flex-wrap: wrap;
   gap: 2px;
   padding: 7px 0;
-  border-top: 1px solid var(--dc-border);
+  /* Subtle, not the full-strength border (redesign round) - an internal
+     divider between two metrics in the same card, not the card's own
+     outer edge; see the Devices table's own row dividers for the same
+     distinction. */
+  border-top: 1px solid var(--dc-border-subtle);
 }
 
 /* Its help text (see attachHelp() in dashboard.js) is a flex sibling of
@@ -331,6 +377,13 @@ body {
  * flex item is needed for that wrapping to actually take effect, same
  * reasoning as .dc-list-row .v. */
 .dc-metric .v {
+  /* Monospace, tabular numerals (redesign round) - a live instrument
+     reading, not prose; digits line up in a column and don't jitter
+     sideways as they update. The unit suffix (.unit below) stays in the
+     UI sans, matching .dc-metric .l - only the number itself needs to be
+     "instrument-panel" styled. */
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 16px;
   font-weight: 500;
   white-space: normal;
@@ -339,6 +392,9 @@ body {
 }
 
 .dc-metric .v .unit {
+  /* Back to the UI sans (redesign round) - only the number itself is
+     monospace/instrument-styled, the unit suffix reads as a label. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 12px;
   font-weight: 400;
   color: var(--dc-text-muted);
@@ -383,7 +439,9 @@ body {
   justify-content: space-between;
   gap: 14px;
   padding: 7px 0;
-  border-bottom: 1px solid var(--dc-border);
+  /* Subtle, not the full-strength border (redesign round) - see .dc-metric's
+     own comment for the same distinction. */
+  border-bottom: 1px solid var(--dc-border-subtle);
   font-size: 13.5px;
 }
 
@@ -589,7 +647,10 @@ body {
 
 .dc-btn:hover {
   background: var(--dc-accent);
-  color: #06201d;
+  /* Was a hardcoded dark-teal-specific hex, tuned for the old accent -
+     the page background reads dark against any bright accent fill
+     regardless of its hue, so it survives an accent recolor for free. */
+  color: var(--dc-bg);
 }
 
 /* Without this, a disabled button (e.g. Scan Bus mid-scan) still looked
@@ -704,6 +765,21 @@ body {
   font-size: 12.5px;
 }
 
+/* The card frame around the WHOLE Devices section - table and toolbar
+ * together as one continuous surface (redesign round; dashboard.js's
+ * ensureDeviceTable() wraps both in this single element) - not a table
+ * with its own border sitting above a second, separate toolbar block.
+ * overflow: hidden is what actually clips the table's square corners to
+ * this element's own border-radius (a <table> with border-collapse:
+ * collapse doesn't reliably clip to its own border-radius across
+ * browsers, so the radius has to live - and clip - up here instead). */
+.dc-devices-card {
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  overflow: hidden;
+}
+
 /* Lets the table itself scroll sideways, independent of the rest of the
  * page, if its content ever needs more width than even a widened
  * .dc-pressure-group has to give (a narrow phone screen, or a future
@@ -715,9 +791,10 @@ body {
 }
 
 /* Add Pulse Meter/Add Modbus Device/Scan Bus (see mountDeviceAddButtons()/
- * mountPressureToolbarButton() in dashboard.js) - mounted into a small
- * toolbar BELOW the table (moved from above, 2026-08-13, direct feedback)
- * rather than a generic .dc-fields row. */
+ * mountPressureToolbarButton() in dashboard.js) - the card's own bottom
+ * section, below the table (moved from above, 2026-08-13, direct
+ * feedback), separated by a hairline rather than floating as a second,
+ * separate block underneath the card (redesign round). */
 .dc-pressure-toolbar {
   display: flex;
   /* Was flex-end - fine back when the toolbar only ever held the button
@@ -729,7 +806,8 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 12px;
+  padding: 12px 12px;
+  border-top: 1px solid var(--dc-border-subtle);
 }
 
 .dc-pressure-toolbar .dc-btn.dc-btn-compact {
@@ -794,9 +872,9 @@ body {
   font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--dc-text-muted);
-  font-weight: 500;
-  padding: 0 8px 6px;
+  color: var(--dc-text-faint);
+  font-weight: 600;
+  padding: 12px 12px 8px;
 }
 
 /* Status column header - centered to match the badge itself
@@ -808,46 +886,27 @@ body {
   text-align: center;
 }
 
-/* Borders live on the <td>s, not the <tr> - a <tr>-level border (the
- * earlier version) doesn't reliably wrap content that pushes a cell
- * wider than its "shrink-to-fit" column width (dc-pressure-status/
- * dc-pressure-action below are both width: 1%) - confirmed on real
- * hardware, 2026-08-13: the Add/X buttons visibly stuck out past the
- * row's own rounded border. Top/bottom on every cell (border-collapse
- * merges each row's shared edge with the next into one line); left/
- * right only on the first/last cell, so there's still no vertical
- * divider *between* columns, only the outer frame - each cell's own
- * border now directly wraps its own content, however wide, so nothing
- * can escape it. */
+/* One hairline divider between rows, not a boxed border on every cell
+ * (redesign round) - the earlier version bordered each <td> on all four
+ * sides (needed back when the table had its own outer frame; now the
+ * frame lives on .dc-devices-card instead, see above), which made the
+ * table read as a dense grid of individual tiles rather than one
+ * connected block. A single border-top per cell, skipped on the very
+ * first row (nothing to divide from above there), is the same pattern
+ * most standard data tables (GitHub, Linear, Notion) use. Still set on
+ * <td> rather than <tr> - a <tr>-level border doesn't reliably wrap a
+ * cell that's wider than its own "shrink-to-fit" column width
+ * (dc-pressure-status/dc-pressure-action below are both width: 1%),
+ * confirmed on real hardware, 2026-08-13 (a *different* symptom, from
+ * before this round, but the same underlying reason this stays on <td>). */
 .dc-pressure-table td {
-  padding: 8px;
+  padding: 10px 12px;
   background: var(--dc-surface);
-  border-top: 1px solid var(--dc-border);
-  border-bottom: 1px solid var(--dc-border);
+  border-top: 1px solid var(--dc-border-subtle);
 }
 
-.dc-pressure-table td:first-child {
-  border-left: 1px solid var(--dc-border);
-}
-
-.dc-pressure-table td:last-child {
-  border-right: 1px solid var(--dc-border);
-}
-
-.dc-pressure-table tbody tr:first-child td:first-child {
-  border-top-left-radius: var(--dc-radius-sm);
-}
-
-.dc-pressure-table tbody tr:first-child td:last-child {
-  border-top-right-radius: var(--dc-radius-sm);
-}
-
-.dc-pressure-table tbody tr:last-child td:first-child {
-  border-bottom-left-radius: var(--dc-radius-sm);
-}
-
-.dc-pressure-table tbody tr:last-child td:last-child {
-  border-bottom-right-radius: var(--dc-radius-sm);
+.dc-pressure-table tbody tr:first-child td {
+  border-top: none;
 }
 
 .dc-pressure-table input[type="text"],
@@ -869,13 +928,18 @@ body {
  * dashboard.js). */
 .dc-pressure-addr-hint {
   display: block;
+  /* Monospace (redesign round) - a Modbus address, same instrument-panel
+     numeral treatment as every other reading/number in this file. */
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
   font-size: 11px;
-  color: var(--dc-text-muted);
+  color: var(--dc-text-faint);
   margin-bottom: 3px;
 }
 
 .dc-pressure-table input[type="number"] {
   text-align: right;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
   /* Plain numeric text entry, no native spinner - a Modbus address is
      typed/edited as a whole value, not incremented/decremented one at a
      time, and the spinner arrows ate into the already-narrow Address
@@ -950,15 +1014,18 @@ body {
 
 .dc-pressure-badge::before {
   content: "";
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
   flex: 0 0 auto;
 }
 
+/* Status color, not the accent (redesign round - see the :root token
+   comment for the full reasoning). "OK"/pulse meters' "Ready" both use
+   this same class. */
 .dc-pressure-badge-ok {
-  color: var(--dc-accent);
+  color: var(--dc-status-good);
 }
 
 .dc-pressure-badge-lost {
@@ -966,14 +1033,14 @@ body {
 }
 
 .dc-pressure-badge-new {
-  color: var(--dc-text-muted);
+  color: var(--dc-text-faint);
 }
 
 /* "Checking…" - a just-registered slot before its own first poll
  * completes, not yet confirmed either way - deliberately the same muted
  * tone as New, not the alarm-colored Lost, since it isn't one. */
 .dc-pressure-badge-pending {
-  color: var(--dc-text-muted);
+  color: var(--dc-text-faint);
 }
 
 .dc-pressure-badge-collision {
@@ -1042,7 +1109,7 @@ body {
   height: 16px;
   stroke: currentColor;
   fill: none;
-  stroke-width: 1.8;
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1055,8 +1122,12 @@ body {
   color: var(--dc-danger);
 }
 
+/* Status-good, not the accent (redesign round) - a checkmark is a
+   positive/confirm action, reads correctly with the same green as every
+   other "this is fine" signal in the app, distinct from "this is an
+   ordinary interactive control" blue. */
 .dc-pressure-save-btn:hover {
-  color: var(--dc-accent);
+  color: var(--dc-status-good);
 }
 
 .dc-pressure-cancel-btn:hover {
@@ -1115,7 +1186,7 @@ body {
 .dc-device-type-icon {
   display: inline-flex;
   flex: 0 0 auto;
-  color: var(--dc-text-muted);
+  color: var(--dc-text-faint);
   margin-top: 3px;
 }
 
@@ -1124,7 +1195,7 @@ body {
   height: 15px;
   stroke: currentColor;
   fill: none;
-  stroke-width: 1.8;
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1161,6 +1232,9 @@ body {
   cursor: default;
 }
 
+/* Accent, not status-good, on purpose - this highlights "you are
+   editing this row" (an interactive/in-progress state), not a health
+   reading. */
 .dc-pressure-table tbody tr.dc-pressure-row-editing td {
   background: var(--dc-accent-dim);
 }
@@ -1177,7 +1251,7 @@ body {
 
 .dc-pressure-empty td {
   text-align: center;
-  color: var(--dc-text-muted);
+  color: var(--dc-text-faint);
   padding: 14px 8px;
   font-size: 13px;
 }
@@ -1190,11 +1264,13 @@ body {
   font-style: italic;
 }
 
-/* The shared "Add" row (buildDeviceAddRow() in dashboard.js, 2026-08-13
- * "Devices" table unification) - a type selector plus one of two
- * type-specific sub-forms, all inside a single full-width cell rather
- * than fitting into the table's normal 4-column grid (nothing here maps
- * cleanly onto Name/Status/Action/Order). */
+/* The shared Add row (buildDeviceAddRow() in dashboard.js, 2026-08-13
+ * "Devices" table unification) - Modbus/Pulse Meter sub-forms, all
+ * inside a single full-width cell rather than fitting into the table's
+ * normal 4-column grid (nothing here maps cleanly onto Name/Status/
+ * Action/Order). Which sub-form is visible is decided by which toolbar
+ * button opened it (Add Pulse Meter/Add Modbus Device - a redesign-round
+ * change from an earlier in-row type <select>, see mountDeviceAddButtons()). */
 .dc-device-add-row td {
   background: var(--dc-accent-dim);
 }
@@ -1216,7 +1292,7 @@ body {
 }
 
 /* Modbus (Name + Address) or Pulse Meter (Name + GPIO slot) fields - only
- * one sub-form visible at a time, toggled by the type <select> above
+ * the sub-form matching the Add row's own type is ever visible
  * (updateDeviceAddSubformVisibility() in dashboard.js). */
 .dc-device-add-subform {
   display: flex;
@@ -1248,6 +1324,8 @@ body {
   color: var(--dc-text);
   border-radius: var(--dc-radius-sm);
   padding: 7px 9px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 16px;
   text-align: right;
 }
