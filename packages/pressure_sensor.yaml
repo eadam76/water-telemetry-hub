@@ -410,6 +410,21 @@ script:
             - globals.set:
                 id: next_pressure_sort_order
                 value: !lambda 'return id(next_pressure_sort_order) + 1;'
+            # Publishes Online optimistically, right now, instead of
+            # waiting for this slot's first real poll (up to its own
+            # ~600-670ms interval away) - justified because Add only ever
+            # fires for an address the bus scan *just* confirmed answers.
+            # Without this, "Online" kept whatever it last held before
+            # this claim - for a slot that had been Deleted before (its
+            # own Delete button explicitly publishes Online: false, since
+            # that value is otherwise meaningless while unregistered),
+            # that stale `false` was still sitting there the instant this
+            # slot became registered again, showing a real, if brief,
+            # "Lost" flash on a perfectly healthy, freshly-added sensor -
+            # confirmed on real hardware, 2026-08-13. The very next poll
+            # corrects this either way if the optimistic guess ever turns
+            # out wrong.
+            - lambda: 'id(${id_prefix}_online).publish_state(true);'
             - globals.set:
                 id: modbus_add_claimed
                 value: "true"

@@ -645,14 +645,64 @@ body {
 
 /* Pulse meters table (web/dashboard.js's own "Pulse meter table" section)
  * - reuses .dc-pressure-table's base styling wholesale (border/input/
- * disabled/hover rules, all domain-agnostic despite the class name) but
- * with its own, much narrower group width: just Name + Action columns,
- * no Address/Status/Order, so it doesn't need anywhere near
- * .dc-pressure-group's room. Same plain .dc-service-group default (no
- * override) would actually be fine width-wise, but this makes the
- * narrower intent explicit rather than relying on the coincidence. */
+ * disabled/hover rules, all domain-agnostic despite the class name).
+ * Same width as .dc-pressure-group, not its own narrower one (used to be
+ * 480px, on the reasoning that this table only ever needs Name + Action
+ * columns - direct feedback, 2026-08-13, was that the two commissioning
+ * tables should just visually match, not each size itself to its own
+ * current column count). */
 .dc-pulsemeter-group {
-  max-width: 480px;
+  max-width: 900px;
+}
+
+/* Reading/Update/Zero-Flow Timeout's inline detail area (only in the DOM
+ * while its own row is being edited - see upsertRegisteredPulseMeterRow()
+ * in dashboard.js). border-top: none joins it seamlessly to the row
+ * above (no visible seam), and the matching accent-tinted background
+ * (same token .dc-pressure-row-editing already uses on the row itself)
+ * is what actually answers "which fields belong to which meter" -
+ * direct feedback, 2026-08-13. Higher specificity than the plain
+ * `.dc-pressure-table td` rule (equal class+type count alone wouldn't
+ * reliably win on source order), so it isn't a stylesheet-order
+ * accident. */
+.dc-pulsemeter-table tr.dc-pulsemeter-expanded td {
+  border-top: none;
+  background: var(--dc-accent-dim);
+  padding-top: 2px;
+  padding-bottom: 12px;
+}
+
+.dc-pulsemeter-expanded-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.dc-pulsemeter-expanded-field:first-child {
+  padding-top: 2px;
+}
+
+.dc-pulsemeter-expanded-label {
+  flex: 0 0 auto;
+  min-width: 130px;
+  font-size: 12.5px;
+  color: var(--dc-text-muted);
+}
+
+.dc-pulsemeter-expanded-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dc-pulsemeter-expanded-field .dc-btn.dc-btn-compact {
+  flex: 0 0 auto;
+}
+
+.dc-pulsemeter-expanded-unit {
+  flex: 0 0 auto;
+  color: var(--dc-text-muted);
+  font-size: 12.5px;
 }
 
 /* Lets the table itself scroll sideways, independent of the rest of the

@@ -908,7 +908,7 @@
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
-      nameInput.placeholder = "Sensor name";
+      nameInput.placeholder = "Device name";
       nameInput.value = pressureNewRowDrafts.get(address) || "";
       nameInput.addEventListener("input", () => {
         pressureNewRowDrafts.set(address, nameInput.value);
@@ -1157,6 +1157,32 @@
       const collision = latestCollisionAddresses().includes(Math.round(addrEntity.value));
       upsertHomeMetric(pressureEntity, collision);
     }
+    resyncPressureHomeCardOrder();
+  }
+
+  // Keeps the Home page's pressure cards in the same order as the
+  // Service table's own (orderedRegisteredSlots(), Sort Order-driven) -
+  // previously each card's position came straight from its compile-time
+  // slot weight (sorting_group_pressure1..8, always in raw slot-number
+  // order), which never reflected the table's own Up/Down reordering at
+  // all - confirmed a real gap, 2026-08-13: reordering on the Service
+  // page had no visible effect on the Dashboard. Rewrites each currently
+  // -existing pressure card's own cached weight to its rank in that same
+  // order, offset by the *first* slot's own compile-time weight - so the
+  // whole block of pressure cards still sits wherever sorting_group_
+  // pressure1 was declared to sit relative to Water Meters/other groups,
+  // only the order *within* the block changes.
+  function resyncPressureHomeCardOrder() {
+    const baseWeight = groupWeights.get("Pressure Sensor 1") ?? 31;
+    let changed = false;
+    orderedRegisteredSlots().forEach((slot, i) => {
+      const home = homeGroups.get(slot.groupName);
+      if (home && home.weight !== baseWeight + i) {
+        home.weight = baseWeight + i;
+        changed = true;
+      }
+    });
+    if (changed) reorderHomeGroups();
   }
 
   function renderPressureEntity(entity) {
@@ -1253,6 +1279,10 @@
 
   const pulseMeterTableRows = new Map(); // "reg:"+groupName or "new:"+groupName -> <tr>
   const pulseMeterNewRowDrafts = new Map(); // groupName -> in-progress typed name
+  // The single registered row currently in edit mode (its own expanded
+  // detail row attached below it), or null - see enterEdit() below for
+  // why only one can ever be open at a time.
+  let pulseMeterEditingRow = null;
 
   // A registered meter's row - Name is read-only until the pencil button
   // is pressed, then editable with an explicit Save/Cancel (and
@@ -1261,6 +1291,21 @@
   // blur used to write immediately). No Address/Status/Order columns -
   // nothing here to show (a local GPIO pulse counter has no equivalent
   // failure mode to "Lost"/"Collision", and there's nothing to reorder).
+  //
+  // Reading/Update/Zero-Flow Timeout live in a second, detail <tr> that
+  // only exists in the DOM while this row is being edited - opened by
+  // the same pencil that unlocks Name, closed by the same Save/Cancel.
+  // Direct feedback, 2026-08-13: these fields used to sit permanently in
+  // their own always-visible Service section below the table (6 lines
+  // for 2 real fields), and it wasn't obvious which fields belonged to
+  // which meter; this both compacts the layout (2 lines total, label +
+  // inline input(+button) each) and makes the grouping unambiguous (the
+  // fields are physically inside the row they belong to, only visible
+  // while that row is open). Only one row can be open across the whole
+  // table at a time - opening a second one cancels/closes whichever was
+  // open first (enterEdit() below), rather than letting several stay
+  // open and compound the "which belongs to which" confusion this was
+  // meant to fix in the first place.
   function upsertRegisteredPulseMeterRow(tbody, groupName) {
     const key = "reg:" + groupName;
     const nameEntity = pulseMeterSlotEntity(groupName, "Display Name");
@@ -1281,7 +1326,7 @@
       const actionCell = row.querySelector(".dc-pressure-action");
       const editBtn = el("button", "dc-pressure-icon-btn dc-pressure-edit-btn", svgIcon("pencil"));
       editBtn.type = "button";
-      editBtn.title = "Edit name";
+      editBtn.title = "Edit";
       actionCell.appendChild(editBtn);
 
       const delBtn = el("button", "dc-pressure-icon-btn dc-pressure-del-btn", svgIcon("trash"));
@@ -1300,11 +1345,56 @@
       cancelBtn.title = "Cancel";
       actionCell.appendChild(cancelBtn);
 
+      // Built once, up front - not lazily per-entity - since Reading/
+      // Update/Zero-Flow Timeout each arrive as separate, independent
+      // SSE updates; building the whole skeleton here means each one
+      // just fills in/wires its own already-existing input the moment it
+      // shows up (upsertPulseMeterExpandedField() below), with no
+      // dependency on which of the three arrives first. Not attached to
+      // the DOM until actually opened (see enterEdit()/exitEdit()) - a
+      // `hidden` <tr> would still count for the table's own :first-
+      // child/:last-child border-rounding CSS even while invisible, so
+      // it's only ever inserted while genuinely in use.
+      const expandedRow = el("tr", "dc-pulsemeter-expanded");
+      const expandedCell = document.createElement("td");
+      expandedCell.colSpan = 2;
+      expandedRow.appendChild(expandedCell);
+
+      const readingLine = el("div", "dc-pulsemeter-expanded-field");
+      const readingLabel = el("span", "dc-pulsemeter-expanded-label", "Reading");
+      const readingInput = document.createElement("input");
+      readingInput.type = "number";
+      const updateBtn = el("button", "dc-btn dc-btn-compact", "Update");
+      updateBtn.type = "button";
+      readingLine.append(readingLabel, readingInput, updateBtn);
+
+      const zftLine = el("div", "dc-pulsemeter-expanded-field");
+      const zftLabel = el("span", "dc-pulsemeter-expanded-label", "Zero-Flow Timeout");
+      const zftInput = document.createElement("input");
+      zftInput.type = "number";
+      const zftUnit = el("span", "dc-pulsemeter-expanded-unit", "s");
+      zftLine.append(zftLabel, zftInput, zftUnit);
+
+      expandedCell.append(readingLine, zftLine);
+      row._expandedRow = expandedRow;
+      row._readingInput = readingInput;
+      row._updateBtn = updateBtn;
+      row._zftInput = zftInput;
+
       const enterEdit = () => {
+        // Only one row editable at a time, table-wide - opening this one
+        // force-cancels/closes whichever other row was already open,
+        // discarding any unsaved name edit there too (same as if its own
+        // Cancel had been pressed).
+        if (pulseMeterEditingRow && pulseMeterEditingRow !== row && pulseMeterEditingRow._cancelEdit) {
+          pulseMeterEditingRow._cancelEdit();
+        }
+        pulseMeterEditingRow = row;
         row._editOrigName = nameInput.value;
         nameInput.disabled = false;
         row.classList.add("dc-pressure-row-editing");
         row._editing = true;
+        tbody.insertBefore(expandedRow, row.nextSibling);
         nameInput.focus();
         nameInput.select();
       };
@@ -1312,12 +1402,16 @@
         nameInput.disabled = true;
         row.classList.remove("dc-pressure-row-editing");
         row._editing = false;
+        if (expandedRow.isConnected) expandedRow.remove();
+        if (pulseMeterEditingRow === row) pulseMeterEditingRow = null;
       };
-      editBtn.addEventListener("click", enterEdit);
-      cancelBtn.addEventListener("click", () => {
+      const cancelEdit = () => {
         nameInput.value = row._editOrigName;
         exitEdit();
-      });
+      };
+      row._cancelEdit = cancelEdit;
+      editBtn.addEventListener("click", enterEdit);
+      cancelBtn.addEventListener("click", cancelEdit);
       const handleEditKeydown = (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -1376,7 +1470,7 @@
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
-      nameInput.placeholder = "Meter name";
+      nameInput.placeholder = "Device name";
       nameInput.value = pulseMeterNewRowDrafts.has(groupName)
         ? pulseMeterNewRowDrafts.get(groupName)
         : (nameEntity && nameEntity.value) || "";
@@ -1432,7 +1526,16 @@
         upsertNewPulseMeterRow(tbody, groupName);
       }
     }
-    const desiredOrder = groups.map((g) => pulseMeterTableRows.get((isPulseMeterRegistered(g) ? "reg:" : "new:") + g));
+    const desiredOrder = [];
+    for (const g of groups) {
+      const row = pulseMeterTableRows.get((isPulseMeterRegistered(g) ? "reg:" : "new:") + g);
+      desiredOrder.push(row);
+      // The open row's own expanded detail row (if any) always
+      // immediately follows it - not a separate pulseMeterTableRows
+      // entry, tracked instead as row._expandedRow (see
+      // upsertRegisteredPulseMeterRow()'s own comment).
+      if (row && row._editing && row._expandedRow) desiredOrder.push(row._expandedRow);
+    }
     let anchor = tbody.firstElementChild;
     for (const row of desiredOrder) {
       if (anchor === row) anchor = anchor.nextElementSibling;
@@ -1440,28 +1543,32 @@
     }
     for (const [key, row] of pulseMeterTableRows) {
       if (!seenKeys.has(key)) {
+        if (row._expandedRow && row._expandedRow.isConnected) row._expandedRow.remove();
         row.remove();
         pulseMeterTableRows.delete(key);
       }
     }
   }
 
-  // Creates/removes this meter's Home card, Service section (Reading/
-  // Update/Zero-Flow Timeout) and Diagnostics section (Total Pulses) as
-  // a whole, purely from its own Registered state - the unified
-  // counterpart of syncPressureHomeCard(), extended to all three pages
-  // since a water meter (unlike a pressure slot) has real fields on all
-  // of them, not just a Home card.
+  // Creates/removes this meter's Home card and Diagnostics section
+  // (Total Pulses) as a whole, purely from its own Registered state -
+  // the unified counterpart of syncPressureHomeCard(). Reading/Update/
+  // Zero-Flow Timeout no longer have a separate Service-page section to
+  // remove here at all (2026-08-13) - they live inline in the table
+  // row's own expanded detail area instead (upsertRegisteredPulseMeterRow()'s
+  // own comment), which is torn down and rebuilt fresh as part of the
+  // row itself whenever the row goes away, with nothing left here to do
+  // for them specifically.
   //
-  // Critically, also clears every cached DOM reference this file keeps
-  // on an entity object (.el/.inputEl/.readoutEl/.toggleEl/.btnEl) when
-  // un-registering - without this, re-Registering the same meter later
-  // would silently keep updating detached, invisible nodes from before
-  // instead of rebuilding fresh ones: the exact bug already found and
-  // fixed once for the pressure sensors' own Home card (entity.el going
-  // stale across a remove-then-recreate cycle), generalized here since
-  // a water meter caches several *kinds* of reference across three pages
-  // instead of just one.
+  // Still clears every cached DOM reference this file keeps on an entity
+  // object (.el/.inputEl/.readoutEl/.toggleEl/.btnEl) when un-
+  // registering, for whatever *does* still reach the generic dispatch
+  // (Total Consumption/Flow Rate/Total Pulses) - without this, re-
+  // Registering the same meter later would silently keep updating
+  // detached, invisible nodes from before instead of rebuilding fresh
+  // ones: the exact bug already found and fixed once for the pressure
+  // sensors' own Home card (entity.el going stale across a remove-then-
+  // recreate cycle).
   function syncPulseMeterVisibility(groupName) {
     if (isPulseMeterRegistered(groupName)) return; // still registered - individual entities (re)build lazily via the generic dispatch in renderPulseMeterEntity()
     const home = homeGroups.get(groupName);
@@ -1491,62 +1598,127 @@
   }
 
   // Total Consumption/Flow Rate/Reading/Update/Zero-Flow Timeout/Total
-  // Pulses only ever render once Registered - falls through to the exact
-  // same generic dispatch every other entity in this file goes through
-  // otherwise. Split out from renderPulseMeterEntity() below so it can
-  // also be called directly to "catch up" entities whose own update
-  // already arrived and was skipped before Registered was known - see
-  // that function's own comment for why that's needed at all.
+  // Wires Reading/Update/Zero-Flow Timeout into the pre-built inputs on
+  // this meter's own table row (upsertRegisteredPulseMeterRow()'s own
+  // comment explains why they're built once, up front, not lazily
+  // here) - each entity just fills in/wires its own already-existing
+  // input the moment its own update arrives, independent of whether the
+  // *other* two have shown up yet. No-op if the row doesn't exist yet
+  // (shouldn't happen once Registered, but defensive).
+  function upsertPulseMeterExpandedField(entity, label) {
+    const row = pulseMeterTableRows.get("reg:" + entity.groupName);
+    if (!row || !row._expandedRow) return;
+    if (label === "Reading") {
+      const input = row._readingInput;
+      if (entity.min !== undefined) input.min = entity.min;
+      if (entity.max !== undefined) input.max = entity.max;
+      if (entity.step !== undefined) input.step = entity.step;
+      if (!row._readingWired) {
+        input.addEventListener("change", () => {
+          const parsed = parseFloat(input.value);
+          const outOfRange =
+            Number.isNaN(parsed) || (entity.min !== undefined && parsed < entity.min) || (entity.max !== undefined && parsed > entity.max);
+          if (outOfRange) {
+            input.value = entity.value ?? "";
+            return;
+          }
+          fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        });
+        row._readingWired = true;
+      }
+      if (document.activeElement !== input) input.value = entity.value ?? "";
+    } else if (label === "Update") {
+      if (!row._updateWired) {
+        row._updateBtn.addEventListener("click", () => {
+          const value = row._readingInput.value;
+          const uom = entity.uom ? ` ${entity.uom}` : "";
+          if (!confirm(`Set ${entity.groupName} Reading to ${value}${uom}? This overwrites the accumulated total and cannot be undone.`)) return;
+          fetch(`${entity.namePath}/press`, { method: "POST" });
+        });
+        row._updateWired = true;
+      }
+    } else if (label === "Zero-Flow Timeout") {
+      const input = row._zftInput;
+      if (entity.min !== undefined) input.min = entity.min;
+      if (entity.max !== undefined) input.max = entity.max;
+      if (entity.step !== undefined) input.step = entity.step;
+      if (!row._zftWired) {
+        input.addEventListener("change", () => {
+          const parsed = parseFloat(input.value);
+          const outOfRange =
+            Number.isNaN(parsed) || (entity.min !== undefined && parsed < entity.min) || (entity.max !== undefined && parsed > entity.max);
+          if (outOfRange) {
+            input.value = entity.value ?? "";
+            return;
+          }
+          fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        });
+        row._zftWired = true;
+      }
+      if (document.activeElement !== input) input.value = entity.value ?? "";
+    }
+  }
+
+  // Total Consumption/Flow Rate (Home page) and Total Pulses
+  // (Diagnostics) only ever render once Registered - falls through to
+  // the exact same generic dispatch every other entity in this file goes
+  // through otherwise. Reading/Update/Zero-Flow Timeout are intercepted
+  // first, into the table row's own inline detail area instead (see
+  // upsertPulseMeterExpandedField() above) - they no longer have a
+  // separate Service-page section at all. Split out from
+  // renderPulseMeterEntity() below so it can also be called directly to
+  // "catch up" entities whose own update already arrived and was skipped
+  // before Registered was known - see that function's own comment for
+  // why that's needed at all.
   function renderPulseMeterCalibrationEntity(entity) {
     if (!isPulseMeterRegistered(entity.groupName)) return;
+    const label = displayName(entity);
+    if (label === "Reading" || label === "Update" || label === "Zero-Flow Timeout") {
+      upsertPulseMeterExpandedField(entity, label);
+      return;
+    }
     const page = pageFor(entity);
     if (page === "home") upsertHomeMetric(entity);
     else if (page === "diagnostics") upsertDiagRow(entity);
-    else if (page === "service") {
-      if (entity.domain === "number") upsertServiceNumber(entity);
-      else if (entity.domain === "button") upsertServiceButton(entity);
-      else if (entity.domain === "switch") upsertServiceSwitch(entity);
-      else if (entity.domain === "text") upsertServiceText(entity);
-    }
   }
 
   function renderPulseMeterEntity(entity) {
     const groupName = entity.groupName;
     const label = displayName(entity);
+    if (label === "Display Name") {
+      // Mirrors what upsertServiceText() does for every other renamed
+      // group (water meters used to reach it directly for this same
+      // entity, before Display Name was intercepted here) - this
+      // group's Home card header has no other way to learn a renamed
+      // Display Name, since it never reaches that generic path anymore.
+      groupDisplayNames.set(groupName, (entity.value || "").trim());
+      applyGroupLabel(groupName);
+    }
     if (label === "Registered" || label === "Delete" || label === "Display Name") {
-      if (label === "Display Name") {
-        // Mirrors what upsertServiceText() does for every other renamed
-        // group (water meters used to reach it directly for this same
-        // entity, before Display Name was intercepted here) - this
-        // group's Home card header/Service section label has no other
-        // way to learn a renamed Display Name, since it never reaches
-        // that generic path anymore.
-        groupDisplayNames.set(groupName, (entity.value || "").trim());
-        applyGroupLabel(groupName);
-      }
       renderPulseMeterTableBody();
       syncPulseMeterVisibility(groupName);
-      // ESPHome dumps entities in a fixed cross-domain order, not
-      // registration order (same phenomenon noted elsewhere in this
-      // file) - "Registered" (switch domain) isn't guaranteed to arrive
-      // before e.g. "Total Consumption" (sensor domain). Without this,
-      // an entity whose own update happened to arrive *before*
-      // Registered was known would be silently skipped by the gate in
-      // renderPulseMeterCalibrationEntity() above and then never
-      // revisited, since nothing else would trigger it again until its
-      // own next unrelated change - potentially a long wait (e.g. Total
-      // Consumption, which only updates on the next pulse). Once
-      // Registered is known, re-run every other already-arrived entity
-      // in this group through the same dispatch to pick up anything
-      // that was missed.
-      if (isPulseMeterRegistered(groupName)) {
-        for (const e of entities.values()) {
-          if (e.groupName === groupName && e !== entity) renderPulseMeterCalibrationEntity(e);
-        }
-      }
-      return;
     }
-    renderPulseMeterCalibrationEntity(entity);
+    // Unconditionally re-run *every* known entity in this group through
+    // the calibration dispatch on *every* update, not just when
+    // Registered/Delete/Display Name themselves change - mirrors
+    // syncPressureHomeCard()'s own always-resync approach exactly, for
+    // the same reason: ESPHome dumps entities in a fixed cross-domain
+    // order, not registration order, so "Registered" (switch domain)
+    // isn't guaranteed to arrive before e.g. "Total Consumption" (sensor
+    // domain) - an entity whose own update arrived first used to be
+    // silently skipped by the gate in renderPulseMeterCalibrationEntity()
+    // and never revisited, confirmed on real hardware, 2026-08-13: newly
+    // -added meters' Reading/Zero-Flow Timeout fields sometimes only
+    // appeared after a full page reload. Redundant on most calls (the
+    // underlying upsert*() functions are all cheap no-ops when nothing
+    // actually changed) but removes any dependency on exact arrival
+    // order entirely, rather than only patching the specific ordering
+    // that happened to be observed.
+    if (isPulseMeterRegistered(groupName)) {
+      for (const e of entities.values()) {
+        if (e.groupName === groupName) renderPulseMeterCalibrationEntity(e);
+      }
+    }
   }
 
   // A number entity named "<Meter> Reading" (object_id ...maps to
