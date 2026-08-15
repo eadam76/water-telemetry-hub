@@ -247,21 +247,26 @@ web_server:
     - id: sorting_group_pulse_meters
       name: "Pulse Meters"
       sorting_weight: 8
-    # Names deliberately generic ("Water Meter 1/2", not "Main"/"Garden") -
+    # Names deliberately generic ("Pulse Meter 1/2", not "Main"/"Garden") -
     # which physical meter is which is a fact about *this* installation,
     # not something to bake into the firmware. Rename via each meter's own
     # "Display Name" field on the Service page instead - see the note next
-    # to friendly_name below. Kept as "Water Meter N" (not renamed to
-    # "Pulse Meter N") specifically to avoid changing these entities'
-    # Home-Assistant-facing entity_ids (ESPHome derives them from `name:`,
-    # not `id:`) on an already-deployed device - purely an internal/
-    # compile-time label either way, invisible in the dashboard itself
-    # (see PULSE_METER_RE/groupLabel() in web/dashboard.js).
+    # to friendly_name below. Renamed from "Water Meter N" to "Pulse Meter
+    # N" (2026-08-13) alongside the "Pulse Meters" table above, for the
+    # same reason - this project counts pulses in general, water is just
+    # the current use. Changing this DOES change these entities'
+    # generated Home-Assistant entity_ids (ESPHome derives them from
+    # `name:`, not `id:`) - deliberately fine to do now, before there's
+    # any real HA integration/PROD deployment to break (explicit call,
+    # 2026-08-13 - do this kind of rename while it's still cheap, not
+    # after). id_prefix (meter1/meter2 below) stays unchanged either way
+    # - that's a separate, purely internal identifier, invisible even in
+    # HA (see the note next to it below).
     - id: sorting_group_meter1
-      name: "Water Meter 1"
+      name: "Pulse Meter 1"
       sorting_weight: 10
     - id: sorting_group_meter2
-      name: "Water Meter 2"
+      name: "Pulse Meter 2"
       sorting_weight: 20
     # Pressure sensors: one umbrella group (houses the bus-scan + generic
     # add controls) plus 8 fixed per-slot groups (packages/pressure_sensor.yaml) -
@@ -835,24 +840,32 @@ number:
       sorting_weight: 15
 
 packages:
-  # friendly_name is deliberately generic ("Water Meter 1/2", not "Main"/
+  # friendly_name is deliberately generic ("Pulse Meter 1/2", not "Main"/
   # "Garden") - which physical meter is which is a fact about *this*
   # installation, not the firmware; it drives both the compiled-in entity
-  # names (e.g. "Water Meter 1 Reading") and the "Display Name" field's
+  # names (e.g. "Pulse Meter 1 Reading") and the "Display Name" field's
   # starting value, which is what you'd actually rename on the Service
   # page ("Main Meter"/"Garden Meter", or whatever fits) without needing
-  # a recompile. id_prefix (meter1/meter2 below), same reasoning - purely
-  # internal, never shown anywhere. Changing an *existing*, already-
-  # calibrated meter's id_prefix later would still reset its saved
-  # calibration though (it's part of the flash preference key for
-  # offset_m3 - see water_meter.yaml) - a non-issue this early on, before
-  # anything's built on top of these entities (no HA setup yet), but not
-  # a free rename anymore once that's no longer true.
+  # a recompile. Renamed from "Water Meter N" 2026-08-13 (matches the
+  # sorting_groups rename above, same reasoning) - deliberately done now,
+  # while it's still cheap (no HA integration/PROD yet to have entity_ids
+  # in it worth protecting - see that comment for the full reasoning),
+  # not held off until it'd actually cost something to change.
+  #
+  # id_prefix (meter1/meter2 below), same "purely internal, never shown
+  # anywhere" reasoning - left unchanged (unlike friendly_name above),
+  # since renaming *this* would actually cost something real even now:
+  # it's part of the flash preference key for offset_m3 (see
+  # water_meter.yaml), so an existing, already-calibrated meter would
+  # lose its saved calibration offset (not its raw pulse_count/Total
+  # Consumption - those are keyed differently and stay fine) - a real,
+  # if minor and recoverable (one manual re-sync), cost regardless of
+  # HA/PROD status, unlike the purely-cosmetic friendly_name rename above.
   meter1: !include
     file: packages/water_meter.yaml
     vars:
       id_prefix: meter1
-      friendly_name: "Water Meter 1"
+      friendly_name: "Pulse Meter 1"
       pulse_pin: ${meter1_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"
@@ -862,7 +875,7 @@ packages:
     file: packages/water_meter.yaml
     vars:
       id_prefix: meter2
-      friendly_name: "Water Meter 2"
+      friendly_name: "Pulse Meter 2"
       pulse_pin: ${meter2_pulse_pin}
       liters_per_pulse: "1.0"
       zero_flow_timeout_default: "60"

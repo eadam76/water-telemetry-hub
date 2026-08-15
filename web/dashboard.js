@@ -84,8 +84,8 @@
   // one might be "the garden one", so there's nothing left to visually
   // distinguish them by beyond their (renameable) label.
   const GROUP_ICON_BY_NAME = {
-    "Water Meter 1": "water",
-    "Water Meter 2": "water",
+    "Pulse Meter 1": "water",
+    "Pulse Meter 2": "water",
     "Network": "wifi",
     "System": "cog",
   };
@@ -152,7 +152,7 @@
   // Display Name (text domain) is, which used to flash the raw id as
   // that card's header for a moment. Confirmed on real hardware,
   // 2026-08-13 - direct feedback was to show nothing at all rather than
-  // the wrong thing. Every other group's raw name (Water Meter 1,
+  // the wrong thing. Every other group's raw name (Pulse Meter 1,
   // Network, ...) is fine to show as a fallback - only pressure slots
   // need this exception, isPressureGroup() is defined further down but
   // hoisted (function declaration), so it's callable from here.
@@ -1202,7 +1202,7 @@
   // just needs a single gate (isPulseMeterRegistered()) before falling
   // through to those unchanged.
 
-  const PULSE_METER_RE = /^Water Meter \d+$/;
+  const PULSE_METER_RE = /^Pulse Meter \d+$/;
   const PULSE_METER_ADD_GROUP = "Pulse Meters";
 
   function pulseMeterSlotEntity(groupName, label) {
@@ -1213,7 +1213,7 @@
   }
 
   // Both meters, in a fixed order (alphabetical happens to already be
-  // the right physical order: "Water Meter 1" before "...2") - unlike
+  // the right physical order: "Pulse Meter 1" before "...2") - unlike
   // the pressure table there's no Sort Order/reordering here, since with
   // only ever two possible, permanently-fixed items there's no
   // "physical layout" ambiguity a manual order could represent.
@@ -1780,7 +1780,7 @@
     }
     if (label === "Delete" && PULSE_METER_RE.test(entity.groupName)) {
       // Unlike a pressure slot's Delete, a water meter's own raw group
-      // name ("Water Meter 1") is a perfectly reasonable fallback here -
+      // name ("Pulse Meter 1") is a perfectly reasonable fallback here -
       // it's not an internal/meaningless id the way a pressure slot's is
       // (see the branch above), a water meter's identity is permanently
       // tied to its own physical GPIO. Wording also differs on purpose:

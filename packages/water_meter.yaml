@@ -24,7 +24,7 @@
 #                                note next to offset_m3 below before ever
 #                                changing an existing one)
 #   friendly_name             - display name, deliberately generic, e.g.
-#                                "Water Meter 1" - also the "Display Name"
+#                                "Pulse Meter 1" - also the "Display Name"
 #                                field's starting value (see the text:
 #                                section below), which is what you'd
 #                                actually rename per-installation
@@ -196,30 +196,26 @@ switch:
   # ambiguity to protect against). There's no cost to leaving pulse
   # counting running on an unconnected GPIO either way.
   #
-  # restore_mode is intentionally still RESTORE_DEFAULT_ON, unchanged -
-  # NOT switched to RESTORE_DEFAULT_OFF (which would otherwise better
-  # match "starts uncommissioned like a fresh pressure slot"). Reason:
-  # restore_mode only supplies the very first value when no persisted
-  # state is found under this entity's own restore key - and ESPHome
-  # derives that key from the entity's *name* (via its object_id), which
-  # this same change just renamed ("Show on Dashboard" -> "Registered").
-  # Genuinely uncertain, without live-hardware confirmation, whether that
-  # rename invalidates the lookup for the *already-persisted* "on" state
-  # on the user's already-deployed, already-configured device - if it
-  # does, RESTORE_DEFAULT_OFF would have silently hidden both real,
-  # already-in-use water meters (with no data loss - pulse_count/
-  # offset_m3 are on their own, id_prefix-keyed preferences, untouched
-  # either way - but still a jarring, avoidable surprise). Staying on
-  # RESTORE_DEFAULT_ON costs nothing on a genuinely fresh board (its very
-  # first boot would just start "Registered" instead of needing an
-  # explicit Add) and is unconditionally safe for the live device
-  # regardless of how the rename actually affects the restore key.
+  # restore_mode: RESTORE_DEFAULT_OFF - a genuinely fresh board now starts
+  # with both meters uncommissioned, matching how a fresh pressure slot
+  # starts too. This *can* reset the currently-running device's own
+  # Registered state back to off on next flash: the entity was just
+  # renamed ("Show on Dashboard" -> "Registered"), and ESPHome derives
+  # its restore key from the entity's name (via its object_id), so its
+  # already-persisted "on" state may not be found under the new key.
+  # Deliberately accepted anyway (2026-08-13, explicit call - this
+  # project is still pre-PROD/pre-HA-integration, so a one-time "click
+  # Add on both meters again after this flash" is a fine, cheap price
+  # for full consistency now, before there's a real deployment where that
+  # kind of surprise would actually matter) - no data loss either way:
+  # pulse_count/offset_m3 live on their own, id_prefix-keyed preferences,
+  # completely untouched by this switch's own restore state.
   - platform: template
     id: ${id_prefix}_enabled
     name: "${friendly_name} Registered"
     icon: "mdi:check-decagram-outline"
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: RESTORE_DEFAULT_OFF
     entity_category: config
     disabled_by_default: true
     # optimistic:true alone would queue the flash write and leave it
@@ -243,7 +239,7 @@ text:
   # Service section header instead of the fixed "${friendly_name}", so a
   # meter can be renamed per-installation (e.g. "Main Meter"/"Garden
   # Meter", or anything else) without touching the YAML. Starts out equal
-  # to friendly_name (itself deliberately generic - "Water Meter 1/2",
+  # to friendly_name (itself deliberately generic - "Pulse Meter 1/2",
   # not "Main"/"Garden") until renamed. The id_prefix/entity names/
   # sorting_group stay fixed at compile time either way - only what's
   # *displayed* changes.
