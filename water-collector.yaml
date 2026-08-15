@@ -45,18 +45,22 @@ esphome:
   includes:
     - include/rs485_modbus.h
     - include/mqtt_broker_url.h
-  # No MQTT reconnect-on-boot (removed 2026-08-15, direct feedback: MQTT
-  # should only ever connect from an explicit "MQTT Connect" press, never
-  # automatically - see the button: section below for that button, and
-  # "MQTT Enabled"'s own comment for why that switch no longer drives the
-  # connection itself either). A reboot always leaves MQTT disconnected
-  # until Connect is pressed again, even if it was connected before -
-  # a deliberate simplicity/predictability tradeoff, not an oversight.
-  # This on_boot: only initializes two *displayed* values - "MQTT
-  # Status" (undefined otherwise until the first Connect/Disconnect
-  # press) and the password field's own masked-dots placeholder (see
-  # mqtt_password_text's own comment, text: below) - neither one talks
-  # to the mqtt: component at all.
+  # MQTT reconnect-on-boot, revised 2026-08-15 (direct feedback):
+  # "reboot után automatikusan kell kapcsolódnia ha már egyszer
+  # connectált. Ha disconnectáltunk kézzel akkor reboot után se
+  # connectáljon" (should reconnect automatically after a reboot if it
+  # was ever connected; if manually disconnected, it shouldn't reconnect
+  # after a reboot either) - gated on mqtt_want_connected (globals:
+  # above), NOT on "MQTT Enabled" (that switch no longer means "should
+  # be connected", see its own comment, switch: below) - "MQTT Connect"
+  # sets that flag true, "MQTT Disconnect" and "MQTT Enabled"'s own
+  # turn_off_action both set it false (button:/switch: sections below).
+  # priority: 200 (AFTER_WIFI, esphome/core/component.h's own
+  # setup_priority table) - deliberately after wifi:'s own setup (250),
+  # not before: MQTT client auth needs actual Wi-Fi first. Same
+  # connect-lambda body as the "MQTT Connect" button's own on_press - kept
+  # in sync manually, no shared action macro available for a plain
+  # lambda across two YAML sites.
   on_boot:
     priority: 200
     then:
@@ -67,6 +71,32 @@ esphome:
           if (!id(mqtt_password_stored).state.empty()) {
             id(mqtt_password_text).publish_state("••••••••");
           }
+          // Belt-and-suspenders default for "MQTT Topic Prefix" - direct
+          // feedback, 2026-08-15: confirmed filled with something, not
+          // left to only a hint, on every boot regardless of exactly how
+          // restore_value+initial_value interact for a never-before-seen
+          // preference key.
+          if (id(mqtt_topic_prefix_text).state.empty()) {
+            id(mqtt_topic_prefix_text).publish_state("${device_name}");
+          }
+      - if:
+          condition:
+            lambda: 'return id(mqtt_want_connected);'
+          then:
+            - lambda: |-
+                std::string mqtt_host;
+                uint16_t mqtt_port;
+                mqtt_broker_url::parse(id(mqtt_broker_text).state, mqtt_host, mqtt_port);
+                id(mqtt_id).set_broker_address(mqtt_host);
+                id(mqtt_id).set_broker_port(mqtt_port);
+                id(mqtt_id).set_username(id(mqtt_username_text).state);
+                id(mqtt_id).set_password(id(mqtt_password_stored).state);
+                id(mqtt_id).set_topic_prefix(id(mqtt_topic_prefix_text).state, "${device_name}");
+                id(mqtt_id).enable();
+            - switch.turn_on: mqtt_enabled_switch
+            - text_sensor.template.publish:
+                id: mqtt_status_text
+                state: "Connecting…"
 
 esp32:
   board: ${board_type}
@@ -176,6 +206,23 @@ globals:
     type: uint16_t
     restore_value: true
     initial_value: "1"
+
+  # Whether MQTT should reconnect automatically on the NEXT boot - direct
+  # feedback, 2026-08-15: "reboot után automatikusan kell kapcsolódnia ha
+  # már egyszer connectált. Ha disconnectáltunk kézzel akkor reboot után
+  # se connectáljon" (should reconnect automatically after a reboot if it
+  # was ever connected; if manually disconnected, it shouldn't reconnect
+  # after a reboot either). Deliberately NOT the same thing as "MQTT
+  # Enabled" (that switch is now purely a reset/clear toggle, see its own
+  # comment, switch: below) - this tracks intent-to-be-connected instead:
+  # set true by "MQTT Connect", set false by "MQTT Disconnect" and by
+  # "MQTT Enabled"'s own turn_off_action (button:/switch: sections
+  # below). restore_value: true so it actually survives the reboot it's
+  # meant to be checked on (esphome: on_boot: above).
+  - id: mqtt_want_connected
+    type: bool
+    restore_value: true
+    initial_value: "false"
 
 # level (compile-time ceiling - anything above it is stripped from the
 # binary entirely, can never be shown no matter what) is raised to
@@ -816,7 +863,9 @@ switch:
       sorting_group_id: sorting_group_mqtt
       sorting_weight: 10
     turn_off_action:
-      - lambda: id(mqtt_id).disable();
+      - lambda: |-
+          id(mqtt_id).disable();
+          id(mqtt_want_connected) = false;
       - text.set:
           id: mqtt_broker_text
           value: ""
@@ -936,14 +985,24 @@ button:
           id(mqtt_id).set_password(id(mqtt_password_stored).state);
           id(mqtt_id).set_topic_prefix(id(mqtt_topic_prefix_text).state, "${device_name}");
           id(mqtt_id).enable();
+          // Remembered across a reboot (globals: mqtt_want_connected
+          // above) - direct feedback, 2026-08-15: a connected session
+          // should resume automatically after a reboot, an explicitly
+          // disconnected one shouldn't.
+          id(mqtt_want_connected) = true;
       - text_sensor.template.publish:
           id: mqtt_status_text
           state: "Connecting…"
+      - delay: 10ms
+      - lambda: global_preferences->sync();
 
   # Stops MQTT without touching any saved field - contrast "MQTT
   # Enabled"'s turn_off_action just above, which also wipes everything.
   # Pressing Connect again afterward resumes with the same broker/
-  # credentials, no retyping needed.
+  # credentials, no retyping needed. Also clears mqtt_want_connected
+  # (globals: above) - a reboot after an explicit Disconnect must NOT
+  # reconnect on its own, same direct feedback as the Connect button's
+  # own comment.
   - platform: template
     name: "MQTT Disconnect"
     icon: "mdi:server-network-off"
@@ -953,7 +1012,11 @@ button:
       sorting_group_id: sorting_group_mqtt
       sorting_weight: 16
     on_press:
-      - lambda: id(mqtt_id).disable();
+      - lambda: |-
+          id(mqtt_id).disable();
+          id(mqtt_want_connected) = false;
+      - delay: 10ms
+      - lambda: global_preferences->sync();
       - text_sensor.template.publish:
           id: mqtt_status_text
           state: "Disconnected"

@@ -240,13 +240,16 @@ body {
  * not vertical bars) - reuses the exact paths already drawn for the nav/
  * group "wifi" icon (ICONS.wifi, dashboard.js) rather than a second,
  * slightly-different piece of art, just split into individually
- * colorable pieces here. Also no longer tiered by color (red/amber/
- * green) - direct feedback, same round: "az is kék" (that too should be
- * blue) - now a single accent-blue for every filled tier, default
- * --dc-border (unfilled/grey) otherwise, so an unknown/no-reading-yet
- * state (tier 0, set on load and whenever the SSE link itself drops)
- * still reads as "nothing lit", just no longer implying "bad" via color
- * the way red/amber used to. */
+ * colorable pieces here. Tiered by color - weak: red, fair: amber,
+ * good/excellent: blue (2026-08-15, direct feedback: "Wi-Fi jelző lehet
+ * piros/sárga/kék" - a revision of an even-more-recent same-day change
+ * that made every tier blue; that one didn't survive the next round of
+ * feedback). Same "recolor everything currently lit" pattern the old
+ * vertical-bar version used: at tier 2 both the dot AND arc-1 turn
+ * amber, not just arc-2 alone - the whole lit portion reflects the
+ * CURRENT tier's color, not one color per fixed segment. Default
+ * --dc-border (unfilled/grey) for tier 0 (unknown/no reading yet, set on
+ * load and whenever the SSE link itself drops) and anything not yet lit. */
 #dc-wifi-signal {
   display: flex;
   align-items: center;
@@ -273,24 +276,29 @@ body {
   transition: fill 0.2s;
 }
 
-#dc-wifi-signal[data-tier="1"] .dot,
-#dc-wifi-signal[data-tier="2"] .dot,
+/* Tier 1 (weak): red - just the dot. */
+#dc-wifi-signal[data-tier="1"] .dot {
+  fill: var(--dc-danger);
+}
+
+/* Tier 2 (fair): amber - dot + arc-1. */
+#dc-wifi-signal[data-tier="2"] .dot {
+  fill: var(--dc-warning);
+}
+#dc-wifi-signal[data-tier="2"] .arc-1 {
+  stroke: var(--dc-warning);
+}
+
+/* Tier 3-4 (good/excellent): blue - dot + arc-1 (+ arc-2, + arc-3 at
+ * tier 4 - the only actual difference between the two tiers). */
 #dc-wifi-signal[data-tier="3"] .dot,
 #dc-wifi-signal[data-tier="4"] .dot {
   fill: var(--dc-accent);
 }
-
-#dc-wifi-signal[data-tier="2"] .arc-1,
 #dc-wifi-signal[data-tier="3"] .arc-1,
-#dc-wifi-signal[data-tier="4"] .arc-1 {
-  stroke: var(--dc-accent);
-}
-
 #dc-wifi-signal[data-tier="3"] .arc-2,
-#dc-wifi-signal[data-tier="4"] .arc-2 {
-  stroke: var(--dc-accent);
-}
-
+#dc-wifi-signal[data-tier="4"] .arc-1,
+#dc-wifi-signal[data-tier="4"] .arc-2,
 #dc-wifi-signal[data-tier="4"] .arc-3 {
   stroke: var(--dc-accent);
 }
