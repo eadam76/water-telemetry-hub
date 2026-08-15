@@ -355,7 +355,16 @@
   // .dc-field are generic, not scoped to .dc-service-group) rather than
   // inventing a second, near-identical button layout.
 
-  const diagGroups = new Map(); // groupName -> { weight, section, list, fields }
+  // Three sub-areas per group, all optional-in-practice (only actually
+  // populated once something upserts into them): `list` (plain read-only
+  // label/value rows, the page's original purpose), `actions` (compact,
+  // intrinsically-sized buttons in a flex row - Reboot Device/Forget
+  // Wi-Fi), `fields` (proper bordered .dc-field cards with real inputs -
+  // added 2026-08-15 for MQTT's settings, same layout/CSS the Devices
+  // page's own generic field list already uses, just capped to the same
+  // max-width via .dc-fields-capped rather than relying on a parent
+  // .dc-service-group - this page never had that cap).
+  const diagGroups = new Map(); // groupName -> { weight, section, list, actions, fields }
 
   function ensureDiagGroup(name) {
     let g = diagGroups.get(name);
@@ -363,9 +372,10 @@
     const section = el("div", "dc-diag-group");
     const label = el("div", "dc-section-label", groupLabel(name));
     const list = el("div", "dc-list");
-    const fields = el("div", "dc-diag-actions");
-    section.append(label, list, fields);
-    g = { weight: groupWeights.get(name) ?? 500, section, list, fields };
+    const actions = el("div", "dc-diag-actions");
+    const fields = el("div", "dc-fields dc-fields-capped");
+    section.append(label, list, actions, fields);
+    g = { weight: groupWeights.get(name) ?? 500, section, list, actions, fields };
     diagGroups.set(name, g);
     document.getElementById("dc-page-diagnostics").appendChild(section);
     reorderDiagGroups();
@@ -393,11 +403,19 @@
     }
   }
 
-  function reorderDiagFields(group) {
-    for (const r of [...group.fields.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight))) {
-      group.fields.appendChild(r);
+  function reorderDiagActions(group) {
+    for (const r of [...group.actions.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight))) {
+      group.actions.appendChild(r);
     }
   }
+
+  // reorderServiceFields() (defined further down, in the Devices-page
+  // section) is already fully generic - it only ever touches
+  // `group.fields`, never anything Devices-page-specific - so this reuses
+  // it verbatim rather than maintaining a duplicate copy for the System
+  // page's own `fields` (the proper .dc-field-card area, not the
+  // compact-button .dc-diag-actions row above).
+  const reorderDiagFields = (group) => reorderServiceFields(group);
 
   // "Reboot Device"/"Forget Wi-Fi" - device-level action buttons that
   // render here instead of upsertServiceButton()'s Devices-page list, see
@@ -422,10 +440,10 @@
       entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.name);
       entity.btnEl.type = "button";
       entity.btnEl.addEventListener("click", () => pressButton(entity));
-      group.fields.appendChild(entity.btnEl);
+      group.actions.appendChild(entity.btnEl);
     }
     entity.btnEl.dataset.weight = entity.groupWeight ?? 500;
-    reorderDiagFields(group);
+    reorderDiagActions(group);
   }
 
   // --- Service page: calibration fields + device action buttons --------
@@ -2272,8 +2290,12 @@
     return m ? m[1] : null;
   }
 
-  function upsertServiceNumber(entity) {
-    const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
+  // ensureGroupFn: defaults to the Devices page (ensureServiceGroup) -
+  // pass ensureDiagGroup instead to render on the System page (added
+  // 2026-08-15 for MQTT's settings; see also upsertServiceText()/
+  // upsertServiceSwitch() below, same parameter for the same reason).
+  function upsertServiceNumber(entity, ensureGroupFn = ensureServiceGroup) {
+    const group = ensureGroupFn(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
       entity.el = el(
         "div",
@@ -2360,8 +2382,8 @@
   // but with no min/max hint and no confirm-on-change (purely cosmetic,
   // nothing to protect against). Renaming immediately relabels this
   // meter's Home card and Service/Diagnostics section headers.
-  function upsertServiceText(entity) {
-    const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
+  function upsertServiceText(entity, ensureGroupFn = ensureServiceGroup) {
+    const group = ensureGroupFn(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
       entity.el = el(
         "div",
@@ -2397,8 +2419,8 @@
   // renderPulseMeterEntity()'s own comment for why - so in practice
   // nothing currently reaches this path, but it's kept as the generic
   // fallback for any future plain switch-domain field.
-  function upsertServiceSwitch(entity) {
-    const group = ensureServiceGroup(entity.groupName ?? FALLBACK_GROUP);
+  function upsertServiceSwitch(entity, ensureGroupFn = ensureServiceGroup) {
+    const group = ensureGroupFn(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
       entity.el = el(
         "div",
@@ -2680,6 +2702,25 @@
     // switch just above.
     if (entity.domain === "button" && (entity.name === "Reboot Device" || entity.name === "Forget Wi-Fi")) {
       upsertDiagButton(entity);
+      return;
+    }
+    // MQTT's settings (Enabled/Broker/Port/Username/Password) - 2026-08-
+    // 15, same reasoning as Reboot Device/Forget Wi-Fi just above: this
+    // isn't about any one device row, it belongs with the rest of the
+    // "System" info/actions, not the Devices table. Unlike those two
+    // (plain action buttons), these need real inputs, so this routes
+    // through the normal upsertService*() field-builders - just pointed
+    // at ensureDiagGroup instead of their Devices-page default
+    // (ensureServiceGroup), rendering into that group's own .dc-fields
+    // area (see ensureDiagGroup()'s own comment). "MQTT Status" (a plain
+    // diagnostic text_sensor) needs no special-casing here - entity_category:
+    // diagnostic already routes it to upsertDiagRow() below, in the same
+    // group, for free.
+    if (entity.groupName === "MQTT") {
+      if (entity.domain === "number") upsertServiceNumber(entity, ensureDiagGroup);
+      else if (entity.domain === "switch") upsertServiceSwitch(entity, ensureDiagGroup);
+      else if (entity.domain === "text") upsertServiceText(entity, ensureDiagGroup);
+      else upsertDiagRow(entity); // the "MQTT Status" text_sensor
       return;
     }
     const page = pageFor(entity);

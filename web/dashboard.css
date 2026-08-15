@@ -507,6 +507,19 @@ body {
   gap: 14px;
 }
 
+/* System-page-only modifier (ensureDiagGroup() in dashboard.js) - the
+ * Devices page gets this same 560px cap for free from its own
+ * .dc-service-group parent (see that rule's own comment); the System
+ * page's .dc-diag-group has no such cap, so a .dc-fields block placed
+ * there needs its own. Added 2026-08-15 for MQTT's settings cards -
+ * without it, a bordered .dc-field would stretch edge-to-edge on a wide
+ * viewport, same failure mode already fixed once for the plain action
+ * buttons above (.dc-diag-actions). */
+.dc-fields-capped {
+  max-width: 560px;
+  margin-top: 14px;
+}
+
 .dc-field {
   background: var(--dc-surface);
   border: 1px solid var(--dc-border);

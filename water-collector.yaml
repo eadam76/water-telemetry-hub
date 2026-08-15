@@ -44,6 +44,38 @@ esphome:
   # without its own #include.
   includes:
     - include/rs485_modbus.h
+  # MQTT reconnect-on-boot: a template switch's restore_mode only
+  # restores what the DASHBOARD shows (the toggle looks "on" again after
+  # a reboot) - it does NOT re-fire turn_on_action, so without this,
+  # "MQTT Enabled" staying on across a Reboot Device press would be
+  # cosmetic only, silently never actually reconnecting. priority: 200
+  # (AFTER_WIFI, esphome/core/component.h's own setup_priority table) -
+  # deliberately AFTER wifi:'s own setup (250), not before: MQTT client
+  # auth needs actual Wi-Fi, and running before would also risk this
+  # component's own setup racing whatever restores mqtt_enabled_switch's
+  # value in the first place. Same lambda body as that switch's own
+  # turn_on_action (see switch: below) - kept in sync manually, no shared
+  # action macro available for a plain lambda across two YAML sites.
+  on_boot:
+    priority: 200
+    then:
+      - if:
+          condition:
+            switch.is_on: mqtt_enabled_switch
+          then:
+            - lambda: |-
+                id(mqtt_id).set_broker_address(id(mqtt_broker_text).state);
+                id(mqtt_id).set_broker_port((uint16_t) id(mqtt_port_number).state);
+                id(mqtt_id).set_username(id(mqtt_username_text).state);
+                id(mqtt_id).set_password(id(mqtt_password_stored).state);
+                id(mqtt_id).enable();
+            - text_sensor.template.publish:
+                id: mqtt_status_text
+                state: "Connecting…"
+          else:
+            - text_sensor.template.publish:
+                id: mqtt_status_text
+                state: "Disabled"
 
 esp32:
   board: ${board_type}
@@ -200,6 +232,58 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
+# Runtime-configurable MQTT, 2026-08-15 direct feedback ("MQTT integráció
+# lehetősége... enabled/disabled a felületen, paraméterek megadva"). Unlike
+# Wi-Fi's own save_wifi_sta()-style runtime reconfiguration, ESPHome's mqtt:
+# component's connection settings (broker/port/username/password) DO have a
+# full public runtime API (MQTTClientComponent::set_broker_address()/
+# set_broker_port()/set_username()/set_password()/enable()/disable() - all
+# public, confirmed against the installed esphome package's own
+# mqtt_client.h) - no fork needed here, unlike web_server_idf's bug-fix fork.
+#
+# broker: is a required field even though it's meaningless until the
+# dashboard sets a real one - enable_on_boot: false is what actually
+# matters, so this placeholder is never connected to. The real broker/port/
+# username/password always come from the persisted text:/number: entities
+# below (see the "MQTT Enabled" switch's turn_on_action for where they're
+# actually applied) - editing water-collector.yaml is never required to
+# use MQTT, exactly as asked.
+#
+# discovery: false - checked the actual generated C++ (`esphome compile`,
+# up through source generation - see REQUIREMENTS.md's own MQTT section
+# for why an actual xtensa build isn't possible in this sandbox) rather
+# than assuming, and found something worth flagging: merely having mqtt:
+# configured at all - regardless of this discovery: setting, confirmed by
+# testing both values - statically allocates one MQTTSensorComponent/
+# MQTTSwitchComponent/etc. PER ENTITY in this project (106 of them,
+# counted from the generated `new(mqtt_...)` calls; disabling discovery
+# only suppresses the HA auto-config topic, it does NOT remove these
+# wrapper objects - ESPHome adds a hidden mqtt_id field to every entity's
+# own schema the moment mqtt: exists anywhere in the YAML, unconditionally).
+# That RAM/flash cost is simply the price of having MQTT at all here, not
+# something this setting controls - noted for the record, not something
+# to chase further, since removing it would mean not having MQTT.
+# discovery: false itself is still the right default though, for a
+# different, more important reason: this project's Home Assistant
+# integration already has its own, established path (the native `api:`
+# above, see REQUIREMENTS.md "Home Assistant adatmodell") - if HA were
+# ALSO pointed at whatever broker this connects to, MQTT discovery would
+# register a second, duplicate copy of every entity in HA. Flip to true
+# only if MQTT-based discovery is actually wanted as well/instead.
+mqtt:
+  id: mqtt_id
+  broker: "0.0.0.0"
+  enable_on_boot: false
+  discovery: false
+  on_connect:
+    - text_sensor.template.publish:
+        id: mqtt_status_text
+        state: "Connected"
+  on_disconnect:
+    - text_sensor.template.publish:
+        id: mqtt_status_text
+        state: "Disconnected"
+
 # RS485 bus to the QDW90A pressure sensors, over the Waveshare
 # ESP32-S3-RS485-CAN board's isolated RS485 interface (see
 # docs/hardver/esp32-s3-rs485-can-board.md - GPIO17 TX / GPIO18 RX /
@@ -334,6 +418,19 @@ web_server:
     - id: sorting_group_system
       name: "System"
       sorting_weight: 90
+    # MQTT settings (2026-08-15, direct feedback: "MQTT integration
+    # possibility... enabled/disabled from the interface, parameters like
+    # username/password, MQTT server, token, etc.") - its own group,
+    # after "System", rather than folded into it: distinct enough (a
+    # whole settings sub-form, not a single action/readout) to read
+    # better with its own heading. See web/dashboard.js's own
+    # `entity.groupName === "MQTT"` special-case for why this still
+    # renders on the "System" page despite not being sorting_group_system
+    # itself - grouping (this heading) and page placement (System vs.
+    # Devices) are two independent things in this dashboard.
+    - id: sorting_group_mqtt
+      name: "MQTT"
+      sorting_weight: 100
 
 # Wi-Fi credentials are deliberately absent here (see REQUIREMENTS.md
 # "Hálózat és biztonság"): the device boots with none configured, and gets
@@ -645,6 +742,24 @@ text_sensor:
         sorting_group_id: sorting_group_system
         sorting_weight: 50
 
+  # Driven by mqtt:'s own on_connect:/on_disconnect: triggers above -
+  # direct, at-a-glance feedback on whether the last connection attempt
+  # (with whatever broker/credentials are currently saved) actually
+  # succeeded, per the explicit request ("legyen visszajelzés a jó/
+  # nemjó connectionről"). "Disabled" (not just silence) while MQTT
+  # Enabled is off - set by that switch's own turn_off_action below, not
+  # by mqtt: itself (which has no "disabled" concept of its own, only
+  # connected/disconnected).
+  - platform: template
+    id: mqtt_status_text
+    name: "MQTT Status"
+    icon: "mdi:server-network"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 50
+
 switch:
   # Turns the "modbus" log tag (include/rs485_modbus.h) up to
   # VERY_VERBOSE - raw request/reply hex dumps for every Modbus
@@ -675,6 +790,60 @@ switch:
       - logger.set_level:
           level: DEBUG
           tag: "modbus"
+
+  # Master on/off for MQTT - direct feedback, 2026-08-15: "enabled/
+  # disabled a felületen... Disabled törli a felvitt paramétereket"
+  # (enable/disable from the interface... Disabled clears the entered
+  # parameters). turn_on_action applies whatever's currently in the
+  # Broker/Port/Username/(stored) Password fields below and connects;
+  # turn_off_action disconnects AND wipes all four back to blank/1883 -
+  # a real reset, not just a pause, matching that request literally.
+  # restore_mode: reconnecting after a reboot isn't this switch's own
+  # job (a template switch's restored state is purely cosmetic - it
+  # doesn't re-fire turn_on_action just because the restored value
+  # happens to be true) - see esphome: on_boot: above for the actual
+  # reconnect-on-boot logic, which reads this switch's restored state
+  # and drives the same lambda this turn_on_action runs.
+  - platform: template
+    id: mqtt_enabled_switch
+    name: "MQTT Enabled"
+    icon: "mdi:server-network"
+    entity_category: config
+    disabled_by_default: true
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 10
+    turn_on_action:
+      - lambda: |-
+          id(mqtt_id).set_broker_address(id(mqtt_broker_text).state);
+          id(mqtt_id).set_broker_port((uint16_t) id(mqtt_port_number).state);
+          id(mqtt_id).set_username(id(mqtt_username_text).state);
+          id(mqtt_id).set_password(id(mqtt_password_stored).state);
+          id(mqtt_id).enable();
+      - text_sensor.template.publish:
+          id: mqtt_status_text
+          state: "Connecting…"
+    turn_off_action:
+      - lambda: id(mqtt_id).disable();
+      - text.set:
+          id: mqtt_broker_text
+          value: ""
+      - text.set:
+          id: mqtt_username_text
+          value: ""
+      - text.set:
+          id: mqtt_password_stored
+          value: ""
+      - number.set:
+          id: mqtt_port_number
+          value: 1883
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+      - text_sensor.template.publish:
+          id: mqtt_status_text
+          state: "Disabled"
 
 button:
   # entity_category: config, same as it's always been - the dashboard's
@@ -901,6 +1070,113 @@ text:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 10
 
+  # MQTT broker hostname/IP - plain, visible, persisted directly
+  # (restore_value: true) like Display Name - not sensitive the way the
+  # password is, no special handling needed. Applied on the next "MQTT
+  # Enabled" toggle-on (see that switch's turn_on_action above), not
+  # live on every keystroke - matches this project's established pattern
+  # for multi-field settings that should be committed together (Reading/
+  # Update, Add Name/Add Target Address/Add), not one field at a time.
+  - platform: template
+    id: mqtt_broker_text
+    name: "MQTT Broker"
+    icon: "mdi:server-network"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    min_length: 0
+    max_length: 64
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 20
+
+  - platform: template
+    id: mqtt_username_text
+    name: "MQTT Username"
+    icon: "mdi:account"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    min_length: 0
+    max_length: 64
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 30
+
+  # The REAL, persisted password - entity_category: config but never
+  # rendered directly (internal: true - excluded from web_server's own
+  # REST/SSE surface entirely, see web_server.cpp's own include_internal_
+  # check, confirmed by reading the installed esphome package's source),
+  # only ever reached via id() from a lambda. This is the actual
+  # plaintext-in-flash storage the user explicitly confirmed acceptable,
+  # 2026-08-15 ("a jelszó titkosítatlanul kerül a flash-be... elfogadható")
+  # - MQTT client auth needs the real password at every connect, not a
+  # one-way hash (unlike a login password, ld. REQUIREMENTS.md's own
+  # "MQTT-integráció" section for the fuller reasoning).
+  - platform: template
+    id: mqtt_password_stored
+    name: "MQTT Password (Stored)"
+    mode: password
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    min_length: 0
+    max_length: 64
+    internal: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+
+  # The VISIBLE password field the user actually types into - deliberately
+  # write-only: restore_value: false (nothing to restore - this field's
+  # own persisted state is never the source of truth) and its set_action
+  # copies the typed value into mqtt_password_stored above, then resets
+  # itself back to blank via publish_state("") (NOT text.set - that would
+  # re-invoke this very set_action with the empty string, wiping the
+  # password it just copied a moment earlier). Net effect: the field
+  # reads blank on every page load/reconnect, exactly the "never shows it
+  # filled in, write-only" behavior confirmed acceptable - see this
+  # project's REQUIREMENTS.md for the one honest caveat this doesn't
+  # cover (the typed value still appears once, in plaintext, in the set
+  # request's own body/SSE echo - inherent to how ESPHome's web_server
+  # REST API works, not something client-side masking can hide, and not
+  # a new exposure beyond this dashboard's already-accepted "local
+  # network only, no login, no TLS" threat model).
+  - platform: template
+    id: mqtt_password_text
+    name: "MQTT Password"
+    icon: "mdi:key"
+    mode: password
+    optimistic: true
+    restore_value: false
+    initial_value: ""
+    min_length: 0
+    max_length: 64
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          id(mqtt_password_stored).make_call().set_value(x).perform();
+      - delay: 10ms
+      - lambda: |-
+          global_preferences->sync();
+          id(mqtt_password_text).publish_state("");
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 40
+
 number:
   # Set by the dashboard immediately before pressing "Pressure Sensors
   # Add" - see that button's own comment. Not persisted: transient,
@@ -921,6 +1197,28 @@ number:
     web_server:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 15
+
+  # 1883 = the standard unencrypted MQTT port (matches this dashboard's
+  # own no-TLS threat model - see mqtt_password_text's own comment).
+  - platform: template
+    id: mqtt_port_number
+    name: "MQTT Port"
+    icon: "mdi:server-network"
+    mode: box
+    min_value: 1
+    max_value: 65535
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 1883
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: sorting_group_mqtt
+      sorting_weight: 25
 
 packages:
   # friendly_name is deliberately generic ("Pulse Meter 1/2", not "Main"/
