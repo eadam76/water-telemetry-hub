@@ -108,11 +108,15 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
     eyeOff:
       '<path d="M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M6.6 6.7C4.1 8.4 2 12 2 12s3.5 7 10 7a10 10 0 0 0 3.4-.6M17.4 17.4C19.9 15.7 22 12 22 12a17 17 0 0 0-4-4.9"/>',
-    // Header MQTT status icon (updateMqttStatusIcon() below) - two
-    // "server" bars linked by a line, a generic-enough "broker
-    // connection" glyph rather than anything MQTT-logo-specific.
+    // Header MQTT status icon (updateMqttStatusIcon() below) - broadcast
+    // arcs fanning from the bottom-left corner of a rounded square,
+    // matching the reference image the user sent 2026-08-15 (the
+    // general MQTT "broadcast mark" shape) - drawn in this app's own
+    // thin-stroke outline style rather than as a filled badge, to stay
+    // consistent with every other icon here instead of introducing one
+    // solid-fill glyph.
     mqttNode:
-      '<rect x="7" y="3" width="10" height="6" rx="1.5"/><rect x="7" y="15" width="10" height="6" rx="1.5"/><path d="M12 9v6"/><circle cx="12" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="18" r="1" fill="currentColor" stroke="none"/>',
+      '<rect x="2" y="2" width="20" height="20" rx="4"/><path d="M5 19a11 11 0 0 1 11-11"/><path d="M5 14.5a6.5 6.5 0 0 1 6.5-6.5"/><path d="M5 10a2 2 0 0 1 2-2"/>',
   };
   // Keyed on the group's real (compile-time) name, never on its
   // renameable Display Name override (CR "generic naming") - so a rename
@@ -475,6 +479,35 @@
     }
     entity.btnEl.dataset.weight = entity.groupWeight ?? 500;
     reorderDiagActions(group);
+  }
+
+  // "MQTT Connect"/"MQTT Disconnect" - unlike Reboot Device/Forget Wi-Fi
+  // above, these render INSIDE the "MQTT" group's own single settings
+  // card (group.fields, not group.actions), side by side, as the last
+  // row - direct feedback, 2026-08-15: "A megnyílt komponens csoport
+  // alján legyen a két gomb egymás mellett. Az attribútumokat ne tedd
+  // külön dobozba, az egész szépen egy doboz legyen attribútumokkal és
+  // két gombbal" (the two buttons should sit side by side at the bottom
+  // of the opened component group; don't put the fields in separate
+  // boxes, the whole thing should be one nice box with fields and two
+  // buttons). A shared row div (not a .dc-field - plain buttons, no
+  // label) holds both; created once, on whichever of the two entities
+  // happens to render first, with a fixed high sort weight so it always
+  // lands last regardless of arrival order.
+  function upsertMqttActionButton(entity) {
+    const group = ensureDiagGroup(entity.groupName ?? FALLBACK_GROUP);
+    if (!group.mqttButtonRow) {
+      group.mqttButtonRow = el("div", "dc-mqtt-button-row dc-field-span-2");
+      group.mqttButtonRow.dataset.weight = "1000";
+      group.fields.appendChild(group.mqttButtonRow);
+    }
+    if (!entity.btnEl) {
+      entity.btnEl = el("button", "dc-btn", entity.name);
+      entity.btnEl.type = "button";
+      entity.btnEl.addEventListener("click", () => pressButton(entity));
+      group.mqttButtonRow.appendChild(entity.btnEl);
+    }
+    reorderServiceFields(group);
   }
 
   // --- Service page: calibration fields + device action buttons --------
@@ -1880,13 +1913,26 @@
   // sub-form (buildDeviceAddRow() above), which is what the old
   // upsertNewPulseMeterRow() used to be.
   //
-  // Status is a simple two-state affair, deliberately different from a
-  // pressure slot's OK/Lost/Collision/Checking - a local GPIO pulse
-  // counter has no "unreachable" failure mode to report at all (see
-  // flashPulseMeterActivity() below for the other half: a brief flash on
-  // top of this steady badge whenever a real pulse arrives, direct
-  // feedback, 2026-08-13 - "a green dot" for configured, "a green dot
-  // with a ring" for a pulse just landing).
+  // Status, revised 2026-08-15 (direct feedback: a pulse meter's badge
+  // was always the single word "Ready" regardless of anything actually
+  // happening - "csak ready (nem látom értelmét)", didn't see the point).
+  // Deliberately still NOT the pressure slot's OK/Lost/Collision/Checking
+  // set - a local GPIO pulse counter genuinely has no "unreachable"
+  // failure mode to report (same reasoning as before, 2026-08-13) - but
+  // now reflects actual flow instead of a constant word, using exactly
+  // the signal the user's own suggestion pointed at ("mutatjuk hogy
+  // aktív mert volt pulse, de amikor lenullázzuk a flow-t akkor
+  // valamiféle várakozást mutatunk"): "Flowing" (status-good green)
+  // while Pulse Rate is nonzero, "Idle" (neutral gray, the same tone as
+  // Modbus's own "Checking…"/"New" - not the alarm-colored Lost, since
+  // no flow is completely normal, not a fault) once the water_meter.yaml
+  // zero-flow watchdog has zeroed it back out - see
+  // updatePulseMeterStatus() below, driven off the "Pulse Rate" entity's
+  // own value on every update. flashPulseMeterActivity() below still
+  // layers its brief per-pulse ring on top of whichever of the two this
+  // is showing - the two mechanisms answer different questions ("is flow
+  // currently happening" vs. "did a pulse just land right now") and
+  // read fine together.
   //
   // Reading/Update/Zero-Flow Timeout live in a second, detail <tr> that
   // only exists in the DOM while this row is being edited - opened by
@@ -1926,7 +1972,11 @@
       nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
 
-      const status = el("span", "dc-pressure-badge dc-pressure-badge-ok", "Ready");
+      // Starts "Idle"/pending - the honest default before this meter's
+      // own "Pulse Rate" update has arrived at all (every entity's state
+      // is sent on connect, so in practice this is corrected within the
+      // first SSE batch either way - see updatePulseMeterStatus() below).
+      const status = el("span", "dc-pressure-badge dc-pressure-badge-pending", "Idle");
       row.querySelector(".dc-pressure-status").appendChild(status);
       row._statusEl = status;
 
@@ -2239,6 +2289,24 @@
     );
   }
 
+  // Drives the registered row's own status badge (see
+  // upsertRegisteredPulseMeterRow()'s comment above for the full
+  // reasoning) off "Pulse Rate"'s own value - already the exact signal
+  // water_meter.yaml's zero-flow watchdog itself zeroes back out once
+  // Zero-Flow Timeout elapses since the last pulse (see that field's own
+  // comment there), so no new backend entity was needed for this: a
+  // nonzero Pulse Rate means water is actively flowing right now, zero
+  // means either it never has (a freshly added meter) or the watchdog
+  // just zeroed it back out - both read the same, honest way, as "Idle".
+  function updatePulseMeterStatus(groupName, pulseRate) {
+    const row = deviceTableRows.get("reg:" + groupName);
+    if (!row || !row._statusEl) return;
+    const flowing = typeof pulseRate === "number" && pulseRate > 0;
+    row._statusEl.textContent = flowing ? "Flowing" : "Idle";
+    row._statusEl.classList.toggle("dc-pressure-badge-ok", flowing);
+    row._statusEl.classList.toggle("dc-pressure-badge-pending", !flowing);
+  }
+
   // Pulse Rate/Total Pulses/Sort Order never get a System-page row -
   // direct feedback, 2026-08-15: raw/uncalibrated diagnostic clutter, one
   // per registered meter, with no counterpart for pressure sensors (which
@@ -2258,6 +2326,7 @@
     if (!isPulseMeterRegistered(entity.groupName)) return;
     const label = displayName(entity);
     if (label === "Total Pulses") flashPulseMeterActivity(entity.groupName); // side effect only, even though the row itself is now suppressed below
+    if (label === "Pulse Rate") updatePulseMeterStatus(entity.groupName, entity.value); // side effect only, same reasoning
     if (label === "Reading" || label === "Update" || label === "Zero-Flow Timeout") {
       upsertPulseMeterExpandedField(entity, label);
       return;
@@ -2511,6 +2580,14 @@
     const on = entity.value === true;
     entity.toggleEl.classList.toggle("dc-toggle-on", on);
     entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
+    // "MQTT Enabled" is the one field in this group that's ALWAYS shown,
+    // even collapsed - see .dc-mqtt-collapsed in dashboard.css and
+    // updateMqttFieldsVisibility() below, which is what everything else
+    // in the group hides behind until this is on ("az enabled-re
+    // nyíljanak meg csak a komponensek", direct feedback, 2026-08-15).
+    if (label === "MQTT Enabled") {
+      entity.el.classList.add("dc-mqtt-toggle-field");
+    }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
   }
@@ -2776,28 +2853,30 @@
     // Connect/Disconnect) - 2026-08-15, same reasoning as Reboot Device/
     // Forget Wi-Fi just above: this isn't about any one device row, it
     // belongs with the rest of the "System" info/actions, not the
-    // Devices table. The field-domain entities (number/switch/text) need
-    // real inputs, so they route through the normal upsertService*()
-    // field-builders - just pointed at ensureDiagGroup instead of their
+    // Devices table. The field-domain entities (switch/text) need real
+    // inputs, so they route through the normal upsertService*() field-
+    // builders - just pointed at ensureDiagGroup instead of their
     // Devices-page default (ensureServiceGroup), rendering into that
     // group's own .dc-fields area (see ensureDiagGroup()'s own comment).
-    // The two buttons (Connect/Disconnect) instead go through
-    // upsertDiagButton() - the same compact-action-row renderer Reboot
-    // Device/Forget Wi-Fi already use, not a settings field. "MQTT
-    // Status" (a plain diagnostic text_sensor) needs no special-casing
-    // at all - entity_category: diagnostic already routes it to
-    // upsertDiagRow() below, in the same group, for free.
+    // The two buttons (Connect/Disconnect) go through
+    // upsertMqttActionButton() - a single shared side-by-side row inside
+    // that SAME card, not upsertDiagButton()'s separate compact-action
+    // row (Reboot Device/Forget Wi-Fi's own pattern) - direct feedback,
+    // 2026-08-15, see that function's own comment. "MQTT Status" (a
+    // plain diagnostic text_sensor) needs no special-casing at all -
+    // entity_category: diagnostic already routes it to upsertDiagRow()
+    // below, in the same group, for free.
     if (entity.groupName === "MQTT") {
-      if (entity.domain === "number") upsertServiceNumber(entity, ensureDiagGroup);
-      else if (entity.domain === "switch") upsertServiceSwitch(entity, ensureDiagGroup);
+      if (entity.domain === "switch") upsertServiceSwitch(entity, ensureDiagGroup);
       else if (entity.domain === "text") upsertServiceText(entity, ensureDiagGroup);
-      else if (entity.domain === "button") upsertDiagButton(entity);
+      else if (entity.domain === "button") upsertMqttActionButton(entity);
       else upsertDiagRow(entity); // the "MQTT Status" text_sensor
       // Only "MQTT Enabled" (switch) and "MQTT Status" (text_sensor)
-      // actually change what this shows, but re-running it on every MQTT
-      // entity update is a cheap no-op the rest of the time - simpler
-      // than threading a label check through here too.
+      // actually change what either of these shows, but re-running them
+      // on every MQTT entity update is a cheap no-op the rest of the
+      // time - simpler than threading a label check through here too.
       updateMqttStatusIcon();
+      updateMqttFieldsVisibility();
       return;
     }
     const page = pageFor(entity);
@@ -2973,6 +3052,20 @@
     const status = (statusEntity && statusEntity.value) || "";
     wrap.classList.toggle("dc-mqtt-connected", status === "Connected");
     wrap.title = `MQTT: ${status || "unknown"}`;
+  }
+
+  // Collapses the "MQTT" card down to just the "MQTT Enabled" toggle
+  // (.dc-mqtt-toggle-field, upsertServiceSwitch()'s own special-case)
+  // until it's actually on - direct feedback, 2026-08-15: "az enabled-re
+  // nyíljanak meg csak a komponensek" (only on Enabled should the other
+  // components open up). See .dc-mqtt-collapsed in dashboard.css for the
+  // actual hide/show rule this toggles.
+  function updateMqttFieldsVisibility() {
+    const group = diagGroups.get("MQTT");
+    if (!group) return;
+    const enabledEntity = mqttEntity("MQTT Enabled");
+    const enabled = !!enabledEntity && enabledEntity.value === true;
+    group.fields.classList.toggle("dc-mqtt-collapsed", !enabled);
   }
 
   function selectPage(id) {

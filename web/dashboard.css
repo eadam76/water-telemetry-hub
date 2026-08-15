@@ -656,22 +656,66 @@ body {
 }
 
 /* "MQTT" group's own fields area (ensureDiagGroup() in dashboard.js) -
- * 2 columns instead of the generic 1-per-row stack every other group's
- * .dc-fields uses, so Username/Password can sit side by side while
- * Broker/Topic Prefix (.dc-field-span-2, upsertServiceText()'s own
- * special-case) each still take the full row - direct feedback,
- * 2026-08-15. Below ~420px (a narrow phone) collapses back to a single
- * column - two side-by-side text inputs get uncomfortably cramped
- * before that, same breakpoint reasoning as other narrow-viewport rules
- * in this file. */
+ * ONE bordered card for the whole group, not a separate .dc-field box
+ * per field - direct feedback, 2026-08-15: "Az attribútumokat ne tedd
+ * külön dobozba, az egész szépen egy doboz legyen attribútumokkal és két
+ * gombbal" (don't put the fields in separate boxes, the whole thing
+ * should be one nice box with the fields and two buttons). The card
+ * itself carries the border/background/padding .dc-field normally would;
+ * individual fields inside it are stripped back down to bare label+input
+ * rows (below). Internally a 2-column grid so Username/Password can sit
+ * side by side while Broker/Topic Prefix/the button row
+ * (.dc-field-span-2) each take the full width - direct feedback, same
+ * round. Below ~420px (a narrow phone) collapses to a single column -
+ * two side-by-side text inputs get uncomfortably cramped before that,
+ * same breakpoint reasoning as other narrow-viewport rules in this file. */
 .dc-fields-mqtt {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px 12px;
+  background: var(--dc-surface);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  padding: 14px 16px;
+}
+
+.dc-fields-mqtt .dc-field {
+  background: none;
+  border: none;
+  padding: 0;
 }
 
 .dc-fields-mqtt .dc-field-span-2 {
   grid-column: 1 / -1;
+}
+
+/* Collapsed (MQTT Enabled is off, updateMqttFieldsVisibility() in
+ * dashboard.js) - only the toggle field itself (.dc-mqtt-toggle-field)
+ * stays visible; every other field and the button row hide, and the
+ * card's own grid/gap collapses down to just that one row so it doesn't
+ * leave a tall empty card behind - direct feedback, 2026-08-15: "az
+ * enabled-re nyíljanak meg csak a komponensek" (only on Enabled should
+ * the other components open up). */
+.dc-fields-mqtt.dc-mqtt-collapsed {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.dc-fields-mqtt.dc-mqtt-collapsed .dc-field:not(.dc-mqtt-toggle-field),
+.dc-fields-mqtt.dc-mqtt-collapsed .dc-mqtt-button-row {
+  display: none;
+}
+
+/* Connect/Disconnect - a plain flex row, evenly split, at the bottom of
+ * the card (see upsertMqttActionButton()'s own comment for why these
+ * aren't .dc-field-wrapped like every other field here). */
+.dc-mqtt-button-row {
+  display: flex;
+  gap: 10px;
+}
+
+.dc-mqtt-button-row .dc-btn {
+  flex: 1 1 0;
 }
 
 @media (max-width: 420px) {
@@ -904,6 +948,22 @@ body {
   min-width: 0;
 }
 
+/* Number fields here (Modbus Address, Reading, Zero-Flow Timeout) are all
+ * short, fixed-format values - direct feedback, 2026-08-15: "az
+ * attibútumok kompenesei túl szélesek. Igazodjon a beviteli mező
+ * adattípusához" (the attribute fields are too wide, should size to the
+ * input field's own data type) - stretching them the full remaining row
+ * width (the plain rule above, still what a free-text field like a name
+ * would actually want) read as oversized for a 3-6 digit number. Fixed,
+ * capped width instead - comfortably fits "247" (Modbus Address, 1-247),
+ * a liters/m³ Reading, or a Zero-Flow Timeout in seconds, with room to
+ * keep typing past that without the field itself trying to fill the
+ * card. */
+.dc-pulsemeter-expanded-field input[type="number"] {
+  flex: 0 0 auto;
+  width: 100px;
+}
+
 .dc-pulsemeter-expanded-field .dc-btn.dc-btn-compact {
   flex: 0 0 auto;
 }
@@ -1049,11 +1109,16 @@ body {
  * confirmed on real hardware, 2026-08-13 (a *different* symptom, from
  * before this round, but the same underlying reason this stays on <td>). */
 .dc-pressure-table td {
-  /* Tighter than the original 10px 12px (2026-08-15, direct feedback:
-     rows read as too spread out for what's meant to feel like a compact
-     data table) - still comfortably tappable on a phone, just closer to
-     how GitHub/Linear/Notion-style dense tables actually space rows. */
-  padding: 7px 12px;
+  /* Tightened twice now, both times direct feedback, both times "still
+     too thick/not table-like enough" (2026-08-15: first 10px 12px -> 7px
+     12px, then this pass, 7px 12px -> 4px 10px) - the read-only row's
+     actual content is now a plain text line (disabled inputs lost their
+     box entirely, see the :disabled rule above) plus a couple of small
+     icon buttons, so the cell padding is what's left doing the "how
+     dense does this look" work; still comfortably tappable on a phone at
+     this size (row height is really set by the icon buttons' own 4px
+     padding below, not this). */
+  padding: 4px 10px;
   background: var(--dc-surface);
   border-top: 1px solid var(--dc-border-subtle);
 }
@@ -1072,6 +1137,31 @@ body {
   padding: 7px 9px;
   font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input above */
   min-width: 0;
+  transition: background-color 0.1s ease, border-color 0.1s ease, padding 0.1s ease;
+}
+
+/* A locked (disabled, not currently being edited) row should read as
+ * plain table text, not as a form full of bordered input boxes - direct
+ * feedback, 2026-08-15: "A táblázat nekem még mindig nem táblázat
+ * jellegű, túl vaskos" (still doesn't feel table-like, too bulky/thick),
+ * the same GitHub/Linear/Notion-style dense-table comparison already
+ * cited above. A disabled input can't be focused at all, so there's no
+ * iOS-zoom risk in dropping back to the table's own compact 13.5px font
+ * here either (the 16px above only matters for a field that can actually
+ * be typed into). Higher specificity than the plain rule above (adds
+ * [type=...] and :disabled), wins regardless of source order - and than
+ * `.dc-pressure-table input:disabled` below (adds [type=...]), so the
+ * opacity dimming that rule applies elsewhere doesn't leak in here and
+ * fight this explicit opacity: 1. */
+.dc-pressure-table input[type="text"]:disabled,
+.dc-pressure-table input[type="number"]:disabled {
+  background: none;
+  border-color: transparent;
+  padding-left: 0;
+  padding-right: 0;
+  font-size: 13.5px;
+  opacity: 1;
+  color: var(--dc-text);
 }
 
 /* A scan-discovered/collision row's known address - folded into the Name
@@ -1137,12 +1227,16 @@ body {
 }
 
 .dc-pressure-order-btn {
-  padding: 2px;
+  /* Trimmed alongside .dc-pressure-icon-btn's own padding cut above -
+     two of these stack in one cell (Up/Down), so this pair was the
+     actual tallest element setting each row's height; same row-thinning
+     pass, 2026-08-15. */
+  padding: 1px;
 }
 
 .dc-pressure-order-btn svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 /* Status indicator - dot + text, deliberately NOT pill/button-shaped
@@ -1200,15 +1294,19 @@ body {
   color: var(--dc-danger);
 }
 
-/* A pulse meter's steady "Ready" badge (upsertRegisteredPulseMeterRow() -
- * always .dc-pressure-badge-ok once registered, a local GPIO pulse
- * counter has no "unreachable" concept) gains this ring, briefly, on top
- * of the dot whenever a real pulse actually lands - see
+/* A pulse meter's own status badge (upsertRegisteredPulseMeterRow()/
+ * updatePulseMeterStatus() in dashboard.js - "Flowing"/ok while Pulse
+ * Rate is nonzero, "Idle"/pending once it isn't, revised 2026-08-15, see
+ * that function's own comment; a local GPIO pulse counter still has no
+ * "unreachable" concept, so neither state is the alarm-colored Lost)
+ * gains this ring, briefly, on top of whichever dot it's currently
+ * showing, whenever a real pulse actually lands - see
  * flashPulseMeterActivity() in dashboard.js. Direct feedback, 2026-08-13:
  * "configured" (steady dot) and "a pulse just arrived" (dot + ring) need
  * to read as visibly different states, not the same badge. Grows/fades a
  * ring in currentColor around the dot rather than changing its color -
- * keeps "Ready" itself unambiguous throughout.
+ * keeps whichever text/color the badge is already showing unambiguous
+ * throughout.
  *
  * Deliberately no color-mix() (2026-08-13, revised - the first version
  * used it in the "from" keyframe to start the ring semi-transparent):
@@ -1244,7 +1342,13 @@ body {
   background: none;
   border: none;
   color: var(--dc-text-muted);
-  padding: 6px;
+  /* Trimmed from 6px alongside the row-thinning pass above (2026-08-15) -
+     these are the tallest thing left in a read-only row now that the
+     disabled name field lost its own box, so they're what actually caps
+     how thin a row can get. Still a full 24px+ tap target with the 16px
+     icon, comfortably above the ~24px minimum most touch-target
+     guidelines call for. */
+  padding: 4px;
   line-height: 1;
   cursor: pointer;
   display: inline-flex;
