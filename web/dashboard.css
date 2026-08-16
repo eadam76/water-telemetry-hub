@@ -316,14 +316,16 @@ body {
   transition: color 0.2s;
 }
 
+/* Fill-based, not stroke-based like every other icon in this file - the
+ * real MQTT logo (ICONS.mqttNode, dashboard.js) is solid-filled path
+ * data, not a stroked outline, and re-tracing it as thin strokes was the
+ * actual cause of the "blurry at small size" look reported 2026-08-16 -
+ * thin curved strokes anti-alias poorly at 17px, filled shapes don't. */
 #dc-mqtt-status svg {
-  width: 17px;
-  height: 17px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+  stroke: none;
 }
 
 #dc-mqtt-status.dc-mqtt-connected {

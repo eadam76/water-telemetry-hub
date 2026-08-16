@@ -20,6 +20,31 @@
 # `mqtt: !include packages/mqtt.yaml` line in water-collector.yaml's own
 # `packages:` section - no other edits needed anywhere else in the project.
 #
+# Follow-up, 2026-08-16, direct feedback on a second boot log showing the
+# same spam even with this package still included (expected, since it was
+# still included by default - not a bug on its own): "nem is kéne
+# futásidőben ezekkel foglalkoznia, ha mqtt enabled" (it shouldn't be
+# dealing with these at runtime unless MQTT is enabled) - worth being
+# precise about what's actually true here, since it's easy to conflate two
+# different things. The `[C]`-level dump_config() lines below are NOT a
+# runtime "is MQTT active" check - EVERY ESPHome component logs its own
+# static configuration exactly once during setup(), unconditionally,
+# purely because it was compiled in, regardless of any runtime toggle
+# (our own "MQTT Enabled" switch is a pure dashboard/YAML concept the C++
+# component itself has no notion of). That part is standard ESPHome
+# behavior, not a bug, and not something a YAML-level "if enabled" could
+# gate - the code that logs it doesn't know about our switch at all.
+# What IS fixable, and done here: the `logger: logs:` map below lowers
+# these specific MQTT wrapper tags' own log level to WARN, so their
+# CONFIG-level dump_config() spam is filtered out at the source (the
+# logging macro itself checks the tag's level before ever building/
+# emitting the line - this isn't just hiding it from one output, nothing
+# gets logged at all), while genuine `[W]`/`[E]` runtime problems (e.g. an
+# actual broker connection failure) still show, since those are at or
+# above the WARN threshold. This keeps MQTT itself fully usable - unlike
+# commenting out the `packages:` include above, which removes the feature
+# entirely - it only silences the one-time boot-config printout.
+#
 # Everything below is otherwise unchanged from its previous inline form -
 # see each entity's own comment for the fuller design reasoning (runtime
 # broker/credentials via MQTTClientComponent's public API, no separate Port
@@ -178,6 +203,29 @@ mqtt:
     - text_sensor.template.publish:
         id: mqtt_status_text
         state: "Disconnected"
+
+# Silences the MQTT wrapper components' own one-time boot dump_config()
+# spam (~200 lines, see this file's own header comment) without touching
+# MQTT's actual runtime behavior at all - see that comment for the full
+# "why this is the right fix, and what it isn't" reasoning. Merges into
+# water-collector.yaml's own top-level `logger:` block (which has no
+# `logs:` key of its own) via ESPHome's packages: dict-merge, the same
+# mechanism every other key in this file relies on. Every tag a `[C]`-
+# level MQTT wrapper line in a real boot log used any of - `mqtt` itself
+# plus one per wrapped domain - confirmed against that log line by line,
+# not guessed. WARN (not NONE): still lets a genuine connection problem
+# surface as a `[W]`/`[E]` line from the same tags, only the routine
+# CONFIG-level printout is gone.
+logger:
+  logs:
+    mqtt: WARN
+    mqtt.sensor: WARN
+    mqtt.binary_sensor: WARN
+    mqtt.switch: WARN
+    mqtt.text: WARN
+    mqtt.text_sensor: WARN
+    mqtt.number: WARN
+    mqtt.button: WARN
 
 text_sensor:
   # Driven by mqtt:'s own on_connect:/on_disconnect: triggers above -

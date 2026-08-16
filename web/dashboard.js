@@ -108,15 +108,22 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
     eyeOff:
       '<path d="M3 3l18 18"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M6.6 6.7C4.1 8.4 2 12 2 12s3.5 7 10 7a10 10 0 0 0 3.4-.6M17.4 17.4C19.9 15.7 22 12 22 12a17 17 0 0 0-4-4.9"/>',
-    // Header MQTT status icon (updateMqttStatusIcon() below) - broadcast
-    // arcs fanning from the bottom-left corner of a rounded square,
-    // matching the reference image the user sent 2026-08-15 (the
-    // general MQTT "broadcast mark" shape) - drawn in this app's own
-    // thin-stroke outline style rather than as a filled badge, to stay
-    // consistent with every other icon here instead of introducing one
-    // solid-fill glyph.
+    // Header MQTT status icon (updateMqttStatusIcon() below) - the real
+    // MQTT project logo (broadcast arcs fanning from the bottom-left
+    // corner), not a hand-drawn approximation - direct feedback,
+    // 2026-08-16: the first attempt (redrawn in this app's own thin-
+    // stroke style from the user's own reference screenshot) looked
+    // "blurry"/low quality at the small 17px header size, which thin
+    // strokes on curved arcs are genuinely prone to. This is the exact,
+    // official path data from the Simple Icons project (simpleicons.org,
+    // slug "mqtt" - MIT/CC0-licensed icon set, fetched via `npm pack
+    // simple-icons` since the direct CDN was blocked by this sandbox's
+    // network policy), a solid fill shape rather than a stroked outline -
+    // see the matching fill-based override on #dc-mqtt-status svg in
+    // dashboard.css, since every other icon in this file is stroke-based
+    // and needs the opposite treatment.
     mqttNode:
-      '<rect x="2" y="2" width="20" height="20" rx="4"/><path d="M5 19a11 11 0 0 1 11-11"/><path d="M5 14.5a6.5 6.5 0 0 1 6.5-6.5"/><path d="M5 10a2 2 0 0 1 2-2"/>',
+      '<path d="M10.657 23.994h-9.45A1.212 1.212 0 0 1 0 22.788v-9.18h.071c5.784 0 10.504 4.65 10.586 10.386Zm7.606 0h-4.045C14.135 16.246 7.795 9.977 0 9.942V6.038h.071c9.983 0 18.121 8.044 18.192 17.956Zm4.53 0h-.97C21.754 12.071 11.995 2.407 0 2.372v-1.16C0 .55.544.006 1.207.006h7.64C15.733 2.49 21.257 7.789 24 14.508v8.291c0 .663-.544 1.195-1.207 1.195ZM16.713.006h6.092A1.19 1.19 0 0 1 24 1.2v5.914c-.91-1.242-2.046-2.65-3.158-3.762C19.588 2.11 18.122.987 16.714.005Z"/>',
   };
   // Keyed on the group's real (compile-time) name, never on its
   // renameable Display Name override (CR "generic naming") - so a rename
@@ -2255,18 +2262,21 @@
   // pulse so a burst of fast pulses keeps the ring lit continuously
   // instead of flickering off between them.
   const pulseFlashTimers = new Map();
+  // Last "Total Pulses" value actually seen per meter, checked by
+  // flashPulseMeterActivity()'s own caller below - see that call site's
+  // comment for why this is needed, direct feedback, 2026-08-16.
+  const lastSeenTotalPulses = new Map();
 
-  // The "pulse just landed" ring on top of the steady "Ready" badge (see
+  // The "pulse just landed" ring on top of the steady status badge (see
   // upsertRegisteredPulseMeterRow()'s own comment - direct feedback,
   // 2026-08-13: distinguish "configured" from "a pulse is actually
   // arriving right now"). Driven off "Total Pulses" - the diagnostic,
   // always-sent readout of the persisted pulse_count (water_meter.yaml)
-  // - which only ever updates on a genuine accumulated pulse, not on a
-  // timer, so a change here really does mean "a pulse just happened", not
-  // just "some unrelated poll ran". One caveat, accepted for now (see
-  // REQUIREMENTS.md): the very first "Total Pulses" update right after
-  // Add/boot (seeding from the persisted checkpoint, not a fresh pulse)
-  // also flashes once - harmless, and self-corrects on the next real one.
+  // - which only ever INCREMENTS on a genuine accumulated pulse, not on a
+  // timer. One caveat, accepted for now (see REQUIREMENTS.md): the very
+  // first "Total Pulses" update right after Add/boot (seeding from the
+  // persisted checkpoint, not a fresh pulse) also flashes once - harmless,
+  // and self-corrects on the next real one.
   function flashPulseMeterActivity(groupName) {
     const row = deviceTableRows.get("reg:" + groupName);
     if (!row || !row._statusEl) return;
@@ -2325,7 +2335,20 @@
   function renderPulseMeterCalibrationEntity(entity) {
     if (!isPulseMeterRegistered(entity.groupName)) return;
     const label = displayName(entity);
-    if (label === "Total Pulses") flashPulseMeterActivity(entity.groupName); // side effect only, even though the row itself is now suppressed below
+    // Bug, direct feedback, 2026-08-16: the status badge flashed even on
+    // an Up/Down reorder (a "Sort Order" change), and sometimes on its
+    // own at unpredictable moments - both traced to the SAME cause:
+    // renderPulseMeterEntity() below re-runs every entity in this group
+    // through this function on ANY of them changing (Sort Order, a
+    // reorder; Pulse Rate, the zero-flow watchdog zeroing it out; etc),
+    // not just when "Total Pulses" itself has a fresh value - so this
+    // used to fire the flash on every one of those re-visits too, even
+    // though Total Pulses hadn't actually moved. Fixed by only flashing
+    // when the value genuinely differs from the last one actually seen.
+    if (label === "Total Pulses" && lastSeenTotalPulses.get(entity.groupName) !== entity.value) {
+      lastSeenTotalPulses.set(entity.groupName, entity.value);
+      flashPulseMeterActivity(entity.groupName);
+    }
     if (label === "Pulse Rate") updatePulseMeterStatus(entity.groupName, entity.value); // side effect only, same reasoning
     if (label === "Reading" || label === "Update" || label === "Zero-Flow Timeout") {
       upsertPulseMeterExpandedField(entity, label);
