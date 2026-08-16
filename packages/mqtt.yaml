@@ -60,22 +60,18 @@
 esphome:
   includes:
     - include/mqtt_broker_url.h
-  # MQTT reconnect-on-boot, revised 2026-08-15 (direct feedback):
-  # "reboot után automatikusan kell kapcsolódnia ha már egyszer
-  # connectált. Ha disconnectáltunk kézzel akkor reboot után se
-  # connectáljon" (should reconnect automatically after a reboot if it
-  # was ever connected; if manually disconnected, it shouldn't reconnect
-  # after a reboot either) - gated on mqtt_want_connected (globals:
-  # above), NOT on "MQTT Enabled" (that switch no longer means "should
-  # be connected", see its own comment, switch: below) - "MQTT Connect"
-  # sets that flag true, "MQTT Disconnect" and "MQTT Enabled"'s own
-  # turn_off_action both set it false (button:/switch: sections below).
-  # priority: 200 (AFTER_WIFI, esphome/core/component.h's own
-  # setup_priority table) - deliberately after wifi:'s own setup (250),
-  # not before: MQTT client auth needs actual Wi-Fi first. Same
-  # connect-lambda body as the "MQTT Connect" button's own on_press - kept
-  # in sync manually, no shared action macro available for a plain
-  # lambda across two YAML sites.
+  # MQTT reconnect-on-boot: "reboot után automatikusan kell kapcsolódnia
+  # ha már egyszer connectált. Ha disconnectáltunk kézzel akkor reboot
+  # után se connectáljon" (should reconnect automatically after a reboot
+  # if it was ever connected; if manually disconnected, it shouldn't
+  # reconnect after a reboot either) - gated on mqtt_want_connected
+  # (globals: above), NOT directly on "MQTT Enabled"'s own switch state
+  # (which doesn't survive a reboot the way this dedicated flag does) -
+  # the switch's own turn_on_action sets it true, turn_off_action sets it
+  # false (switch: section below). priority: 200 (AFTER_WIFI, esphome/
+  # core/component.h's own setup_priority table) - deliberately after
+  # wifi:'s own setup (250), not before: MQTT client auth needs actual
+  # Wi-Fi first.
   on_boot:
     priority: 200
     then:
@@ -94,38 +90,29 @@ esphome:
           if (id(mqtt_topic_prefix_text).state.empty()) {
             id(mqtt_topic_prefix_text).publish_state("${device_name}");
           }
+      # Simplified 2026-08-16 (was a second, hand-duplicated copy of the
+      # "MQTT Enabled" switch's own connect logic, "kept in sync
+      # manually" - now there's only one copy, on that switch's own
+      # turn_on_action, see switch: below) - reconnect-on-boot is now
+      # just "flip the same switch a real Enable press would flip".
       - if:
           condition:
             lambda: 'return id(mqtt_want_connected);'
           then:
-            - lambda: |-
-                std::string mqtt_host;
-                uint16_t mqtt_port;
-                mqtt_broker_url::parse(id(mqtt_broker_text).state, mqtt_host, mqtt_port);
-                id(mqtt_id).set_broker_address(mqtt_host);
-                id(mqtt_id).set_broker_port(mqtt_port);
-                id(mqtt_id).set_username(id(mqtt_username_text).state);
-                id(mqtt_id).set_password(id(mqtt_password_stored).state);
-                id(mqtt_id).set_topic_prefix(id(mqtt_topic_prefix_text).state, "${device_name}");
-                id(mqtt_id).enable();
             - switch.turn_on: mqtt_enabled_switch
-            - text_sensor.template.publish:
-                id: mqtt_status_text
-                state: "Connecting…"
 
 globals:
   # Whether MQTT should reconnect automatically on the NEXT boot - direct
-  # feedback, 2026-08-15: "reboot után automatikusan kell kapcsolódnia ha
-  # már egyszer connectált. Ha disconnectáltunk kézzel akkor reboot után
-  # se connectáljon" (should reconnect automatically after a reboot if it
+  # feedback: "reboot után automatikusan kell kapcsolódnia ha már egyszer
+  # connectált. Ha disconnectáltunk kézzel akkor reboot után se
+  # connectáljon" (should reconnect automatically after a reboot if it
   # was ever connected; if manually disconnected, it shouldn't reconnect
-  # after a reboot either). Deliberately NOT the same thing as "MQTT
-  # Enabled" (that switch is now purely a reset/clear toggle, see its own
-  # comment, switch: below) - this tracks intent-to-be-connected instead:
-  # set true by "MQTT Connect", set false by "MQTT Disconnect" and by
-  # "MQTT Enabled"'s own turn_off_action (button:/switch: sections
-  # below). restore_value: true so it actually survives the reboot it's
-  # meant to be checked on (esphome: on_boot: above).
+  # after a reboot either). A separate, dedicated, `restore_value: true`
+  # flag rather than just reading "MQTT Enabled"'s own state directly -
+  # set true/false by that switch's own turn_on_action/turn_off_action
+  # (switch: section below), so it survives a reboot the same way (the
+  # switch's own restore_mode is RESTORE_DEFAULT_OFF, which wouldn't by
+  # itself distinguish "was on, should resume" from "starting fresh").
   - id: mqtt_want_connected
     type: bool
     restore_value: true
@@ -143,9 +130,13 @@ web_server:
     # renders on the "System" page despite not being sorting_group_system
     # itself - grouping (this heading) and page placement (System vs.
     # Devices) are two independent things in this dashboard.
+    # Weight 85 - between "Network" (80) and "System" (90), direct
+    # feedback, 2026-08-16 ("az egész elrendezése: network és system közé
+    # ékeljük be" - the whole thing should be wedged between Network and
+    # System). Was 100 (after System) before this.
     - id: sorting_group_mqtt
       name: "MQTT"
-      sorting_weight: 100
+      sorting_weight: 85
 
 # Runtime-configurable MQTT, 2026-08-15 direct feedback ("MQTT integráció
 # lehetősége... enabled/disabled a felületen, paraméterek megadva"). Unlike
@@ -160,8 +151,8 @@ web_server:
 # dashboard sets a real one - enable_on_boot: false is what actually
 # matters, so this placeholder is never connected to. The real broker/
 # username/password/topic prefix always come from the persisted text:
-# entities below, applied by the "MQTT Connect" button's own action (see
-# button: below) - editing water-collector.yaml is never required to use
+# entities below, applied by "MQTT Enabled"'s own turn_on_action (see
+# switch: below) - editing water-collector.yaml is never required to use
 # MQTT, exactly as asked. There's no separate Port field (2026-08-15,
 # direct feedback) - a single "MQTT Broker" field accepts an optional
 # ":port" (or "scheme://host:port") itself, parsed by
@@ -199,10 +190,32 @@ mqtt:
     - text_sensor.template.publish:
         id: mqtt_status_text
         state: "Connected"
+  # Distinguishes a normal, expected disconnect from a genuine failed
+  # connection attempt - direct feedback, 2026-08-16: "reloadra
+  # disconnected jó állapot csak hibás csatlakozás után nem a disconnected
+  # kell hanem a hiba olvasható magyarázata" (on reload "Disconnected" is
+  # a fine state, but after a failed connection it shouldn't say
+  # "Disconnected", it should say a readable explanation of the error).
+  # ESPHome's own ESP-IDF MQTT backend can't tell us anything more
+  # specific than "TCP disconnected" here (confirmed reading
+  # mqtt_backend_esp32.cpp - it hardcodes that reason for every kind of
+  # failure, including the genuinely more specific ESP-TLS error it logs
+  # a few lines earlier but never exposes past its own log line - a
+  # `// TODO is there a way to get the disconnect reason?` in that same
+  # file confirms this is a known, unaddressed upstream gap, not
+  # something a YAML-level lambda can reach without forking that file)
+  # - so this can't surface e.g. "wrong port" or "bad password"
+  # specifically, but it CAN reliably tell "you just pressed Disable"
+  # (mqtt_enabled_switch is already off by the time this fires - its own
+  # turn_off_action publishes "Disabled" first) apart from "still
+  # enabled, but the session just dropped or never connected" (a real
+  # problem worth a distinct message, whether that's a first connect
+  # attempt failing or an established session dropping later).
   on_disconnect:
-    - text_sensor.template.publish:
-        id: mqtt_status_text
-        state: "Disconnected"
+    - lambda: |-
+        if (id(mqtt_enabled_switch).state) {
+          id(mqtt_status_text).publish_state("Connection lost - check broker/port/credentials");
+        }
 
 # Silences the MQTT wrapper components' own one-time boot dump_config()
 # spam (~200 lines, see this file's own header comment) without touching
@@ -247,18 +260,44 @@ text_sensor:
       sorting_weight: 50
 
 switch:
-  # Master feature toggle for MQTT - reworked 2026-08-15, direct feedback:
-  # this switch no longer connects/disconnects by itself (that's the new
-  # "MQTT Connect"/"MQTT Disconnect" buttons below, button: section) -
-  # "enabled/disabled a felületen... Disabled törli a felvitt
-  # paramétereket, [de] így az enabled csak a komponenseket kapcsolná be
-  # vagy ki" (enable/disable from the interface... Disabled clears the
-  # entered parameters, so Enabled would just turn the components on or
-  # off). turn_on_action is now a no-op (nothing to apply - Connect does
-  # that); turn_off_action still disconnects AND wipes every field back
-  # to blank - the one remaining "hard reset" behavior, kept exactly as
-  # before. Also driven by dashboard.js's header MQTT status icon (shown
-  # at all only while this is on - see that icon's own comment).
+  # Master Enable/Disable for MQTT - CONSOLIDATED, 2026-08-16, direct
+  # feedback ("bal oldalt a státusz alatt enable/disable gomb... jobb
+  # oldalt státusz mezőben ki tudjuk írni: connected/disconnected/
+  # disabled" - on the left, below status, an enable/disable BUTTON [not
+  # a slider - the button-vs-slider part is purely dashboard.js's own
+  # rendering choice for this same switch entity, no YAML change needed
+  # for that]; on the right, the status field shows connected/
+  # disconnected/disabled). This switch is now the ONE thing that both
+  # applies the saved connection fields AND connects/disconnects -
+  # merging back in what the separate "MQTT Connect"/"MQTT Disconnect"
+  # buttons used to do (introduced "Huszonnegyedik kör" specifically to
+  # split this apart, since AT THE TIME "Enabled" meant something
+  # narrower - a pure reset toggle; that distinction is gone now that
+  # Enable/Disable IS the primary action again, so the separate buttons
+  # became pure duplication and are removed).
+  #
+  # turn_on_action: id(mqtt_id).disable() BEFORE re-applying credentials
+  # and calling enable() - direct feedback, 2026-08-16, a real bug:
+  # "hiba után... kétszer is kellett kattintani a connect gombra" (after
+  # an error, had to click Connect twice) - confirmed reading ESPHome's
+  # own mqtt_client.cpp: MQTTClientComponent::enable() is a NO-OP unless
+  # the client is currently in the DISABLED state (`if (this->state_ !=
+  # MQTT_CLIENT_DISABLED) return;`) - so pressing this again after a
+  # failed attempt (state is DISCONNECTED/CONNECTING, never DISABLED)
+  # silently did nothing until whatever automatic retry the client was
+  # already going to do anyway happened to fire, which read as "had to
+  # click twice" (really: "the first click didn't do what it looked like
+  # it should"). disable() forces state_ back to DISABLED first, so the
+  # following enable() is guaranteed to actually start a fresh connection
+  # attempt with whatever's currently in the fields, every single press.
+  #
+  # turn_off_action no longer wipes the saved fields (Broker/Username/
+  # Password/Topic Prefix) - that was the OLD "Enabled = reset toggle"
+  # behavior, which doesn't fit a plain Disable action now that this is
+  # the primary connect/disconnect control; a full field-clear would be
+  # an unpleasant surprise on a simple "stop connecting for now" press.
+  # If a hard reset is ever wanted again, that's a separate feature to
+  # design, not implied by this one.
   - platform: template
     id: mqtt_enabled_switch
     name: "MQTT Enabled"
@@ -270,52 +309,9 @@ switch:
     web_server:
       sorting_group_id: sorting_group_mqtt
       sorting_weight: 10
-    turn_off_action:
+    turn_on_action:
       - lambda: |-
           id(mqtt_id).disable();
-          id(mqtt_want_connected) = false;
-      - text.set:
-          id: mqtt_broker_text
-          value: ""
-      - text.set:
-          id: mqtt_username_text
-          value: ""
-      - text.set:
-          id: mqtt_password_stored
-          value: ""
-      - text.set:
-          id: mqtt_topic_prefix_text
-          value: "${device_name}"
-      - delay: 10ms
-      - lambda: |-
-          global_preferences->sync();
-          id(mqtt_password_text).publish_state("");
-      - text_sensor.template.publish:
-          id: mqtt_status_text
-          state: "Disabled"
-
-button:
-  # New, 2026-08-15, direct feedback: "Kéne egy connect gomb és csak
-  # arra csatlakozna" (there should be a Connect button, and it would
-  # only connect on that [press]) - MQTT never connects on its own
-  # anymore (see "MQTT Enabled"'s own comment, switch: above, for why
-  # that switch stopped driving the connection itself). Also flips "MQTT
-  # Enabled" on, so its own displayed state (and the header status icon,
-  # dashboard.js) stays in sync with "this is actively in use".
-  # mqtt_broker_url::parse() (include/mqtt_broker_url.h) is what lets a
-  # single "MQTT Broker" field carry an optional ":port" - no separate
-  # Port field to keep in sync.
-  - platform: template
-    name: "MQTT Connect"
-    icon: "mdi:server-network"
-    entity_category: config
-    disabled_by_default: true
-    web_server:
-      sorting_group_id: sorting_group_mqtt
-      sorting_weight: 15
-    on_press:
-      - switch.turn_on: mqtt_enabled_switch
-      - lambda: |-
           std::string mqtt_host;
           uint16_t mqtt_port;
           mqtt_broker_url::parse(id(mqtt_broker_text).state, mqtt_host, mqtt_port);
@@ -326,32 +322,15 @@ button:
           id(mqtt_id).set_topic_prefix(id(mqtt_topic_prefix_text).state, "${device_name}");
           id(mqtt_id).enable();
           // Remembered across a reboot (globals: mqtt_want_connected
-          // above) - direct feedback, 2026-08-15: a connected session
-          // should resume automatically after a reboot, an explicitly
-          // disconnected one shouldn't.
+          // above) - a connected session should resume automatically
+          // after a reboot, an explicitly disabled one shouldn't.
           id(mqtt_want_connected) = true;
       - text_sensor.template.publish:
           id: mqtt_status_text
           state: "Connecting…"
       - delay: 10ms
       - lambda: global_preferences->sync();
-
-  # Stops MQTT without touching any saved field - contrast "MQTT
-  # Enabled"'s turn_off_action just above, which also wipes everything.
-  # Pressing Connect again afterward resumes with the same broker/
-  # credentials, no retyping needed. Also clears mqtt_want_connected
-  # (globals: above) - a reboot after an explicit Disconnect must NOT
-  # reconnect on its own, same direct feedback as the Connect button's
-  # own comment.
-  - platform: template
-    name: "MQTT Disconnect"
-    icon: "mdi:server-network-off"
-    entity_category: config
-    disabled_by_default: true
-    web_server:
-      sorting_group_id: sorting_group_mqtt
-      sorting_weight: 16
-    on_press:
+    turn_off_action:
       - lambda: |-
           id(mqtt_id).disable();
           id(mqtt_want_connected) = false;
@@ -359,13 +338,13 @@ button:
       - lambda: global_preferences->sync();
       - text_sensor.template.publish:
           id: mqtt_status_text
-          state: "Disconnected"
+          state: "Disabled"
 
 text:
   # MQTT broker - plain, visible, persisted directly (restore_value:
   # true) like Display Name - not sensitive the way the password is, no
-  # special handling needed. Applied on the next "MQTT Connect" press
-  # (button: below), not live on every keystroke - matches this
+  # special handling needed. Applied the next time "MQTT Enabled" is
+  # turned on (switch: below), not live on every keystroke - matches this
   # project's established pattern for multi-field settings that should
   # be committed together (Reading/Update, Add Name/Add Target Address/
   # Add), not one field at a time. No separate Port field (2026-08-15,

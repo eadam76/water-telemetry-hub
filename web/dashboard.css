@@ -538,6 +538,14 @@ body {
   margin-top: 14px;
 }
 
+/* Empty for the "MQTT" group now that its own Status/Enable-Disable live
+ * in .dc-mqtt-header instead (2026-08-16 redesign) - without this, the
+ * fixed margin-top above still opened a blank gap even with nothing
+ * inside. */
+.dc-diag-actions:empty {
+  margin-top: 0;
+}
+
 /* --- Service page: calibration + device actions --- */
 
 .dc-service-group {
@@ -657,20 +665,82 @@ body {
   color: var(--dc-text);
 }
 
-/* "MQTT" group's own fields area (ensureDiagGroup() in dashboard.js) -
- * ONE bordered card for the whole group, not a separate .dc-field box
- * per field - direct feedback, 2026-08-15: "Az attribútumokat ne tedd
- * külön dobozba, az egész szépen egy doboz legyen attribútumokkal és két
- * gombbal" (don't put the fields in separate boxes, the whole thing
- * should be one nice box with the fields and two buttons). The card
- * itself carries the border/background/padding .dc-field normally would;
- * individual fields inside it are stripped back down to bare label+input
- * rows (below). Internally a 2-column grid so Username/Password can sit
- * side by side while Broker/Topic Prefix/the button row
- * (.dc-field-span-2) each take the full width - direct feedback, same
- * round. Below ~420px (a narrow phone) collapses to a single column -
- * two side-by-side text inputs get uncomfortably cramped before that,
- * same breakpoint reasoning as other narrow-viewport rules in this file. */
+/* "MQTT" group's own header row (ensureMqttHeader() in dashboard.js) -
+ * REPLACES the plain .dc-list "Status" row and the toggle-pill "MQTT
+ * Enabled" field this group used to render through the generic paths
+ * every other group still uses - direct feedback, 2026-08-16: "Bal
+ * oldalt a státusz alatt enable/disable gomb (slider helyett) jobb
+ * oldalt státusz mezőben ki tudjuk írni: connected/disconnected/
+ * disabled" (left: below the status [caption], an enable/disable
+ * BUTTON, not a slider; right: the status field shows connected/
+ * disconnected/disabled). Left side is a small caption ("Status") with
+ * the Enable/Disable and "MQTT Settings" buttons stacked right below it;
+ * right side is the live status value, vertically centered against the
+ * whole row so it doesn't look pinned to just the caption or just the
+ * buttons. */
+.dc-mqtt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.dc-mqtt-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dc-mqtt-header-caption {
+  font-size: 13.5px;
+  color: var(--dc-text-muted);
+}
+
+.dc-mqtt-header-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+/* Same value styling as .dc-list-row .v (font-weight/wrap behavior) -
+ * this row replaces that one for this group, so it should still read
+ * like the same kind of "status readout" the rest of the System page
+ * uses. */
+.dc-mqtt-header-right {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  font-size: 13.5px;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Pressed/"currently on" look for a compact button that toggles a
+ * persistent state (Enable/Disable's own current value, or whether the
+ * settings panel is open) - the accent fill .dc-btn already uses on
+ * :hover, just not requiring the pointer to still be over it. */
+.dc-btn.dc-btn-active {
+  background: var(--dc-accent);
+  color: var(--dc-bg);
+}
+
+/* "MQTT" group's own settings fields area (ensureDiagGroup() in
+ * dashboard.js) - ONE bordered card for the whole group, not a separate
+ * .dc-field box per field - direct feedback, 2026-08-15: "Az
+ * attribútumokat ne tedd külön dobozba, az egész szépen egy doboz legyen
+ * attribútumokkal és két gombbal" (don't put the fields in separate
+ * boxes, the whole thing should be one nice box with the fields and the
+ * button[s]). The card itself carries the border/background/padding
+ * .dc-field normally would; individual fields inside it are stripped
+ * back down to bare label+input rows (below). Internally a 2-column grid
+ * so Username/Password can sit side by side while Broker/Topic Prefix/
+ * the Save button (.dc-field-span-2) each take the full width - direct
+ * feedback, same round. Below ~420px (a narrow phone) collapses to a
+ * single column - two side-by-side text inputs get uncomfortably cramped
+ * before that, same breakpoint reasoning as other narrow-viewport rules
+ * in this file. */
 .dc-fields-mqtt {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -679,6 +749,7 @@ body {
   border: 1px solid var(--dc-border);
   border-radius: var(--dc-radius);
   padding: 14px 16px;
+  margin-top: 14px;
 }
 
 .dc-fields-mqtt .dc-field {
@@ -691,33 +762,16 @@ body {
   grid-column: 1 / -1;
 }
 
-/* Collapsed (MQTT Enabled is off, updateMqttFieldsVisibility() in
- * dashboard.js) - only the toggle field itself (.dc-mqtt-toggle-field)
- * stays visible; every other field and the button row hide, and the
- * card's own grid/gap collapses down to just that one row so it doesn't
- * leave a tall empty card behind - direct feedback, 2026-08-15: "az
- * enabled-re nyíljanak meg csak a komponensek" (only on Enabled should
- * the other components open up). */
+/* Collapsed (the "MQTT Settings" button is off, updateMqttFieldsVisibility()
+ * in dashboard.js) - client-side only now, entirely independent of
+ * whether MQTT itself is enabled (2026-08-16 redesign - previously tied
+ * to "MQTT Enabled", see this rule's own history). Collapses away to
+ * nothing (not even the card's own border/padding) rather than showing
+ * an empty box, since opening it is now a deliberate, separate action
+ * ("MQTT Settings" gomb), not something that should visibly reserve
+ * space while closed. */
 .dc-fields-mqtt.dc-mqtt-collapsed {
-  grid-template-columns: 1fr;
-  gap: 0;
-}
-
-.dc-fields-mqtt.dc-mqtt-collapsed .dc-field:not(.dc-mqtt-toggle-field),
-.dc-fields-mqtt.dc-mqtt-collapsed .dc-mqtt-button-row {
   display: none;
-}
-
-/* Connect/Disconnect - a plain flex row, evenly split, at the bottom of
- * the card (see upsertMqttActionButton()'s own comment for why these
- * aren't .dc-field-wrapped like every other field here). */
-.dc-mqtt-button-row {
-  display: flex;
-  gap: 10px;
-}
-
-.dc-mqtt-button-row .dc-btn {
-  flex: 1 1 0;
 }
 
 @media (max-width: 420px) {

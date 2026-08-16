@@ -500,32 +500,107 @@
     reorderDiagActions(group);
   }
 
-  // "MQTT Connect"/"MQTT Disconnect" - unlike Reboot Device/Forget Wi-Fi
-  // above, these render INSIDE the "MQTT" group's own single settings
-  // card (group.fields, not group.actions), side by side, as the last
-  // row - direct feedback, 2026-08-15: "A megnyílt komponens csoport
-  // alján legyen a két gomb egymás mellett. Az attribútumokat ne tedd
-  // külön dobozba, az egész szépen egy doboz legyen attribútumokkal és
-  // két gombbal" (the two buttons should sit side by side at the bottom
-  // of the opened component group; don't put the fields in separate
-  // boxes, the whole thing should be one nice box with fields and two
-  // buttons). A shared row div (not a .dc-field - plain buttons, no
-  // label) holds both; created once, on whichever of the two entities
-  // happens to render first, with a fixed high sort weight so it always
-  // lands last regardless of arrival order.
-  function upsertMqttActionButton(entity) {
-    const group = ensureDiagGroup(entity.groupName ?? FALLBACK_GROUP);
-    if (!group.mqttButtonRow) {
-      group.mqttButtonRow = el("div", "dc-mqtt-button-row dc-field-span-2");
-      group.mqttButtonRow.dataset.weight = "1000";
-      group.fields.appendChild(group.mqttButtonRow);
+  // Whether the "MQTT Settings" button (ensureMqttHeader() below) has the
+  // connection-fields card open - purely client-side UI state, 2026-08-16
+  // redesign, deliberately NOT tied to "MQTT Enabled" itself anymore (the
+  // OLD behavior, see .dc-mqtt-collapsed's own history in dashboard.css) -
+  // direct feedback: "enable/disable gomb mellé kell egy MQTT settings
+  // gomb -> erre nyílik csak ki a connection adatai blokk" (next to the
+  // enable/disable button there needs an "MQTT Settings" button - THIS is
+  // the only thing that opens the connection-details block).
+  let mqttSettingsOpen = false;
+
+  // The "MQTT" group's own bespoke header row - REPLACES the generic
+  // .dc-list "Status" row (upsertDiagRow) and the toggle-pill "MQTT
+  // Enabled" field (upsertServiceSwitch) this group used to render
+  // through, with the layout directly requested, 2026-08-16: "Bal oldalt
+  // a státusz alatt enable/disable gomb (slider helyett) jobb oldalt
+  // státusz mezőben ki tudjuk írni: connected/disconnected/disabled...
+  // enable/disable gomb mellé kell egy MQTT settings gomb" (left: below
+  // the status [caption], an enable/disable BUTTON, not a slider; right:
+  // the status field shows connected/disconnected/disabled; next to the
+  // enable/disable button, an "MQTT Settings" button). Built once; the
+  // switch/text_sensor updates below (updateMqttEnableButton()/
+  // updateMqttStatusText()) just fill in already-existing pieces of it,
+  // same "skeleton built once, upserted into" pattern used throughout
+  // this file (e.g. upsertRegisteredPulseMeterRow()'s expand row).
+  function ensureMqttHeader(group) {
+    if (group.mqttHeader) return group.mqttHeader;
+    const header = el("div", "dc-mqtt-header");
+    const left = el("div", "dc-mqtt-header-left");
+    left.appendChild(el("span", "dc-mqtt-header-caption", "Status"));
+    const buttons = el("div", "dc-mqtt-header-buttons");
+    const enableBtn = el("button", "dc-btn dc-btn-compact", "Enable");
+    enableBtn.type = "button";
+    const settingsBtn = el("button", "dc-btn dc-btn-compact", "MQTT Settings");
+    settingsBtn.type = "button";
+    settingsBtn.addEventListener("click", () => {
+      mqttSettingsOpen = !mqttSettingsOpen;
+      updateMqttFieldsVisibility();
+    });
+    buttons.append(enableBtn, settingsBtn);
+    left.appendChild(buttons);
+    const right = el("div", "dc-mqtt-header-right");
+    header.append(left, right);
+    // Between `list`/`actions` (both empty for this group now) and
+    // `fields` (the settings card) - group.section's own child order.
+    group.section.insertBefore(header, group.fields);
+    group.mqttHeader = header;
+    group.mqttEnableBtn = enableBtn;
+    group.mqttSettingsBtn = settingsBtn;
+    group.mqttStatusEl = right;
+    return header;
+  }
+
+  // "MQTT Enabled"'s own button text/pressed-look - not a toggle-pill
+  // anymore (see ensureMqttHeader() above) - the click handler is wired
+  // once, here, closing over this SAME entity object (mutated in place
+  // on every later update, same convention every other click handler in
+  // this file relies on - e.g. upsertServiceSwitch()'s own toggle).
+  function updateMqttEnableButton(entity, group) {
+    if (!group.mqttEnableWired) {
+      group.mqttEnableBtn.addEventListener("click", () => {
+        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+      });
+      group.mqttEnableWired = true;
     }
-    if (!entity.btnEl) {
-      entity.btnEl = el("button", "dc-btn", entity.name);
-      entity.btnEl.type = "button";
-      entity.btnEl.addEventListener("click", () => pressButton(entity));
-      group.mqttButtonRow.appendChild(entity.btnEl);
-    }
+    const on = entity.value === true;
+    group.mqttEnableBtn.textContent = on ? "Disable" : "Enable";
+    group.mqttEnableBtn.classList.toggle("dc-btn-active", on);
+  }
+
+  // "MQTT Status" text_sensor's own value, straight into the header
+  // row's right-hand side - no special formatting, the string itself
+  // ("Connecting…"/"Connected"/"Connection lost - ..."/"Disabled") is
+  // already meant to be read directly (see packages/mqtt.yaml's own
+  // comments on that entity for what publishes each one).
+  function updateMqttStatusText(entity, group) {
+    group.mqttStatusEl.textContent = entity.value || "";
+  }
+
+  // A single "Save" button at the bottom of the settings card - direct
+  // feedback, 2026-08-16: "ennek az alján Save vagy OK gomb becsukja a
+  // blokkot" (at the bottom of this, a Save or OK button closes the
+  // block). Purely a UI action, no server round-trip of its own: every
+  // field in the card already commits its own value on change (each
+  // one's own set_action, same "commit per field, not per keystroke"
+  // pattern as Reading/Update etc. elsewhere) - Save's only job is
+  // closing mqttSettingsOpen back down. If MQTT is already Enabled and
+  // you want a just-edited Broker/Username/Password to actually take
+  // effect on the live connection, Disable then Enable again applies it
+  // (matches how the whole app treats "these fields, this action" as two
+  // separate, deliberate steps rather than instant-on-every-keystroke).
+  function ensureMqttSaveButton(group) {
+    if (group.mqttSaveBtn) return;
+    const saveBtn = el("button", "dc-btn dc-field-span-2", "Save");
+    saveBtn.type = "button";
+    saveBtn.dataset.weight = "1000";
+    saveBtn.addEventListener("click", () => {
+      mqttSettingsOpen = false;
+      updateMqttFieldsVisibility();
+    });
+    group.fields.appendChild(saveBtn);
+    group.mqttSaveBtn = saveBtn;
     reorderServiceFields(group);
   }
 
@@ -2555,7 +2630,25 @@
       // down for the fuller writeup of everywhere this hit.
       if (entity.groupName === "MQTT" && label === "Password") {
         input.type = "password";
-        input.autocomplete = "new-password";
+        // Actively discourage the browser's own password-manager
+        // suggestion/autofill UI on this field - direct feedback,
+        // 2026-08-16 ("password mezőre tudjuk tiltani a jelszókezelő
+        // felajánlását?"). autocomplete="new-password" (the previous
+        // value here) is the OPPOSITE of what's wanted - that's the
+        // standard hint sites use to specifically INVITE Chrome's "here's
+        // a strong password" suggestion bubble, not suppress it. "off",
+        // a `name` that doesn't look like a real account password field,
+        // and the handful of third-party manager-specific ignore
+        // attributes below are the most a plain masked input can do
+        // without giving up native `type="password"` masking entirely -
+        // no single attribute reliably suppresses every manager in every
+        // browser.
+        input.autocomplete = "off";
+        input.name = "mqtt-broker-secret";
+        input.setAttribute("data-lpignore", "true"); // LastPass
+        input.setAttribute("data-1p-ignore", "true"); // 1Password
+        input.setAttribute("data-bwignore", "true"); // Bitwarden
+        input.setAttribute("data-form-type", "other"); // generic heuristic managers
         // The resting value is either "" or the fixed dots placeholder
         // (never the real password) - clearing on focus means typing
         // always starts fresh, instead of the browser inserting new
@@ -2563,14 +2656,25 @@
         input.addEventListener("focus", () => {
           if (input.value === MQTT_PASSWORD_PLACEHOLDER) input.value = "";
         });
-        const eyeBtn = el("button", "dc-field-eye-btn", svgIcon("eye"));
+        // Explicit state, not re-derived from input.type on every click
+        // (direct feedback, 2026-08-16: "néha tudok beírni, de nem látom
+        // a logikát" - sometimes I can type in, but I don't see the
+        // logic behind it) - a plain boolean can't drift out of sync
+        // with what's actually on screen. Icon reflects the CURRENT
+        // visibility, per the user's own direct correction ("szerintem
+        // fordítva van a csukott/nyitott szem" - I think the closed/open
+        // eye is backwards): a closed/crossed eye while masked (nothing
+        // to see right now), a plain open eye while revealed (you're
+        // looking at it right now) - swapped from the previous version.
+        let revealed = false;
+        const eyeBtn = el("button", "dc-field-eye-btn", svgIcon("eyeOff"));
         eyeBtn.type = "button";
         eyeBtn.setAttribute("aria-label", "Show password");
         eyeBtn.addEventListener("click", () => {
-          const revealing = input.type === "password";
-          input.type = revealing ? "text" : "password";
-          eyeBtn.innerHTML = svgIcon(revealing ? "eyeOff" : "eye");
-          eyeBtn.setAttribute("aria-label", revealing ? "Hide password" : "Show password");
+          revealed = !revealed;
+          input.type = revealed ? "text" : "password";
+          eyeBtn.innerHTML = svgIcon(revealed ? "eye" : "eyeOff");
+          eyeBtn.setAttribute("aria-label", revealed ? "Hide password" : "Show password");
         });
         row.appendChild(eyeBtn);
       }
@@ -2631,33 +2735,6 @@
     const on = entity.value === true;
     entity.toggleEl.classList.toggle("dc-toggle-on", on);
     entity.toggleEl.setAttribute("aria-checked", on ? "true" : "false");
-    // "MQTT Enabled" is the one field in this group that's ALWAYS shown,
-    // even collapsed - see .dc-mqtt-collapsed in dashboard.css and
-    // updateMqttFieldsVisibility() below, which is what everything else
-    // in the group hides behind until this is on ("az enabled-re
-    // nyíljanak meg csak a komponensek", direct feedback, 2026-08-15).
-    //
-    // THE BUG, found 2026-08-16 (direct feedback: "mqtt enabled gomb
-    // nincs is" - the toggle isn't even there): this checked
-    // `label === "MQTT Enabled"`, but `label` is displayName(entity)'s
-    // STRIPPED value - and this entity's own group is itself named
-    // "MQTT", so displayName() strips the "MQTT " prefix off its name
-    // the exact same way it strips "Pulse Meter 1 " off "Pulse Meter 1
-    // Display Name" for that group - meaning `label` here was ALWAYS
-    // "Enabled", never "MQTT Enabled", and this branch never once ran.
-    // The fallout was worse than just a missing class: mqttEntity()
-    // below has this exact same bug in its own lookup, so
-    // updateMqttFieldsVisibility()'s "is MQTT Enabled on?" check always
-    // read false regardless of the real switch state - the card
-    // collapsed on every render, AND the one field meant to stay exempt
-    // from collapsing (this one) never got the class that would have
-    // exempted it either. Net effect: an always-empty, always-collapsed
-    // card with nothing in it at all, which is exactly the bare/blank
-    // capsule the user's screenshot showed - not a stale cache after
-    // all. Fixed here and in mqttEntity() together.
-    if (entity.groupName === "MQTT" && label === "Enabled") {
-      entity.el.classList.add("dc-mqtt-toggle-field");
-    }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
     reorderServiceFields(group);
   }
@@ -2919,32 +2996,25 @@
       upsertDiagButton(entity);
       return;
     }
-    // MQTT's settings (Enabled/Broker/Username/Password/Topic Prefix/
-    // Connect/Disconnect) - 2026-08-15, same reasoning as Reboot Device/
-    // Forget Wi-Fi just above: this isn't about any one device row, it
-    // belongs with the rest of the "System" info/actions, not the
-    // Devices table. The field-domain entities (switch/text) need real
-    // inputs, so they route through the normal upsertService*() field-
-    // builders - just pointed at ensureDiagGroup instead of their
-    // Devices-page default (ensureServiceGroup), rendering into that
-    // group's own .dc-fields area (see ensureDiagGroup()'s own comment).
-    // The two buttons (Connect/Disconnect) go through
-    // upsertMqttActionButton() - a single shared side-by-side row inside
-    // that SAME card, not upsertDiagButton()'s separate compact-action
-    // row (Reboot Device/Forget Wi-Fi's own pattern) - direct feedback,
-    // 2026-08-15, see that function's own comment. "MQTT Status" (a
-    // plain diagnostic text_sensor) needs no special-casing at all -
-    // entity_category: diagnostic already routes it to upsertDiagRow()
-    // below, in the same group, for free.
+    // MQTT's settings (Enabled/Broker/Username/Password/Topic Prefix) -
+    // this isn't about any one device row, it belongs with the rest of
+    // the "System" info/actions, not the Devices table. "MQTT Enabled"
+    // (switch) and "MQTT Status" (text_sensor) get their own bespoke
+    // header row (ensureMqttHeader()/updateMqttEnableButton()/
+    // updateMqttStatusText() above) instead of the generic upsertService*()/
+    // upsertDiagRow() paths every other group's fields use - 2026-08-16
+    // redesign, direct feedback, see ensureMqttHeader()'s own comment for
+    // the full layout spec. The text fields (Broker/Username/Password/
+    // Topic Prefix) still go through the normal upsertServiceText() field
+    // builder, just pointed at ensureDiagGroup instead of its Devices-page
+    // default (ensureServiceGroup), into that group's own .dc-fields area.
     if (entity.groupName === "MQTT") {
-      if (entity.domain === "switch") upsertServiceSwitch(entity, ensureDiagGroup);
+      const group = ensureDiagGroup(entity.groupName);
+      ensureMqttHeader(group);
+      ensureMqttSaveButton(group);
+      if (entity.domain === "switch") updateMqttEnableButton(entity, group);
       else if (entity.domain === "text") upsertServiceText(entity, ensureDiagGroup);
-      else if (entity.domain === "button") upsertMqttActionButton(entity);
-      else upsertDiagRow(entity); // the "MQTT Status" text_sensor
-      // Only "MQTT Enabled" (switch) and "MQTT Status" (text_sensor)
-      // actually change what either of these shows, but re-running them
-      // on every MQTT entity update is a cheap no-op the rest of the
-      // time - simpler than threading a label check through here too.
+      else updateMqttStatusText(entity, group); // the "MQTT Status" text_sensor
       updateMqttStatusIcon();
       updateMqttFieldsVisibility();
       return;
@@ -3134,18 +3204,20 @@
     wrap.title = `MQTT: ${status || "unknown"}`;
   }
 
-  // Collapses the "MQTT" card down to just the "MQTT Enabled" toggle
-  // (.dc-mqtt-toggle-field, upsertServiceSwitch()'s own special-case)
-  // until it's actually on - direct feedback, 2026-08-15: "az enabled-re
-  // nyíljanak meg csak a komponensek" (only on Enabled should the other
-  // components open up). See .dc-mqtt-collapsed in dashboard.css for the
-  // actual hide/show rule this toggles.
+  // Shows/hides the settings card based on the "MQTT Settings" button's
+  // own client-side toggle state (mqttSettingsOpen, ensureMqttHeader()
+  // above) - 2026-08-16 redesign, deliberately independent of "MQTT
+  // Enabled" now (see .dc-mqtt-collapsed's own history in dashboard.css
+  // for why that used to be the gate, and stopped being one). See
+  // .dc-mqtt-collapsed in dashboard.css for the actual hide/show rule
+  // this toggles.
   function updateMqttFieldsVisibility() {
     const group = diagGroups.get("MQTT");
     if (!group) return;
-    const enabledEntity = mqttEntity("MQTT Enabled");
-    const enabled = !!enabledEntity && enabledEntity.value === true;
-    group.fields.classList.toggle("dc-mqtt-collapsed", !enabled);
+    group.fields.classList.toggle("dc-mqtt-collapsed", !mqttSettingsOpen);
+    if (group.mqttSettingsBtn) {
+      group.mqttSettingsBtn.classList.toggle("dc-btn-active", mqttSettingsOpen);
+    }
   }
 
   function selectPage(id) {
