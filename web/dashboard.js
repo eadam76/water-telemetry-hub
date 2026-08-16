@@ -58,8 +58,20 @@
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
-    "MQTT Broker": "Host, host:port, or scheme://host:port (e.g. \"homeassistant.local\" or \"homeassistant.local:1884\"). No port given defaults to 1883. MQTT-over-TLS (mqtts://) isn't implemented - a scheme prefix is accepted but doesn't change how the connection is made.",
-    "MQTT Topic Prefix": "Every topic this device publishes/subscribes to starts with this, followed by \"/\". Defaults to the device's own name.",
+    // Keyed "Broker"/"Topic Prefix", NOT "MQTT Broker"/"MQTT Topic
+    // Prefix" - direct feedback, 2026-08-16, tracked down a real bug
+    // this caused: this map is keyed by displayName()'s STRIPPED label
+    // (see this const's own comment above), and every MQTT entity's
+    // group is itself named "MQTT" - so displayName() strips "MQTT "
+    // off "MQTT Broker" etc. the exact same way it strips "Pulse Meter
+    // 1 " off "Pulse Meter 1 Display Name" elsewhere. The full-name keys
+    // that used to be here never matched anything, silently dropping
+    // these two fields' help text - same root cause broke several other
+    // MQTT-specific special-cases below (see upsertServiceSwitch()'s
+    // "Enabled" check and mqttEntity() further down for the fuller
+    // writeup).
+    "Broker": "Host, host:port, or scheme://host:port (e.g. \"homeassistant.local\" or \"homeassistant.local:1884\"). No port given defaults to 1883. MQTT-over-TLS (mqtts://) isn't implemented - a scheme prefix is accepted but doesn't change how the connection is made.",
+    "Topic Prefix": "Every topic this device publishes/subscribes to starts with this, followed by \"/\". Defaults to the device's own name.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Reboot Device (CR #3, previous round): its confirm dialog
     // already explains the consequence when it matters - a permanent "?"
@@ -2522,15 +2534,26 @@
         fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
       });
       entity.inputEl = input;
-      // "MQTT Password" - matched by name, not entity.mode (this field
-      // is mode: text, deliberately not mode: password - see that
-      // field's own comment in water-collector.yaml for why). Masked by
+      // The MQTT password field - matched by name, not entity.mode (this
+      // field is mode: text, deliberately not mode: password - see that
+      // field's own comment in packages/mqtt.yaml for why). Masked by
       // default like any password input, with an eye toggle to reveal
       // what's currently typed (direct feedback, 2026-08-15) - purely a
       // local, client-side reveal of THIS input's current content, never
       // a request to the device for the real stored value (which this
       // dashboard never receives at all, on purpose).
-      if (label === "MQTT Password") {
+      //
+      // Checked against entity.groupName + the STRIPPED label ("Password"),
+      // not the full "MQTT Password" - direct feedback, 2026-08-16, a
+      // real bug: displayName() strips the group name as a prefix off
+      // every entity's name (e.g. "Pulse Meter 1 Display Name" ->
+      // "Display Name"), and this entity's group is itself named "MQTT" -
+      // so `label` here was ALWAYS "Password", never "MQTT Password",
+      // and this whole eye-toggle branch silently never ran. Same root
+      // cause broke the "MQTT Enabled" collapse exemption and the
+      // header status icon - see mqttEntity()'s own comment further
+      // down for the fuller writeup of everywhere this hit.
+      if (entity.groupName === "MQTT" && label === "Password") {
         input.type = "password";
         input.autocomplete = "new-password";
         // The resting value is either "" or the fixed dots placeholder
@@ -2565,8 +2588,13 @@
     // Username/Password's own two half-width rows below them) - see
     // .dc-fields-mqtt in dashboard.css, and ensureDiagGroup()'s own
     // comment for why only the "MQTT" group's fields container is a
-    // grid at all.
-    if (label === "MQTT Broker" || label === "MQTT Topic Prefix") {
+    // grid at all. Stripped labels ("Broker"/"Topic Prefix"), not the
+    // full "MQTT Broker"/"MQTT Topic Prefix" - same displayName()-
+    // stripping bug as the Password check above, confirmed 2026-08-16:
+    // this never matched either, so Broker/Topic Prefix never got their
+    // full-width span and the whole grid likely rendered as an
+    // unintended 2-column jumble instead of the designed layout.
+    if (entity.groupName === "MQTT" && (label === "Broker" || label === "Topic Prefix")) {
       entity.el.classList.add("dc-field-span-2");
     }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
@@ -2608,7 +2636,26 @@
     // updateMqttFieldsVisibility() below, which is what everything else
     // in the group hides behind until this is on ("az enabled-re
     // nyíljanak meg csak a komponensek", direct feedback, 2026-08-15).
-    if (label === "MQTT Enabled") {
+    //
+    // THE BUG, found 2026-08-16 (direct feedback: "mqtt enabled gomb
+    // nincs is" - the toggle isn't even there): this checked
+    // `label === "MQTT Enabled"`, but `label` is displayName(entity)'s
+    // STRIPPED value - and this entity's own group is itself named
+    // "MQTT", so displayName() strips the "MQTT " prefix off its name
+    // the exact same way it strips "Pulse Meter 1 " off "Pulse Meter 1
+    // Display Name" for that group - meaning `label` here was ALWAYS
+    // "Enabled", never "MQTT Enabled", and this branch never once ran.
+    // The fallout was worse than just a missing class: mqttEntity()
+    // below has this exact same bug in its own lookup, so
+    // updateMqttFieldsVisibility()'s "is MQTT Enabled on?" check always
+    // read false regardless of the real switch state - the card
+    // collapsed on every render, AND the one field meant to stay exempt
+    // from collapsing (this one) never got the class that would have
+    // exempted it either. Net effect: an always-empty, always-collapsed
+    // card with nothing in it at all, which is exactly the bare/blank
+    // capsule the user's screenshot showed - not a stale cache after
+    // all. Fixed here and in mqttEntity() together.
+    if (entity.groupName === "MQTT" && label === "Enabled") {
       entity.el.classList.add("dc-mqtt-toggle-field");
     }
     entity.el.dataset.weight = entity.groupWeight ?? 500;
@@ -3058,9 +3105,19 @@
   // than threading two more parameters through render()'s dispatch for
   // something that only needs to run on the rare MQTT-entity update, not
   // on every render.
+  // Looks up an MQTT-group entity by its full, real (compile-time) name
+  // ("MQTT Enabled", "MQTT Status", ...) - deliberately e.name, NOT
+  // displayName(e), confirmed a real bug 2026-08-16: displayName() strips
+  // the group name as a leading-word prefix off an entity's name, and
+  // every entity in this group already starts with "MQTT " because the
+  // group itself is named "MQTT" - so displayName(e) here was always
+  // "Enabled"/"Status"/etc, and every call site below (passing the full
+  // name, matching how this function's own callers read) never found
+  // anything. See upsertServiceSwitch()'s own "Enabled" check for the
+  // fuller writeup of the same root cause and its visible fallout.
   function mqttEntity(label) {
     for (const e of entities.values()) {
-      if (e.groupName === "MQTT" && displayName(e) === label) return e;
+      if (e.groupName === "MQTT" && e.name === label) return e;
     }
     return null;
   }
