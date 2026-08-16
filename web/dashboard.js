@@ -501,26 +501,24 @@
   }
 
   // Whether the "MQTT Settings" button (ensureMqttHeader() below) has the
-  // connection-fields card open - purely client-side UI state, 2026-08-16
-  // redesign, deliberately NOT tied to "MQTT Enabled" itself anymore (the
-  // OLD behavior, see .dc-mqtt-collapsed's own history in dashboard.css) -
-  // direct feedback: "enable/disable gomb mellé kell egy MQTT settings
-  // gomb -> erre nyílik csak ki a connection adatai blokk" (next to the
-  // enable/disable button there needs an "MQTT Settings" button - THIS is
-  // the only thing that opens the connection-details block).
+  // connection-fields card open - purely client-side UI state. Reset to
+  // closed whenever "MQTT Enabled" turns off (updateMqttEnableButton()
+  // below) - once the whole group of components hides, there's nothing
+  // left open to remember.
   let mqttSettingsOpen = false;
 
   // The "MQTT" group's own bespoke header row - REPLACES the generic
   // .dc-list "Status" row (upsertDiagRow) and the toggle-pill "MQTT
-  // Enabled" field (upsertServiceSwitch) this group used to render
-  // through, with the layout directly requested, 2026-08-16: "Bal oldalt
-  // a státusz alatt enable/disable gomb (slider helyett) jobb oldalt
-  // státusz mezőben ki tudjuk írni: connected/disconnected/disabled...
-  // enable/disable gomb mellé kell egy MQTT settings gomb" (left: below
-  // the status [caption], an enable/disable BUTTON, not a slider; right:
-  // the status field shows connected/disconnected/disabled; next to the
-  // enable/disable button, an "MQTT Settings" button). Built once; the
-  // switch/text_sensor updates below (updateMqttEnableButton()/
+  // Enabled"/"MQTT Connect" fields (upsertServiceSwitch) this group used
+  // to render through. Left side: a "Status" caption, then three buttons
+  // below it - Enable/Disable (always shown), and Connect/Disconnect +
+  // "MQTT Settings" (shown only once Enabled is on - direct feedback,
+  // 2026-08-16: "Az enabled csak annyit kell csináljon hogy bekapcsolja a
+  // komponenseket (settings, connect/disconnect, sttings dialog)" -
+  // Enabled should only turn the components on: settings, connect/
+  // disconnect, settings dialog). Right side: the live status value.
+  // Built once; the switch/text_sensor updates below
+  // (updateMqttEnableButton()/updateMqttConnectButton()/
   // updateMqttStatusText()) just fill in already-existing pieces of it,
   // same "skeleton built once, upserted into" pattern used throughout
   // this file (e.g. upsertRegisteredPulseMeterRow()'s expand row).
@@ -532,13 +530,15 @@
     const buttons = el("div", "dc-mqtt-header-buttons");
     const enableBtn = el("button", "dc-btn dc-btn-compact", "Enable");
     enableBtn.type = "button";
+    const connectBtn = el("button", "dc-btn dc-btn-compact", "Connect");
+    connectBtn.type = "button";
     const settingsBtn = el("button", "dc-btn dc-btn-compact", "MQTT Settings");
     settingsBtn.type = "button";
     settingsBtn.addEventListener("click", () => {
       mqttSettingsOpen = !mqttSettingsOpen;
       updateMqttFieldsVisibility();
     });
-    buttons.append(enableBtn, settingsBtn);
+    buttons.append(enableBtn, connectBtn, settingsBtn);
     left.appendChild(buttons);
     const right = el("div", "dc-mqtt-header-right");
     header.append(left, right);
@@ -547,6 +547,7 @@
     group.section.insertBefore(header, group.fields);
     group.mqttHeader = header;
     group.mqttEnableBtn = enableBtn;
+    group.mqttConnectBtn = connectBtn;
     group.mqttSettingsBtn = settingsBtn;
     group.mqttStatusEl = right;
     return header;
@@ -556,7 +557,9 @@
   // anymore (see ensureMqttHeader() above) - the click handler is wired
   // once, here, closing over this SAME entity object (mutated in place
   // on every later update, same convention every other click handler in
-  // this file relies on - e.g. upsertServiceSwitch()'s own toggle).
+  // this file relies on - e.g. upsertServiceSwitch()'s own toggle). Also
+  // the one place that shows/hides the Connect/Disconnect and "MQTT
+  // Settings" buttons - see this function's own header comment above.
   function updateMqttEnableButton(entity, group) {
     if (!group.mqttEnableWired) {
       group.mqttEnableBtn.addEventListener("click", () => {
@@ -567,13 +570,35 @@
     const on = entity.value === true;
     group.mqttEnableBtn.textContent = on ? "Disable" : "Enable";
     group.mqttEnableBtn.classList.toggle("dc-btn-active", on);
+    group.mqttConnectBtn.hidden = !on;
+    group.mqttSettingsBtn.hidden = !on;
+    if (!on) mqttSettingsOpen = false;
+    updateMqttFieldsVisibility();
+  }
+
+  // "MQTT Connect"'s own button text/pressed-look - the actual connect/
+  // disconnect action, direct feedback, 2026-08-16: "legyen egy connect/
+  // disconnect gomb (állapottól függően)" (there should be one connect/
+  // disconnect button, depending on state). Same wire-once-close-over-
+  // entity pattern as updateMqttEnableButton() above.
+  function updateMqttConnectButton(entity, group) {
+    if (!group.mqttConnectWired) {
+      group.mqttConnectBtn.addEventListener("click", () => {
+        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+      });
+      group.mqttConnectWired = true;
+    }
+    const on = entity.value === true;
+    group.mqttConnectBtn.textContent = on ? "Disconnect" : "Connect";
+    group.mqttConnectBtn.classList.toggle("dc-btn-active", on);
   }
 
   // "MQTT Status" text_sensor's own value, straight into the header
   // row's right-hand side - no special formatting, the string itself
-  // ("Connecting…"/"Connected"/"Connection lost - ..."/"Disabled") is
-  // already meant to be read directly (see packages/mqtt.yaml's own
-  // comments on that entity for what publishes each one).
+  // ("Connecting…"/"Connected"/"Connection lost - ..."/"Disconnected"/
+  // "Disabled") is already meant to be read directly (see
+  // packages/mqtt.yaml's own comments on that entity for what publishes
+  // each one).
   function updateMqttStatusText(entity, group) {
     group.mqttStatusEl.textContent = entity.value || "";
   }
@@ -2670,6 +2695,25 @@
         const eyeBtn = el("button", "dc-field-eye-btn", svgIcon("eyeOff"));
         eyeBtn.type = "button";
         eyeBtn.setAttribute("aria-label", "Show password");
+        // THE actual "totally broken" bug, direct feedback, 2026-08-16:
+        // "Ha beírom a jelszót rejtve majd megnyomom a szemet akkor
+        // írja ki a jelszót" (if I type the password hidden then press
+        // the eye, it writes the password out) - clicking any other
+        // focusable element moves focus away from `input` by default,
+        // which fires its `change` handler (this field's own set_action
+        // above) - so pressing the eye button was PREMATURELY
+        // submitting whatever had just been typed, mid-edit, before the
+        // user asked for that - the device's own SSE echo back (a fixed
+        // "" or the dots placeholder, per this field's own comment,
+        // never the real value) would then overwrite the input's visible
+        // content moments later, which is what actually looked like
+        // "writes the password" from the outside. preventDefault() on
+        // the button's own mousedown - not click - is the standard fix:
+        // it stops the browser from shifting focus away from `input` at
+        // all when this button is pressed, so no blur/change ever fires
+        // just from toggling visibility, exactly the "standard" (no
+        // side effects) behavior asked for.
+        eyeBtn.addEventListener("mousedown", (ev) => ev.preventDefault());
         eyeBtn.addEventListener("click", () => {
           revealed = !revealed;
           input.type = revealed ? "text" : "password";
@@ -2996,23 +3040,27 @@
       upsertDiagButton(entity);
       return;
     }
-    // MQTT's settings (Enabled/Broker/Username/Password/Topic Prefix) -
-    // this isn't about any one device row, it belongs with the rest of
-    // the "System" info/actions, not the Devices table. "MQTT Enabled"
-    // (switch) and "MQTT Status" (text_sensor) get their own bespoke
-    // header row (ensureMqttHeader()/updateMqttEnableButton()/
+    // MQTT's settings (Enabled/Connect/Broker/Username/Password/Topic
+    // Prefix) - this isn't about any one device row, it belongs with the
+    // rest of the "System" info/actions, not the Devices table. "MQTT
+    // Enabled"/"MQTT Connect" (both switch domain) and "MQTT Status"
+    // (text_sensor) get their own bespoke header row (ensureMqttHeader()/
+    // updateMqttEnableButton()/updateMqttConnectButton()/
     // updateMqttStatusText() above) instead of the generic upsertService*()/
     // upsertDiagRow() paths every other group's fields use - 2026-08-16
     // redesign, direct feedback, see ensureMqttHeader()'s own comment for
-    // the full layout spec. The text fields (Broker/Username/Password/
-    // Topic Prefix) still go through the normal upsertServiceText() field
-    // builder, just pointed at ensureDiagGroup instead of its Devices-page
-    // default (ensureServiceGroup), into that group's own .dc-fields area.
+    // the full layout spec. Distinguished by name, not just domain, since
+    // both switches share the "switch" domain. The text fields (Broker/
+    // Username/Password/Topic Prefix) still go through the normal
+    // upsertServiceText() field builder, just pointed at ensureDiagGroup
+    // instead of its Devices-page default (ensureServiceGroup), into that
+    // group's own .dc-fields area.
     if (entity.groupName === "MQTT") {
       const group = ensureDiagGroup(entity.groupName);
       ensureMqttHeader(group);
       ensureMqttSaveButton(group);
-      if (entity.domain === "switch") updateMqttEnableButton(entity, group);
+      if (entity.domain === "switch" && entity.name === "MQTT Enabled") updateMqttEnableButton(entity, group);
+      else if (entity.domain === "switch") updateMqttConnectButton(entity, group); // "MQTT Connect"
       else if (entity.domain === "text") upsertServiceText(entity, ensureDiagGroup);
       else updateMqttStatusText(entity, group); // the "MQTT Status" text_sensor
       updateMqttStatusIcon();
