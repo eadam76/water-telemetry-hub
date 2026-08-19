@@ -91,20 +91,45 @@ esphome:
           if (id(mqtt_topic_prefix_text).state.empty()) {
             id(mqtt_topic_prefix_text).publish_state("${device_name}");
           }
-      # Simplified 2026-08-16 (was a second, hand-duplicated copy of the
-      # "MQTT Enabled" switch's own connect logic, "kept in sync
-      # manually" - now there's only one copy, on "MQTT Connect"'s own
-      # turn_on_action, see switch: below) - reconnect-on-boot is now
-      # just "flip the same switches a real Enable+Connect press would
-      # flip" - "MQTT Enabled" first (no side effect of its own, just
-      # makes the components render), then "MQTT Connect" (does the
-      # actual work).
-      - if:
-          condition:
-            lambda: 'return id(mqtt_want_connected);'
-          then:
-            - switch.turn_on: mqtt_enabled_switch
-            - switch.turn_on: mqtt_connect_switch
+      # The actual reconnect-if-wanted trigger used to live here too, but
+      # moved to wifi: on_connect: below, 2026-08-16 - see that key's own
+      # comment for why (a real crash on cold boot, root-caused to firing
+      # this before Wi-Fi/the network stack was actually ready).
+
+# Reconnect-if-wanted, moved here from esphome: on_boot: - 2026-08-16,
+# root-caused a real device crash (a user-attached log: repeated
+# `assert failed: xQueueGenericSend queue.c:936 (pxQueue)` immediately
+# after boot, on every one of 10 attempts, until ESPHome's own safe_mode
+# boot-loop guard kicked in and stopped it). esphome: on_boot: (priority
+# 200, "AFTER_WIFI" only in the sense of ESPHome's own component-setup
+# ordering, confirmed by re-reading esphome/core/component.h) fires once
+# every component's own setup() has run - NOT once Wi-Fi has actually
+# associated and the network stack (LWIP, DNS) is genuinely ready, which
+# in the crashing log's own timeline only happens several seconds LATER
+# ("Connecting to 'IOT-AKN'" appears well after every one of the crash
+# cycles, never before). Starting the MQTT client's own connection
+# attempt (id(mqtt_id).enable(), inside "MQTT Connect"'s turn_on_action
+# below) that early - before the network stack the ESP-IDF MQTT client
+# depends on is actually up - is the most plausible trigger for a queue-
+# level crash this low-level. wifi: on_connect: is the correct hook
+# instead: it only ever fires once Wi-Fi has genuinely connected (a real
+# IP obtained), so by the time this runs the network stack is
+# unconditionally ready - and it re-fires on every later reconnect too
+# (e.g. after a real Wi-Fi drop), which is a genuine improvement over the
+# old boot-only trigger, not just a workaround: a dropped-and-recovered
+# Wi-Fi link likely broke the MQTT session too, so re-applying "should
+# reconnect" here (mqtt_id.enable() is safe to call repeatedly, see
+# "MQTT Connect"'s own turn_on_action comment for the disable()-first
+# fix that makes that true) now recovers MQTT automatically from that
+# too, which the boot-only version never did.
+wifi:
+  on_connect:
+    - if:
+        condition:
+          lambda: 'return id(mqtt_want_connected);'
+        then:
+          - switch.turn_on: mqtt_enabled_switch
+          - switch.turn_on: mqtt_connect_switch
 
 globals:
   # Whether MQTT should reconnect automatically on the NEXT boot - direct
