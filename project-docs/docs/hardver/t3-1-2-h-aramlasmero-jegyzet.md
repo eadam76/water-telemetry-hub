@@ -29,6 +29,161 @@ ettől függetlenül még mindig nyitott kérdés - beérkezéskor fizikailag
 ellenőrizendő (van-e a kábelben ténylegesen 4 külön ér, vagy csak a
 Sárga/Zöld RS485 pár).
 
+## ⭐ Hivatalos Modbus regisztertérkép megtalálva - 2026-08-19, LEGFONTOSABB FRISSÍTÉS
+
+A felhasználó megnyitotta és lefotózta (screenshot-okkal) a korábban
+csak névről ismert **"T3-1 SERIES ultrasonic water meter communication
+protocol"** AnyFlip-dokumentumot (`https://anyflip.com/jdpqf/cvgl/basic`)
+- ez a gyártó saját, teljes kommunikációs protokoll-leírása a "V51"
+firmware-hez (pontosan az a verzió, amit a T3-1-K1 testvér-kézikönyv is
+mutatott). **Ez lényegesen megbízhatóbb forrás, mint a Gemini generált
+táblája** - nem harmadik fél generikus protokollja, hanem a gyártó saját
+dokumentuma, konkrétan erre a család(V51)-ra. **Egyetlen fenntartás**:
+még nincs valós hardveren (`mbpoll`) leellenőrizve - ugyanaz az elv,
+mint a QDW90A-nál: ez az "erős kiindulás", a végleges megerősítés a
+tényleges eszközön történik majd.
+
+### Alapértelmezett RS485/Modbus beállítások (VÉGLEGESEN eldöntve, forrás megvan)
+
+```
+RS485/USART: 9600 baud, N (nincs paritás), 8 adatbit, 1 stopbit
+IR:          9600 baud, N (nincs paritás), 8 adatbit, 1 stopbit
+Cím:         1 (gyári alapértelmezett, max. 255)
+```
+
+Ez **cáfolja a Gemini saját állítását** (2400 bps, 8E1) - a Gemini
+forrásai (más gyártók generikus protokolljai) tévesek voltak erre a
+konkrét családra. Ez EGYEZIK a saját websearch-öm találatával (9600,
+no parity, 8N1). Módosítható a `V49_SETUP` nevű gyártói szoftverrel,
+vagy Modbus-on/infravörösön keresztül (0062-es regiszter, ld. lent), az
+aktuális beállítás az M0E menüben is megnézhető a kijelzőn.
+
+Támogatott protokollok (mind ugyanazon a fizikai RS485 vonalon,
+váltogatható): **a. HART, b. MODBUS, c. M-BUS, d. Haifeng ASCII, e.
+CJ188, f. Huizhong-protokollok**.
+
+### Modbus "common register" tábla (Function Code 03, Read Holding Registers)
+
+⚠️ A regisztercímek 1-alapúak (nem 0-alapúak) ebben a dokumentumban -
+a `mbpoll`/driver-kódnál erre figyelni kell (esetleges off-by-one).
+IEEE754 = 32 bites Float, 2 egymást követő regiszterben. A táblázat
+"LONG" oszlopai szintén 2 regiszteresek.
+
+| Regiszter | Formátum | Leírás | Mértékegység |
+|---|---|---|---|
+| 0001-0002 | IEEE754 | Pillanatnyi átfolyás (instant flow rate) | m³/h |
+| 0003-0004 | IEEE754 | Pillanatnyi hőteljesítmény (instant heat rate) | kW |
+| 0005-0006 | IEEE754 | Áramlási sebesség (flow velocity) | m/s |
+| 0009-0010 | LONG | Pozitív összesített átfolyás (egész rész) | m³/L/GAL/ft³ (ld. 1438) |
+| 0011-0012 | IEEE754 | ...tizedes rész | |
+| 0013-0014 | LONG | Negatív összesített átfolyás (egész rész) | |
+| 0015-0016 | IEEE754 | ...tizedes rész | |
+| 0017-0018 | LONG | Pozitív összesített hő (egész rész) | kWh/GJ/KBTU (ld. 1441) |
+| 0019-0020 | IEEE754 | ...tizedes rész | |
+| 0021-0022 | LONG | Negatív összesített hő (egész rész) | |
+| 0023-0024 | IEEE754 | ...tizedes rész | |
+| 0025-0026 | LONG | Nettó összesített átfolyás (egész rész) | |
+| 0027-0028 | IEEE754 | ...tizedes rész | |
+| 0029-0030 | LONG | Nettó összesített hő (egész rész) | |
+| 0031-0032 | IEEE754 | ...tizedes rész | |
+| 0033-0034 | IEEE754 | Előremenő vízhőmérséklet T1 | °C |
+| 0035-0036 | IEEE754 | Visszatérő vízhőmérséklet T2 | °C |
+| 0053-0055 | BCD (3 reg) | Naptár (dátum+idő), írható, SMHDMY sorrend, alsó bájt elöl | |
+| 0057 | Integer | Jelszó beírása (védelemhez) | |
+| 0058 | Integer | Alvó mód kódja, írható | |
+| 0059 | Integer | Billentyűzet-emuláció | |
+| 0060 | Integer | Aktuális menü-pozíció | |
+| 0061 | Integer | Aktuális menü | |
+| **0062** | Integer | **Fő kommunikációs cím, írható, max 255** | |
+| 0063 | Integer | Batch Controller (BC) timer, 0-ra írás indítja | |
+| 0064-0065 | Integer | OCT1/OCT2 pulzusszám | |
+| 0071 | Bits | Kiegészítő hibakód (note 4) | |
+| **0072** | Bits | **Hibakód (note 5)** - a §7.1 fault-handling bitmaszk (ld. a korábbi szakaszban) | |
+| 0077-0078 | IEEE754 | T1 ellenállásérték | Ω |
+| 0079-0080 | IEEE754 | T2 ellenállásérték | Ω |
+| 0081-0082 | IEEE754 | Teljes transit-time | µS |
+| 0083-0084 | IEEE754 | Transit-time (finomabb) | nS |
+| 0092 | Integer | Jelminőség (channel 1 alsó byte-ban) | |
+| 0093 | Integer | #1 csatorna jelerősség | 0-4095 |
+| 0094 | Integer | #2 csatorna jelerősség | 0-4095 |
+| **0095** | Integer | **Elem-feszültség: V = REG95 × (2.5/4096)** | V |
+| 0099-0102 | IEEE754 | Reynolds-szám + korrekciós tényező | |
+| 0105-0106 | Long | Teljes üzemidő | s |
+| 0107-0108 | Long | Bekapcsolások száma | |
+| 0109-0110 | IEEE754 | CPU hőmérséklet | °C |
+| 0113-0136 | IEEE754/LONG | Régi (lebegőpontos) napi/havi/nettó összesítő regiszterek - **a dokumentum kifejezetten "Not Recommended to read... due to limited accuracy" megjegyzéssel jelöli, NE ezeket használjuk** | |
+| 0137-0138 | LONG | Napi összesített átfolyás (9 jegyű) | |
+| 0139-0140 | IEEE754 | ...tizedes rész | |
+| 0141-0144 | LONG+IEEE754 | Havi összesített átfolyás + tizedes | |
+| 0144-0148 | LONG+IEEE754 | Éves összesített átfolyás + tizedes (⚠️ a forrás táblázatban a 0144 cím kétszer szerepel - havinál ÉS évesnél is - ez valószínűleg elgépelés a dokumentumban, hardveren tisztázandó) | |
+| 0149-0156 | LONG+IEEE754 | Napi/havi összesített hő + tizedesek | |
+| 0162 | Integer | Napi archívum-mutató (0-511) | |
+| 0163 | Integer | Havi archívum-mutató (0-127) | |
+| 0165-0166 | Long | Hiba-üzemidő | s |
+| 0181-0182 | IEEE754 | Hőmérsékletkülönbség (T1-T2) | °C |
+| 0221-0222 | IEEE754 | Csőátmérő (belső) | mm |
+| 0259-0266 | IEEE754 | Havi max pillanatnyi átfolyás/hő/be-/kifolyó hőmérséklet | |
+| 0271-0272 | IEEE754 | Transit-time | nS |
+| 0273-0274 | BCD | M-Bus másodlagos cím | |
+| **1438** | Integer | **Átfolyás mértékegység-kódja: 0=m³, 1=liter, 2=US gallon, 5=köbláb** | |
+| 1439 | Integer | Átfolyás skálázó kitevő (n: -4..3, ld. Note1 lent) | |
+| 1440 | Integer | Hő skálázó kitevő (n: -3..4) | |
+| **1441** | Integer | **Hő mértékegység-kódja: 0=GJ, 1=Kilo BTU, 2=kWh** | |
+| 1491 | Integer | Műszer-típus | EN1434-3 |
+| 1527 | Integer | Szoftververzió (note 3) | |
+| 1528 | Integer | Gyártó-azonosító, érték=0x1188 (note 3) | |
+| 1529-1530 | BCD | ESN (gyári sorozatszám), MSB elöl | |
+
+**Skálázási képlet (Note 1, kritikus a driver-kódhoz)**: minden
+"összesítő" (accumulated flow/heat) érték egy LONG egész rész (N) + egy
+IEEE754 tizedes rész (Nf) párosból áll, és egy külön "multiple factor"
+(n, 1439/1440-es regiszter) hatványkitevő skálázza:
+
+```
+végső érték = (N + Nf) × 10^n
+```
+
+Példa a dokumentumból: N=123456789, Nf=0.123, n=3 -> végső érték =
+123456.789123 (a mértékegység az 1438/1441 kódtól függ). **Fontos
+figyelmeztetés**: a dokumentum egy korábbi (0113-0136 tartományú)
+lebegőpontos regiszter-készletet kifejezetten elavultnak/pontatlannak
+jelöl - a 0009+ tartomány (LONG+decimális pár + skálázó kitevő) a
+javasolt, pontos út.
+
+### Napi/havi archívum-blokkok (KÜLÖN regiszter-tartomány, nem a fentiek)
+
+Két nagy, körkörös archívum, mindkettő a fenti 0162/0163-as
+mutató-regiszterrel indexelve, 32 regiszteres blokkokban:
+
+- **Napi archívum**: reg. **5377**-től indul (blokk 0), 512 blokk (0-511),
+  blokkonként 32 regiszter - dátum, üzemóra, hiba-óra, napi átfolyás/hő
+  összesen, pozitív/negatív átfolyás/hő, tarifa2/3, max átfolyás/hő/
+  hőmérsékletek.
+- **Havi archívum**: reg. **29953**-tól indul (blokk 0), 128 blokk
+  (0-127), ugyanaz a 32-regiszteres szerkezet, havi bontásban.
+- **Bekapcsolás-idő tábla** (külön, kisebb): reg. **28929**-től, 255
+  blokk, blokkonként 4 regiszter (dátum/idő BCD).
+- Egy dedikált **kommunikáció-teszt regiszter (REG361)**: ha nem
+  "361.0"-t olvasol vissza, a cím/kommunikáció hibás.
+
+### Egyéb, a protokoll-dokumentumban talált, nem-Modbus tartalom (feljegyzés, valószínűleg nem lesz szükség rá)
+
+- **Part Five - "Haifeng ASCII protocol"**: egy teljesen külön,
+  szöveges parancskészlet (pl. `DQD(cr)` = napi átfolyás lekérése,
+  `MENUXX(cr)` = menüváltás) - alternatíva a Modbushoz képest, nem
+  releváns, ha Modbus RTU-t használunk.
+- **Part Four - M-BUS Communication Protocol**: IEC 870-5-1/DIN
+  EN1434-3 keretezés, alapértelmezett baud IR=2400/RS485=9600, Even
+  paritás, 8 adatbit - ez a mi szempontunkból csak akkor releváns, ha
+  végül M-Bus-t választanánk Modbus helyett (nem tervezett).
+  Cím-módosítás/broadcast-keresés parancsai is dokumentálva.
+- **Part Six/Seven - "Compatibility Protocol" / CJ-188-2004**: kínai
+  szabványos hőmennyiségmérő-protokollok, 68h-16h keretezéssel - nem
+  relevánsak a mi Modbus-alapú tervünkhöz.
+- **Part Two - HART Protocol**: a 4-20mA hurkon keresztüli HART
+  kommunikáció leírása - szintén nem releváns, ha nem használjuk a
+  4-20mA kimenetet.
+
 ## Amit a füzetből tudunk
 
 - **Típus**: T3-1-2-H, ultrahangos (transit-time) vízmérő/átfolyásmérő,
