@@ -14,6 +14,21 @@ regisztercím-táblázatot**. A dokumentum saját maga utal egy bővebb
 "ultrasonic water meter user manual"-ra a menük/protokoll részleteiért -
 ez a bővebb kézikönyv még nincs meg.
 
+**Konkrét beszerzés, 2026-08-19**: a felhasználó megmutatta a tényleges
+rendelést - AliExpress, "Fexda Tools Store" viszonteladó, "Digital
+Ultrasonic Water Meter RS485 Remote Transmission Flow Meter", **DN20**
+méret, kb. 41.000 Ft. **Ez fontos árnyalás a lenti "válassz 2-t a
+8-ból" gyári egyedi-rendelés kérdéshez képest**: ez egy kész,
+viszonteladói fix SKU, nem közvetlen gyári konfigurálható rendelés, így
+valószínűleg EGY rögzített, alapértelmezett konfigurációban érkezik - a
+termékcím maga is kifejezetten "RS485 Remote Transmission"-t emel ki
+egyedüli kommunikációs jellemzőként, ami arra utal, hogy ezen a konkrét
+terméken az RS485 valószínűleg alapértelmezett/mindig kivezetett
+interfész, nem egy választható opció. A tápellátás (elem vs. külső DC)
+ettől függetlenül még mindig nyitott kérdés - beérkezéskor fizikailag
+ellenőrizendő (van-e a kábelben ténylegesen 4 külön ér, vagy csak a
+Sárga/Zöld RS485 pár).
+
 ## Amit a füzetből tudunk
 
 - **Típus**: T3-1-2-H, ultrahangos (transit-time) vízmérő/átfolyásmérő,
@@ -96,12 +111,113 @@ ez a bővebb kézikönyv még nincs meg.
   az ultrahangos mérő extra adatait (pillanatnyi áramlás, hőmérséklet,
   stb.), és nem tudjuk, ez az opció meg lett-e rendelve.
 
+## Testvér-modell (T3-1-K1, "sandwich"/wafer kivitel) teljes User Manual-ja - új infó, 2026-08-19
+
+A felhasználó egy MÁSIK, ugyanattól a gyártótól (www.t3-1.com) származó,
+ugyanazon terméksorozat egy testvér-modelljének (T3-1-K1, "Sandwich
+Ultrasonic Water meter", DN80/DN100, tehát jóval nagyobb csövekre, mint
+a mi T3-1-2-H-nk DN15-40 mérete) TELJES, 33 oldalas User Manual-ját
+csatolta (`Ultrasonicwaferstylemeter.pdf`). Ez nem a mi konkrét
+modellünk dokumentációja, de ugyanaz a "V51" firmware-platform (majdnem
+szó szerint azonos M01-M07 menüszerkezet mindkét füzetben), így a
+protokoll-/menü-szintű részletei nagy eséllyel közvetlenül átvihetők.
+
+- **Vezetékezés pontosítva/korrigálva**: ebben a dokumentumban (§3.3)
+  a Piros/Fekete pár expliciten **"24+ / GND"** - sima DC táp-bemenet,
+  NEM "MBUS+/MBUS-" (ahogy a T3-1-2-H füzet nevezte). Valószínű
+  magyarázat: ugyanaz a fizikai pár ennél a terméktípusnál VAGY M-Bus
+  adatvonalként, VAGY sima táp-bemenetként szolgálhat (rendeléskor
+  eldöntött, melyik) - a T3-1-2-H füzet feltehetően csak pongyolán/
+  sablonból másolva nevezte "MBUS"-nak. Ez megerősíti (bár más okból,
+  mint az eredeti M-Bus-busztáplálás elmélet) a korábbi hipotézist: a
+  Piros/Fekete pár valószínűleg tényleg egy dedikált táp-bemenet,
+  függetlenül attól, fut-e rajta ténylegesen M-Bus protokoll.
+- **KRITIKUS, cselekvést igénylő új infó**: a §3.3 szerint 8 lehetséges
+  interfész/kimenet létezik összesen (RS485, M-BUS, DC8-36V, kétvezetékes
+  4-20mA, OCT1, OCT2, C1/C2 TTL pulzus) - **"PS: when ordering, you can
+  choose any two of the above communication interface or output, lead
+  to the external junction box"**. Tehát rendeléskor csak KETTŐ kerül
+  ténylegesen kivezetve a külső kábelen a 8-ból. **Nem tudjuk, a
+  felhasználó megrendelt T3-1-2-H egységén melyik kettő lett
+  kiválasztva** - lehet, hogy nincs is egyszerre RS485 ÉS külső DC táp
+  kivezetve. Ezt a rendelési visszaigazolásban/eladónál mindenképp
+  ellenőrizni kell, mielőtt a fenti "mindkét pár bekötve" tervvel
+  számolnánk.
+- **Modbus-címzés megerősítve, szabványos**: gyári alapértelmezett
+  kommunikációs cím "1", egybájtos (0-255) - RS485-ön, infravörösön
+  vagy a készülék billentyűzetén keresztül módosítható (§5.8). Ez
+  pontosan a szabványos Modbus RTU slave-címzés, megerősíti, hogy az
+  RS485-oldal valóban Modbus-kompatibilis protokollt beszél (nem csak
+  feltételezés).
+- **Még mindig nincs tényleges regisztertábla** - a dokumentum saját
+  maga több helyen (pl. §4.7, havi/napi kumulatív adatok szerkezete)
+  egy KÜLÖN "communication protocol" dokumentumra utal, ami szintén nem
+  áll rendelkezésre. Van egy letölthető "V49_ERRCODE.EXE" hibakód-
+  visszafejtő és egy "special parameter setting software" (mértékegység/
+  tizedesjegy-beállításhoz) is említve - ezek is a gyártó oldaláról
+  szerezhetők be, ha elérhetők.
+- **Hibakód-bitmaszk táblázat** (§7.1, 2 teljes oldal) - részletes,
+  hasznos lesz a jövőbeli hibakezeléshez/diagnosztikai megjelenítéshez,
+  ha a Modbus-on keresztül ugyanez a kód elérhető lesz (valószínű, mivel
+  ugyanaz a "status code" a menüben (M04/M0A) is megjelenik).
+
+## Külső AI-eszközök (Gemini, ChatGPT) + saját websearch, 2026-08-19
+
+A felhasználó megkérdezett egy Gemini-t és egy ChatGPT-t is az
+eszközről, és én magam is végeztem saját websearch-öt (a sandbox saját
+egress-proxyja miatt a talált PDF-eket - anyflip, enexia.fi, manualslib,
+manualzz, scribd, ecefast.co.nz, alibaba - egyiket sem tudtam innen
+közvetlenül letölteni/megnyitni, csak a keresőmotor saját összefoglalóit
+láttam).
+
+- **Vezetékezés - MOST MÁR jobban megerősítve, korrigálja a korábbi
+  óvatosságot**: mindhárom független forrás (ChatGPT saját, gyártói
+  "TSONIC T3-1 Series Installation Instruction"-re hivatkozó válasza +
+  a saját websearch-öm találatai) ugyanazt írja: **1=485+/A, 2=485-/B,
+  3=DC 8-36V, 4=GND** - tehát TÉNYLEG külön, fix RS485-pár ÉS külön
+  táp+GND pár, NEM egy "vagy M-Bus vagy táp" választás. A T3-1-2-H
+  füzet saját "MBUS+/MBUS-" címkéje a Piros/Feketén ez alapján
+  valószínűleg tényleg csak egy sablon-/fordítási hiba volt (más
+  T3-1-es dokumentumból másolva), nem egy valós, eszközszintű
+  either-or. Ez megerősíti (immár szélesebb forrásbázissal) a korábbi
+  "mindkét pár egyszerre bekötve = folyamatos táp + megbízható RS485"
+  tervet.
+- **A Gemini regisztertáblájával ÓVATOSAN kell bánni, nem venni
+  készpénznek** - a Gemini saját hivatkozásai (scribd "Bove Technology",
+  "Norika WM" dokumentumok) MÁS gyártók generikus ultrahangos-vízmérő
+  protokolljai, nincs megerősítve, hogy ugyanez a család. A ChatGPT
+  válasza ezt helyesen jelezte is ("nem állítanám még 100%-ra"). **Nem
+  ültetjük át ezt a konkrét regisztertáblát a firmware-be megerősítés
+  nélkül** - pontosan ugyanaz az elv, mint a QDW90A-nál: nem hivatalos
+  forrásból csak kiindulásnak jó, a végleges térképet valós hardveren
+  kell megerősíteni.
+- **Ígéretes, még nem megnyitott konkrét nyom**: egy Scribd-dokumentum,
+  aminek a címe **"V51 Ultrasonic Water Meter Communication Protocol"**
+  (`https://www.scribd.com/document/690064185/V51-ultrasonic-water-meter-communication-protocol`)
+  - a "V51" pontosan egyezik a T3-1-K1 kézikönyvben látott firmware-
+    verzióval ("51 means the version 51 circuit board"), tehát ez lehet
+    a TÉNYLEGES, hozzánk illő protokoll-dokumentum, nem csak egy
+    hasonló nevű másik gyártóé. Egy másik ígéretes találat: az AnyFlip
+    "T3-1 SERIES ultrasonic water meter communication protocol" flipbook
+    (`https://anyflip.com/jdpqf/cvgl/basic`). Egyiket sem tudtam innen
+    megnyitni (egress-proxy blokkolja mindkét domaint) - a felhasználó
+    saját böngészőjéből elérhetők, érdemes megnézni/lementeni.
+- **Alapértelmezett kommunikációs paraméterek, forrásfüggően
+  ELLENTMONDÓAK** - a Gemini 2400 bps + 8E1-et állít, a saját
+  websearch-öm (gyártói install instruction alapján) 9600 baud + no
+  parity + 8N1-et talált. Ez pont az a fajta részlet, amit valós
+  hardveren (`mbpoll` auto-baud/paritás-próbálgatással) kell tisztázni,
+  nem AI-összefoglalásból átvenni.
+
 ## Nyitott kérdések / következő lépések
 
-1. **Melyik protokollra van ténylegesen állítva a 485-pár** (Modbus RTU
-   feltételezhető, de nincs megerősítve) - rendelési adatlap/vásárlói
-   visszaigazolás, vagy beérkezéskor a gyártói bővebb kézikönyv/
-   konfigurációs eszköz alapján tisztázandó.
+1. **Van-e nálad böngészőből elérhető hozzáférés** a fenti Scribd
+   ("V51 Ultrasonic Water Meter Communication Protocol") és/vagy AnyFlip
+   ("T3-1 SERIES ultrasonic water meter communication protocol")
+   dokumentumokhoz - ha igen, és be tudod másolni/feltölteni a
+   tartalmukat, abból egy tényleges, forrással alátámasztott
+   regisztertáblát tudunk írni ide, ahelyett hogy AI-generált (és
+   egymásnak ellentmondó) számokra hagyatkoznánk.
 2. **Van-e a bővebb "ultrasonic water meter user manual"** a tényleges
    Modbus regisztertáblával (funkciókód, cím, adattípus, skálázás) - ha
    a gyártótól beszerezhető, azzal sokkal gyorsabb lenne a driver-munka,
