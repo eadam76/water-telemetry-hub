@@ -55,11 +55,25 @@ ez a bővebb kézikönyv még nincs meg.
     Ha ez a mérő ELEM-ről megy és energiatakarékos módba lép áramlás
     hiányában, elképzelhető, hogy: (a) alvó állapotban nem válaszol
     azonnal/egyáltalán a Modbus-lekérdezésre, és/vagy (b) a gyakori
-    pollozás saját maga rontja az ígért 10 éves elemélettartamot. Ezt
-    tisztázni kell, mielőtt a meglévő pollozási gyakoriságot
-    változtatás nélkül alkalmaznánk erre az eszközre is - lehet, hogy
-    külső tápot kell rendelni/biztosítani hozzá, ha megbízható,
-    valós idejű Modbus-válaszra van szükség.
+    pollozás saját maga rontja az ígért 10 éves elemélettartamot.
+  - **Valószínű megoldás/hipotézis, felhasználói felvetés alapján
+    (2026-08-19), tisztázandó beérkezéskor**: a fizikai M-Bus szabvány
+    (EN 13757-2) definíció szerint eleve BUSZ-TÁPLÁLT - a mester adja a
+    tápot a szolgáknak UGYANAZON a két vezetéken, amin az adat is megy
+    (feszültségmoduláció). Emiatt valószínű, hogy a Piros/Fekete
+    (MBUS+/−) pár egyszerű DC feszültség ráadásával (akár egy "buta"
+    tápforrásról, valódi M-Bus mester-jel nélkül) önmagában kilépteti
+    az eszközt elemes/energiatakarékos módból - FÜGGETLENÜL attól, hogy
+    közben a Sárga/Zöld (485+/−) páron tisztán RS485/Modbus adatot
+    olvasunk. Ha ez így működik, mindkét pár egyidejű bekötésével
+    (Piros/Fekete -> DC 12-30V táp, Sárga/Zöld -> RS485 busz) megoldható
+    a folyamatos, megbízható tápellátás ÉS a Modbus-adatolvasás egyszerre,
+    választás nélkül. **Nincs 100%-ig megerősítve ebből a füzetből** -
+    nem világos, hogy egy sima DC tápforrás elegendő-e a felismeréshez,
+    vagy tényleges M-Bus-szintű jel kell hozzá. Beérkezéskor gyorsan
+    tesztelhető: DC táp a Piros/Feketére, RS485 a Sárga/Zöldre, majd
+    ellenőrizni az LCD M04 menüjét (feszültség/állapot) és hogy válaszol-e
+    a `scan_bus()`.
 - **Mért/kijelzett mennyiségek** (a beépített LCD menüpontjaiból,
   M01-M07 - nem feltétlenül 1:1 ugyanazok a Modbus-regiszterek, de jó
   kiindulás, mire számítsunk): nettó kumulatív + pillanatnyi áramlás,
@@ -92,9 +106,11 @@ ez a bővebb kézikönyv még nincs meg.
    Modbus regisztertáblával (funkciókód, cím, adattípus, skálázás) - ha
    a gyártótól beszerezhető, azzal sokkal gyorsabb lenne a driver-munka,
    mint találgatással/scan-nel indulni.
-3. **Melyik tápopció lett rendelve** (csak elem, vagy külső DC táp is) -
-   ez közvetlenül meghatározza, biztonságos-e ugyanolyan gyakori
-   pollozást futtatni rajta, mint a QDW90A-kon.
+3. **Működik-e a "DC táp a Piros/Feketére, RS485 adat a Sárga/Zöldre"
+   egyidejű bekötés** (ld. fent a hipotézist) - ha igen, ez megoldja a
+   tápellátás-kérdést anélkül, hogy bármit is választani kellene; ha nem,
+   marad a "csak elemes, ritkább pollozás" vagy "csak M-Bus, nem RS485"
+   kompromisszum.
 4. **Beérkezés után, ha nincs meg a bővebb kézikönyv**: a QDW90A-nál
    bevált módszer megismétlése - a meglévő `rs485_modbus`
    scan/probe-infrastruktúrával egy teljes regiszter-scan (`mbpoll`)
