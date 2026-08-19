@@ -227,31 +227,44 @@ mqtt:
   # kell hanem a hiba olvasható magyarázata" (on reload "Disconnected" is
   # a fine state, but after a failed connection it shouldn't say
   # "Disconnected", it should say a readable explanation of the error).
-  # ESPHome's own ESP-IDF MQTT backend can't tell us anything more
-  # specific than "TCP disconnected" here (confirmed reading
-  # mqtt_backend_esp32.cpp - it hardcodes that reason for every kind of
-  # failure, including the genuinely more specific ESP-TLS error it logs
-  # a few lines earlier but never exposes past its own log line - a
-  # `// TODO is there a way to get the disconnect reason?` in that same
-  # file confirms this is a known, unaddressed upstream gap, not
-  # something a YAML-level lambda can reach without forking that file)
-  # - so this can't surface e.g. "wrong port" or "bad password"
-  # specifically, but it CAN reliably tell "you just pressed Disconnect/
-  # Disable" (mqtt_connect_switch is already off by the time this fires -
-  # its own turn_off_action publishes "Disconnected" first, or "MQTT
-  # Enabled"'s turn_off_action overwrites that to "Disabled" right after,
-  # see switch: below for both) apart from "still meant to be connected,
-  # but the session just dropped or never connected" (a real problem
-  # worth a distinct message, whether that's a first connect attempt
-  # failing or an established session dropping later). Checks
-  # mqtt_connect_switch specifically, not mqtt_enabled_switch - the
-  # latter is now just the components-visibility gate (2026-08-16
-  # revision), the former is the one that actually tracks "do we want to
-  # be connected right now".
+  # Checks mqtt_connect_switch specifically, not mqtt_enabled_switch - the
+  # latter is now just the components-visibility gate, the former is the
+  # one that actually tracks "do we want to be connected right now"; it's
+  # already off by the time this fires for an explicit Disconnect/Disable
+  # (that switch's own turn_off_action publishes "Disconnected"/"Disabled"
+  # first), so this branch only runs for a genuine, unwanted drop.
+  #
+  # REVISED 2026-08-16 (same-day follow-up, direct feedback): "Meg se
+  # adtam adatokat majd azt mondja 'Connection lost - check broker/port/
+  # credentials' - elég lenne csak connection error" (I hadn't even
+  # entered any data and it said "Connection lost..." - just "Connection
+  # error" would be enough). Two things changed: (1) shorter, plainer
+  # default text ("Connection error", not implying a session existed to
+  # "lose" when it may have never connected at all); (2) this trigger
+  # actually DOES receive a real, typed disconnect reason as `x`
+  # (MQTTClientDisconnectReason - MQTTDisconnectTrigger's own Trigger<>
+  # type, confirmed in the installed esphome package's mqtt_client.h) -
+  # the earlier comment here claiming ESPHome "can't tell us anything
+  # more specific" was WRONG in one case: DNS resolution failures are
+  # caught by MQTTClientComponent's own generic check_dnslookup_()
+  # (backend-independent, confirmed in mqtt_client.cpp), which correctly
+  # reports DNS_RESOLVE_ERROR through this same `x` - exactly the case an
+  # empty/unresolvable "MQTT Broker" field hits, confirmed against a real
+  # device log the user attached (`Couldn't resolve IP address for ''`).
+  # The ESP32/IDF backend's own actual TCP-level MQTT_EVENT_DISCONNECTED
+  # handler still only ever reports the generic TCP_DISCONNECTED for
+  # everything else (confirmed in mqtt_backend_esp32.cpp, plus its own
+  # `// TODO is there a way to get the disconnect reason?"), so this
+  # still can't surface e.g. "wrong password" specifically without
+  # forking that file - not attempted here, per the project's own "only
+  # fork when there's no other way" pattern.
   on_disconnect:
     - lambda: |-
-        if (id(mqtt_connect_switch).state) {
-          id(mqtt_status_text).publish_state("Connection lost - check broker/port/credentials");
+        if (!id(mqtt_connect_switch).state) return;
+        if (x == mqtt::MQTTClientDisconnectReason::DNS_RESOLVE_ERROR) {
+          id(mqtt_status_text).publish_state("Connection error - can't resolve broker address");
+        } else {
+          id(mqtt_status_text).publish_state("Connection error");
         }
 
 # Silences the MQTT wrapper components' own one-time boot dump_config()

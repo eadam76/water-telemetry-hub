@@ -700,7 +700,27 @@ body {
 
 .dc-mqtt-header-buttons {
   display: flex;
+  align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* "MQTT Enabled" toggle switch + its own text label (a bare .dc-toggle
+ * has no text of its own) - direct feedback, 2026-08-19: "Enable disable
+ * mégis legyen kapcsoló" (Enable/disable should be a switch after all).
+ * Either half is clickable - the label is inside the same wrapper the
+ * click handler is bound to (ensureMqttHeader() in dashboard.js). */
+.dc-mqtt-enable-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.dc-mqtt-enable-wrap span {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--dc-text);
 }
 
 /* Same value styling as .dc-list-row .v (font-weight/wrap behavior) -
