@@ -303,35 +303,6 @@ body {
   stroke: var(--dc-accent);
 }
 
-/* Header MQTT status icon, next to Wi-Fi - updateMqttStatusIcon() in
- * dashboard.js. hidden (the attribute, not just CSS) while MQTT isn't
- * enabled at all - simplest way to make "no icon" mean "not in use",
- * distinct from "in use but not connected" (grey) and "connected"
- * (blue, .dc-mqtt-connected). */
-#dc-mqtt-status {
-  display: flex;
-  align-items: center;
-  margin-right: 10px;
-  color: var(--dc-text-faint);
-  transition: color 0.2s;
-}
-
-/* Fill-based, not stroke-based like every other icon in this file - the
- * real MQTT logo (ICONS.mqttNode, dashboard.js) is solid-filled path
- * data, not a stroked outline, and re-tracing it as thin strokes was the
- * actual cause of the "blurry at small size" look reported 2026-08-16 -
- * thin curved strokes anti-alias poorly at 17px, filled shapes don't. */
-#dc-mqtt-status svg {
-  width: 15px;
-  height: 15px;
-  fill: currentColor;
-  stroke: none;
-}
-
-#dc-mqtt-status.dc-mqtt-connected {
-  color: var(--dc-accent);
-}
-
 .dc-page {
   display: none;
 }
@@ -538,10 +509,8 @@ body {
   margin-top: 14px;
 }
 
-/* Empty for the "MQTT" group now that its own Status/Enable-Disable live
- * in .dc-mqtt-header instead (2026-08-16 redesign) - without this, the
- * fixed margin-top above still opened a blank gap even with nothing
- * inside. */
+/* Without this, the fixed margin-top above still opened a blank gap even
+ * for a group whose actions row has nothing in it. */
 .dc-diag-actions:empty {
   margin-top: 0;
 }
@@ -567,19 +536,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-/* System-page-only modifier (ensureDiagGroup() in dashboard.js) - the
- * Devices page gets this same 560px cap for free from its own
- * .dc-service-group parent (see that rule's own comment); the System
- * page's .dc-diag-group has no such cap, so a .dc-fields block placed
- * there needs its own. Added 2026-08-15 for MQTT's settings cards -
- * without it, a bordered .dc-field would stretch edge-to-edge on a wide
- * viewport, same failure mode already fixed once for the plain action
- * buttons above (.dc-diag-actions). */
-.dc-fields-capped {
-  max-width: 560px;
-  margin-top: 14px;
 }
 
 .dc-field {
@@ -632,172 +588,6 @@ body {
 .dc-field input[type="password"]:focus {
   outline: none;
   border-color: var(--dc-accent);
-}
-
-/* Password reveal toggle (upsertServiceText()'s "MQTT Password" special-
- * case, dashboard.js) - a plain icon button sitting in the same
- * .dc-field-row as the input, not inside it (no absolute positioning -
- * this field never had a unit/suffix competing for that space, so a
- * flex sibling is simpler than an overlay). */
-.dc-field-eye-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  padding: 4px;
-  color: var(--dc-text-faint);
-  cursor: pointer;
-}
-
-.dc-field-eye-btn svg {
-  width: 18px;
-  height: 18px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.dc-field-eye-btn:hover {
-  color: var(--dc-text);
-}
-
-/* "MQTT" group's own header row (ensureMqttHeader() in dashboard.js) -
- * REPLACES the plain .dc-list "Status" row and the toggle-pill "MQTT
- * Enabled" field this group used to render through the generic paths
- * every other group still uses - direct feedback, 2026-08-16: "Bal
- * oldalt a státusz alatt enable/disable gomb (slider helyett) jobb
- * oldalt státusz mezőben ki tudjuk írni: connected/disconnected/
- * disabled" (left: below the status [caption], an enable/disable
- * BUTTON, not a slider; right: the status field shows connected/
- * disconnected/disabled). Left side is a small caption ("Status") with
- * the Enable/Disable and "MQTT Settings" buttons stacked right below it;
- * right side is the live status value, vertically centered against the
- * whole row so it doesn't look pinned to just the caption or just the
- * buttons. */
-.dc-mqtt-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 4px;
-}
-
-.dc-mqtt-header-left {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.dc-mqtt-header-caption {
-  font-size: 13.5px;
-  color: var(--dc-text-muted);
-}
-
-.dc-mqtt-header-buttons {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-/* "MQTT Enabled" toggle switch + its own text label (a bare .dc-toggle
- * has no text of its own) - direct feedback, 2026-08-19: "Enable disable
- * mégis legyen kapcsoló" (Enable/disable should be a switch after all).
- * Either half is clickable - the label is inside the same wrapper the
- * click handler is bound to (ensureMqttHeader() in dashboard.js). */
-.dc-mqtt-enable-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.dc-mqtt-enable-wrap span {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--dc-text);
-}
-
-/* Same value styling as .dc-list-row .v (font-weight/wrap behavior) -
- * this row replaces that one for this group, so it should still read
- * like the same kind of "status readout" the rest of the System page
- * uses. */
-.dc-mqtt-header-right {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-weight: 500;
-  font-size: 13.5px;
-  text-align: right;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-/* Pressed/"currently on" look for a compact button that toggles a
- * persistent state (Enable/Disable's own current value, or whether the
- * settings panel is open) - the accent fill .dc-btn already uses on
- * :hover, just not requiring the pointer to still be over it. */
-.dc-btn.dc-btn-active {
-  background: var(--dc-accent);
-  color: var(--dc-bg);
-}
-
-/* "MQTT" group's own settings fields area (ensureDiagGroup() in
- * dashboard.js) - ONE bordered card for the whole group, not a separate
- * .dc-field box per field - direct feedback, 2026-08-15: "Az
- * attribútumokat ne tedd külön dobozba, az egész szépen egy doboz legyen
- * attribútumokkal és két gombbal" (don't put the fields in separate
- * boxes, the whole thing should be one nice box with the fields and the
- * button[s]). The card itself carries the border/background/padding
- * .dc-field normally would; individual fields inside it are stripped
- * back down to bare label+input rows (below). Internally a 2-column grid
- * so Username/Password can sit side by side while Broker/Topic Prefix/
- * the Save button (.dc-field-span-2) each take the full width - direct
- * feedback, same round. Below ~420px (a narrow phone) collapses to a
- * single column - two side-by-side text inputs get uncomfortably cramped
- * before that, same breakpoint reasoning as other narrow-viewport rules
- * in this file. */
-.dc-fields-mqtt {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px 12px;
-  background: var(--dc-surface);
-  border: 1px solid var(--dc-border);
-  border-radius: var(--dc-radius);
-  padding: 14px 16px;
-  margin-top: 14px;
-}
-
-.dc-fields-mqtt .dc-field {
-  background: none;
-  border: none;
-  padding: 0;
-}
-
-.dc-fields-mqtt .dc-field-span-2 {
-  grid-column: 1 / -1;
-}
-
-/* Collapsed (the "MQTT Settings" button is off, updateMqttFieldsVisibility()
- * in dashboard.js) - client-side only now, entirely independent of
- * whether MQTT itself is enabled (2026-08-16 redesign - previously tied
- * to "MQTT Enabled", see this rule's own history). Collapses away to
- * nothing (not even the card's own border/padding) rather than showing
- * an empty box, since opening it is now a deliberate, separate action
- * ("MQTT Settings" gomb), not something that should visibly reserve
- * space while closed. */
-.dc-fields-mqtt.dc-mqtt-collapsed {
-  display: none;
-}
-
-@media (max-width: 420px) {
-  .dc-fields-mqtt {
-    grid-template-columns: 1fr;
-  }
 }
 
 .dc-field input[type="range"] {

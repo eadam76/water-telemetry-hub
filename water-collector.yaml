@@ -930,15 +930,6 @@ number:
       sorting_weight: 15
 
 packages:
-  # Optional MQTT integration - see packages/mqtt.yaml's own header
-  # comment for the full "why a separate package" reasoning (2026-08-15
-  # direct feedback: "Induláskor miért fosta tele a logot mqtt sorokkal?
-  # Nem is kéne alapból mqtt-vel foglalkoznia" - why did the log fill up
-  # with MQTT lines on startup, it shouldn't deal with MQTT by default at
-  # all). Comment out (or delete) this one line to build the firmware
-  # with no MQTT support at all - no other file needs to change.
-  mqtt: !include packages/mqtt.yaml
-
   # friendly_name is deliberately generic ("Pulse Meter 1/2", not "Main"/
   # "Garden") - which physical meter is which is a fact about *this*
   # installation, not the firmware; it drives both the compiled-in entity
