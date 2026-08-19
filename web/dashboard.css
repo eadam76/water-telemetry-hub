@@ -1006,6 +1006,22 @@ body {
   transition: background-color 0.1s ease, border-color 0.1s ease, padding 0.1s ease;
 }
 
+/* A scan-discovered row's own device-type picker (2026-08-19, T3-1-2-H
+ * flow meter - upsertNewPressureRow() in dashboard.js) - same field
+ * treatment as the name input just above it, not full-width (this one
+ * only ever holds one of two short words, stretching it edge-to-edge
+ * would look like an accident). */
+.dc-pressure-type-select {
+  margin-top: 6px;
+  width: auto;
+  background: var(--dc-surface-2);
+  border: 1px solid var(--dc-border);
+  color: var(--dc-text);
+  border-radius: var(--dc-radius-sm);
+  padding: 6px 8px;
+  font-size: 13.5px;
+}
+
 /* A locked (disabled, not currently being edited) row should read as
  * plain table text, not as a form full of bordered input boxes - direct
  * feedback, 2026-08-15: "A táblázat nekem még mindig nem táblázat

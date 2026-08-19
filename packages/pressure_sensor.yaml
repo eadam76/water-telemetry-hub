@@ -1,15 +1,45 @@
-# Pressure sensor slot - reusable ESPHome package.
+# Modbus device slot - reusable ESPHome package.
 #
-# One of 8 fixed "slots" for a QDW90A RS485/Modbus pressure sensor - see
-# REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" for the full rationale,
-# and "Architekturális megfontolás v3" (2026-08-13) for the design this
-# file implements.
+# One of 8 fixed "slots" for a real-time-polled RS485/Modbus device - see
+# REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" for the original
+# rationale, and "Architekturális megfontolás v3" (2026-08-13) for the
+# design this file implements. STILL NAMED "pressure_sensor.yaml"/
+# "Pressure Sensor N" (the internal id_prefix/friendly_name, e.g.
+# "slot3"/"Pressure Sensor 3") for historical reasons - this is
+# deliberately NOT renamed (see the GENERALIZATION note below for why
+# that's a safe simplification, not sloppiness).
+#
+# GENERALIZATION (2026-08-19, direct feedback: "kellően generalizált
+# architektúra és sw felépítés kell" - the architecture needs to be
+# sufficiently generalized): originally, and still by default, every
+# slot was a QDW90A pressure sensor. A second device class (a T3-1-2-H
+# ultrasonic flow meter, ordered same day - see docs/hardver/
+# t3-1-2-h-aramlasmero-jegyzet.md) is now supported too, picked per-slot
+# by the new "Device Type" select below. The design principle: a device
+# CLASS is one small, isolated reader function in include/rs485_modbus.h
+# (read_pressure_bar()/read_flow_instant()) plus one more always-exists
+# sensor entity here (existence model, same as every other per-slot
+# entity) - adding a THIRD class later only means adding another such
+# pair, never touching the shared scan/probe/Add/Delete/reorder
+# machinery below, which was already class-agnostic from the start (it
+# only ever cared about "does something answer at this Modbus address",
+# never what kind of device that is). The internal id_prefix/
+# friendly_name ("slot3"/"Pressure Sensor 3") staying literally
+# "Pressure"-named despite this is intentional, not an oversight - see
+# the file's own PERSISTENT DATA MODEL note below: this compile-time
+# name is NEVER shown anywhere in the dashboard (only the runtime
+# Display Name is), so a slot holding a flow meter having "Pressure" in
+# its own internal, invisible id costs nothing real - renaming 8 slots'
+# worth of ids/sorting-group keys purely for source-code aesthetics was
+# judged not worth the diff size/regression risk against that zero
+# actual benefit.
 #
 # STATUS: real Modbus RTU over the Waveshare ESP32-S3-RS485-CAN board's
 # RS485 bus (water-collector.yaml's `uart: rs485_uart`, protocol helpers
 # in include/rs485_modbus.h) - the earlier commissioning-UX-only pass's
-# "Mock Pressure (Test)" scaffold is gone; the Pressure sensor below now
-# polls the real device directly.
+# "Mock Pressure (Test)" scaffold is gone; the Pressure/Flow Rate sensors
+# below now poll the real device directly, whichever this slot's own
+# Device Type select currently says to use.
 #
 # EXISTENCE MODEL (v3): every entity below is a normal, always-compiled-in,
 # never-`internal` entity (same "don't rely on deprecated set_internal()"
@@ -92,12 +122,14 @@ sensor:
   # Polls the real sensor directly (rs485_modbus::read_pressure_bar(),
   # include/rs485_modbus.h - H:22-H:23 as Float32, see
   # docs/hardver/qdw90a-modbus-referencia.md) - a no-op (returns {}, no
-  # publish at all) while this slot is unregistered. This same poll is
-  # also this slot's *only* source of live online/offline status - see
-  # "Online" below - deliberately not derived from the shared bus-scan
-  # result the way a not-yet-registered "New device" row is; a scan is
-  # for discovering addresses we don't have a slot for yet, this is for
-  # continuously watching one we do.
+  # publish at all) while this slot is unregistered, OR while it's
+  # registered as the OTHER device type (2026-08-19 generalization - see
+  # the file header) - checked via this slot's own "Device Type" select
+  # below. This same poll is also this slot's *only* source of live
+  # online/offline status - see "Online" below - deliberately not derived
+  # from the shared bus-scan result the way a not-yet-registered "New
+  # device" row is; a scan is for discovering addresses we don't have a
+  # slot for yet, this is for continuously watching one we do.
   #
   # `poll_interval` is staggered per slot (not one shared value) so 8
   # registered slots' polls don't all land on the same main-loop tick -
@@ -125,38 +157,75 @@ sensor:
     update_interval: ${poll_interval}
     lambda: |-
       uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
-      if (address == 0) return {};  // unregistered slot - nothing to poll
+      if (address == 0 || id(${id_prefix}_device_type).state != "Pressure") return {};
       float value;
       bool collision = false;
       bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
-      id(${id_prefix}_online).publish_state(ok);
-      // Below this, has to genuinely stay quiet for a while before
-      // "Collision" clears - see COLLISION_COOLDOWN_MS and the global's
-      // own comment for why a poll-count streak alone wasn't enough.
-      const uint32_t COLLISION_COOLDOWN_MS = 2000;
-      if (collision) {
-        id(${id_prefix}_last_collision_ms) = millis();
-        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, true);
-      } else if (ok && millis() - id(${id_prefix}_last_collision_ms) >= COLLISION_COOLDOWN_MS) {
-        rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false);
-      }
+      rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
+                                         id(pressure_scan_collisions), address, ok, collision);
       // A plain timeout (ok == false, collision == false) is inconclusive
-      // either way - deliberately left alone: doesn't push the cooldown
-      // out further (a stray timeout partway through recovery shouldn't
-      // delay clearing) and doesn't touch the Collision flag either (no
-      // evidence either way this poll). `millis() - last_collision_ms`
-      // is unsigned wraparound-safe (the standard embedded idiom) even
-      // across millis()'s own ~49-day rollover, unlike comparing against
-      // a stored future "clear-at" timestamp would be.
+      // either way - publish_poll_result() above already leaves the
+      // Collision flag untouched for it, same reasoning as before this
+      // was factored out (include/rs485_modbus.h): doesn't push the
+      // cooldown out further (a stray timeout partway through recovery
+      // shouldn't delay clearing) and doesn't touch the flag either (no
+      // evidence either way this poll).
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 10
 
+  # Same continuous-poll pattern as Pressure above, for the "Flow" device
+  # type instead (2026-08-19, T3-1-2-H ultrasonic flow meter - see the
+  # file header's GENERALIZATION note and include/rs485_modbus.h's
+  # read_flow_instant() for the full sourcing/uncertainty writeup on this
+  # specific reading). Always exists on every slot regardless of that
+  # slot's actual configured Device Type - a no-op unless it's "Flow", so
+  # a Pressure-configured slot pays nothing extra for this sensor also
+  # existing on it (same existence-model reasoning as every other
+  # per-slot entity in this file). Only the instant flow rate is
+  # implemented so far, not the totalizer - see read_flow_instant()'s own
+  # comment for why that's a deliberate, documented scope cut for now,
+  # not an oversight.
+  #
+  # Named "Instant Flow", NOT "Flow Rate" - a real, found-before-shipping
+  # naming collision: dashboard.js's own HELP_TEXT (keyed purely by the
+  # displayName()-stripped label, group-unaware - the same mechanism that
+  # caused the MQTT group's own real bugs earlier this project, see
+  # REQUIREMENTS.md) already has a "Flow Rate" entry for the PULSE
+  # METERS' own field (pulse-timing-based, mentions "Zero-Flow Timeout" -
+  # neither concept applies to this Modbus register read). Naming this
+  # one differently sidesteps the collision entirely rather than trying
+  # to make that lookup group-aware.
+  - platform: template
+    id: ${id_prefix}_flow_rate
+    name: "${friendly_name} Instant Flow"
+    icon: "mdi:pulse"
+    unit_of_measurement: "m³/h"
+    device_class: volume_flow_rate
+    state_class: measurement
+    accuracy_decimals: 3
+    disabled_by_default: true
+    update_interval: ${poll_interval}
+    lambda: |-
+      uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+      if (address == 0 || id(${id_prefix}_device_type).state != "Flow") return {};
+      float value;
+      bool collision = false;
+      bool ok = rs485_modbus::read_flow_instant(id(rs485_uart), address, value, 50, &collision);
+      rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
+                                         id(pressure_scan_collisions), address, ok, collision);
+      return ok ? value : NAN;
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 11
+
 binary_sensor:
   # Live/ephemeral only - never persisted (see the file header) - purely
-  # this slot's own last poll result, published from the Pressure sensor's
-  # lambda above. entity_category: diagnostic + disabled_by_default:
+  # this slot's own last poll result, published from whichever sensor
+  # lambda above is actually active for this slot's own Device Type (see
+  # rs485_modbus::publish_poll_result(), include/rs485_modbus.h, which
+  # both of them call). entity_category: diagnostic + disabled_by_default:
   # meant mainly for the dashboard's own join (web/dashboard.js reads
   # this as the pressure table's OK/Lost badge for a registered row), but
   # still a perfectly normal HA entity if ever wanted there too.
@@ -169,6 +238,36 @@ binary_sensor:
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 15
+
+select:
+  # Which device class this slot's Modbus Address actually belongs to -
+  # added 2026-08-19 alongside the T3-1-2-H flow meter (see the file
+  # header's GENERALIZATION note). Gates which of the two sensor lambdas
+  # above (Pressure/Flow Rate) actually polls the bus - the other one
+  # short-circuits to a no-op. "Pressure" is both the first option AND
+  # the initial_option/restore fallback, matching every slot's existing,
+  # already-deployed behavior before this entity existed at all - a slot
+  # that's never had this touched (any slot registered before this
+  # update) keeps acting exactly as it always did, no migration step
+  # needed. Set once, at Add time (the dashboard's Add flow picks a type
+  # before pressing Add - see water-collector.yaml's own Add button), but
+  # also freely editable afterwards like Modbus Address/Display Name, for
+  # the rare case a slot was added as the wrong type.
+  - platform: template
+    id: ${id_prefix}_device_type
+    name: "${friendly_name} Device Type"
+    icon: "mdi:chip"
+    options:
+      - "Pressure"
+      - "Flow"
+    optimistic: true
+    restore_value: true
+    initial_option: "Pressure"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 5
 
 number:
   # The single source of truth for "registered or not" - see the file
@@ -350,8 +449,12 @@ button:
       - text.set:
           id: ${id_prefix}_display_name
           value: "${friendly_name}"
+      - select.set:
+          id: ${id_prefix}_device_type
+          option: "Pressure"
       - lambda: |-
           id(${id_prefix}_pressure).publish_state(NAN);
+          id(${id_prefix}_flow_rate).publish_state(NAN);
           id(${id_prefix}_online).publish_state(false);
 
 script:
@@ -385,11 +488,22 @@ script:
   # anywhere a real Display Name is expected, not even as a one-time
   # fallback, so an empty name now simply isn't claimed at all rather
   # than being silently replaced with something else.
+  # `device_type` (2026-08-19, added alongside the flow-meter
+  # generalization - see the file header) - a plain string, "Pressure" or
+  # "Flow", set by the Add flow's own type picker (water-collector.yaml)
+  # BEFORE this fires, same "dashboard already knows it, just pass it
+  # through" reasoning as `address` above. Not validated against the
+  # select's own options list here - an unrecognized value would just
+  # leave this slot's Device Type at whatever it already was (this
+  # select's own `optimistic: true` set_action has no validation of its
+  # own either), which for a fresh, never-registered slot is always the
+  # "Pressure" default - safe either way.
   - id: ${id_prefix}_try_register
     mode: single
     parameters:
       name: string
       address: int
+      device_type: string
     then:
       - if:
           condition:
@@ -398,6 +512,9 @@ script:
             - text.set:
                 id: ${id_prefix}_display_name
                 value: !lambda 'return name;'
+            - select.set:
+                id: ${id_prefix}_device_type
+                option: !lambda 'return device_type;'
             - number.set:
                 id: ${id_prefix}_modbus_address
                 value: !lambda 'return address;'

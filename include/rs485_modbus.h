@@ -32,6 +32,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/uart/uart.h"
 
@@ -410,6 +411,62 @@ inline bool read_pressure_bar(UARTComponent *bus, uint8_t address, float &out, u
   return true;
 }
 
+// Reads a second, DIFFERENT device class's instant reading - the T3-1-2-H
+// ultrasonic flow meter's instant flow rate, added 2026-08-19 (first unit
+// ordered same day) as this project's first slot besides the QDW90A
+// pressure sensor - see packages/pressure_sensor.yaml's own "Device Type"
+// select entity for how a slot picks which of these two readers actually
+// runs. Deliberately the ONLY flow-meter register implemented so far
+// (instant flow rate, document register "0001-0002", same big-endian
+// ABCD-word-order IEEE-754 Float32 encoding as the pressure sensor's own
+// H:22-H:23) - the totalizer (document registers 0009-0012, a LONG
+// integer part + a separate IEEE754 decimal part, together scaled by a
+// THIRD, distant register's own exponent - see
+// docs/hardver/t3-1-2-h-aramlasmero-jegyzet.md's "Skálázási képlet" for
+// the full (N+Nf)×10^n formula) is intentionally left for a follow-up
+// once real hardware confirms that scaling actually behaves as
+// documented - starting with just the simple, single-transaction,
+// high-confidence reading keeps this initial cut small and honest about
+// what's actually been verified, per the same "device class = an
+// isolated, addable driver function" architecture packages/
+// pressure_sensor.yaml's own header describes.
+//
+// NOT YET HARDWARE-CONFIRMED (2026-08-19) - the physical device hasn't
+// arrived yet; this is built from the manufacturer's own official "T3-1
+// SERIES ultrasonic water meter communication protocol" document (V51
+// firmware), the strongest source found so far, but per this project's
+// own established practice (see the QDW90A's own history) nothing here
+// is treated as final until read back from the real sensor. Two specific
+// things worth re-checking once it has:
+//   - Whether the document's "0001" really means PDU register address 0
+//     (START_REG below) or 1 - a common off-by-one ambiguity in this
+//     style of translated datasheet that the QDW90A's own H:NN
+//     convention never had (that one was already 0-based and hardware-
+//     confirmed). If this reads back garbage/NaN-looking floats on real
+//     hardware, trying START_REG = 1 first is the obvious next step.
+//   - The default RS485 settings the document lists (9600 baud, no
+//     parity, address 1) already match what water-collector.yaml's
+//     `uart: rs485_uart` bus runs at - if the physical unit actually
+//     shipped configured differently, no code here would need to
+//     change, just that bus config (out of scope for this function).
+inline bool read_flow_instant(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200,
+                               bool *collision = nullptr) {
+  const uint16_t START_REG = 0;  // document register "0001" - see the off-by-one caveat above
+  std::vector<uint16_t> regs;
+  bool any_reply = false;
+  if (!read_holding_registers(bus, address, START_REG, 2, regs, timeout_ms, &any_reply)) {
+    ESP_LOGD(TAG, "address %d: flow rate read failed%s", address, any_reply ? " (possible collision)" : "");
+    if (collision) *collision = any_reply;
+    return false;
+  }
+  if (collision) *collision = false;
+  uint32_t bits = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  out = value;
+  return true;
+}
+
 // Re-addresses a device and saves it. NOT one Modbus transaction - see
 // qdw90a-modbus-referencia.md's "Betanítás / cím módosítása": the
 // address write's own reply still comes from `old_address`, the device
@@ -502,6 +559,32 @@ inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_co
     addresses.erase(std::remove(addresses.begin(), addresses.end(), address), addresses.end());
   }
   scan_collisions->publish_state(join_address_csv(addresses));
+}
+
+// Shared online/collision bookkeeping for any registered slot's own
+// continuous poll, regardless of which device-class reader it just
+// called (read_pressure_bar()/read_flow_instant()/a future one) -
+// factored out of what used to be pressure_sensor.yaml's own inline
+// lambda logic once a second device class (the T3-1-2-H flow meter,
+// 2026-08-19) needed the exact same "publish Online, then only clear a
+// lingering Collision flag after a real cooldown, never on a single
+// clean poll alone" sequence. This is the one piece of per-poll
+// bookkeeping every device class shares - see read_pressure_bar()'s own
+// git history for why the time-based cooldown (not just "the last poll
+// was clean") is needed at all: true bus-arbitration randomness lets a
+// genuinely still-colliding address occasionally answer cleanly by
+// chance, confirmed on real hardware, 2026-08-13.
+inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, uint32_t &last_collision_ms,
+                                 esphome::text_sensor::TextSensor *scan_collisions, uint8_t address, bool ok,
+                                 bool collision) {
+  online->publish_state(ok);
+  const uint32_t COLLISION_COOLDOWN_MS = 2000;
+  if (collision) {
+    last_collision_ms = esphome::millis();
+    set_scan_collision_address(scan_collisions, address, true);
+  } else if (ok && esphome::millis() - last_collision_ms >= COLLISION_COOLDOWN_MS) {
+    set_scan_collision_address(scan_collisions, address, false);
+  }
 }
 
 }  // namespace rs485_modbus

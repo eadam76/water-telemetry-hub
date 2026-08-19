@@ -853,40 +853,51 @@ button:
                 id: slot1_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot2_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot3_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot4_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot5_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot6_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot7_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
             - script.execute:
                 id: slot8_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).state;'
       - text.set:
           id: pressure_add_name
           value: ""
       - number.set:
           id: pressure_add_address
           value: 0
+      - select.set:
+          id: pressure_add_device_type
+          option: "Pressure"
       - lambda: 'id(pressure_add_result).publish_state(id(pressure_add_probe_ok) ? "ok" : "no_response");'
 
 text:
@@ -928,6 +939,37 @@ number:
     web_server:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 15
+
+select:
+  # Set by the dashboard immediately before pressing "Pressure Sensors
+  # Add" - same transient-scratch pattern as
+  # pressure_add_name/pressure_add_address above, added 2026-08-19
+  # alongside the T3-1-2-H flow meter (see packages/pressure_sensor.yaml's
+  # own "Device Type" select for the full generalization writeup) - the
+  # Add flow now needs to say not just WHICH address/name, but also WHAT
+  # KIND of device it's registering, since a scan alone can't tell a
+  # QDW90A pressure sensor apart from a T3-1-2-H flow meter (both just
+  # answer "something's here" to a bare probe). "Pressure" is the
+  # default/first option, matching every device this project has ever
+  # actually supported before this - a dashboard build that doesn't yet
+  # render a type picker (or a stale cached page) still Adds a plain
+  # pressure sensor exactly as before, never silently misregisters
+  # anything as "Flow" by omission.
+  - platform: template
+    id: pressure_add_device_type
+    name: "Pressure Sensors Add Device Type"
+    icon: "mdi:chip"
+    options:
+      - "Pressure"
+      - "Flow"
+    optimistic: true
+    restore_value: false
+    initial_option: "Pressure"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 17
 
 packages:
   # friendly_name is deliberately generic ("Pulse Meter 1/2", not "Main"/
