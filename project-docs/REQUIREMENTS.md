@@ -532,3 +532,9 @@ A felhasználó kérése: több hálózati beállítási lehetőség a felületr
 - Fizikai/környezeti kialakítás (ház, védettség, tápellátás) – nem szoftverkövetelmény.
 - **Nyomásmérő modul**: riasztás/küszöbérték-figyelés (alacsony/magas nyomás, pl. szivattyú-védelem) – ugyanúgy HA oldalon, később, ugyanazon elv szerint, mint a vízmérőknél. Historizáció szintén HA feladata (Scope szerint amúgy is általános elv).
 - **Nyomásmérő modul**: finomkalibrációs UI (`H:12` nullponteltolás) – a regiszter írható és a képlet ismert (ld. "Kalibráció"), de nekünk explicit nem szükséges (a gyártói gyári kalibráció elég), ezért egyelőre nincs hozzá felületi elem.
+
+## Ez a dokumentum – aktív karbantartás leállítva, 2026-08-20
+
+A felhasználó jelezte, hogy ezt a fájlt már nem használja, és aggódik, hogy a folyamatos, kör-onkénti frissítése feleslegesen viszi a tokeneket. Ez jogos - a kódbázis saját, kódba ágyazott kommentjei (minden `.yaml`/`.h`/`.js` fájlban, gyakran hosszabban, mint ez a dokumentum saját bejegyzései) már amúgy is dokumentálják a "miért" kérdést pontosan ott, ahol az a legközvetlenebbül számít, a commit-üzenetek pedig kör-szintű changelogot adnak - ez a fájl a gyakorlatban jelentős, önálló hozzáadott érték nélkül duplikálta ugyanazt.
+
+**Mostantól**: nincs több automatikus, kör-onkénti bejegyzés ide, a fájl tartalma innentől lezártnak tekintendő (a meglévő történet megmarad, törlés nélkül - még mindig hasznos visszakereshető kontextus, csak nem bővül tovább alapértelmezetten). Ha valaha mégis kellene ide írni valamit, az explicit kérésre történik, nem automatikusan minden fix/funkció után.

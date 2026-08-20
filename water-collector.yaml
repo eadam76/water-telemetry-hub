@@ -499,13 +499,8 @@ sensor:
       sorting_group_id: sorting_group_network
       sorting_weight: 10
 
-  - platform: uptime
-    name: "Uptime"
-    entity_category: diagnostic
-    disabled_by_default: true
-    web_server:
-      sorting_group_id: sorting_group_system
-      sorting_weight: 10
+  # (Uptime itself moved to text_sensor below, 2026-08-20 - see that
+  # entity's own comment for why.)
 
   - platform: internal_temperature
     name: "Unit Temperature"
@@ -627,6 +622,32 @@ text_sensor:
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 40
+
+  # Moved here from a plain `sensor: platform: uptime` (2026-08-20, direct
+  # feedback: "az uptime mindig sec-ben mér? Egy év után is? Mi erre az
+  # ipari bevált standard?" - does uptime always measure in seconds, even
+  # after a year, what's the industry standard here). It genuinely did -
+  # a raw sensor: platform: uptime only ever publishes a float in seconds,
+  # no unit conversion of its own, so a real long-running device would
+  # have shown something like "2678401 s" on the System page. ESPHome's
+  # OWN answer to this - not a hand-rolled formatter here - is this
+  # text_sensor variant of the same platform: it publishes a human string
+  # ("3d 4h 12m", "45m 30s", ...), automatically dropping units finer
+  # than this entity's own update_interval can usefully report (the
+  # default 30s interval means seconds never show at all - sampling noise
+  # at that resolution - and minutes/hours drop away themselves the same
+  # way as uptime grows past 30 min/12h) and always showing days once
+  # there's more than one. Kept the default `format`/`separator`/`expand`
+  # (a plain "3d 4h 12m" reads fine without extra styling) and the
+  # default 30s update_interval (matches every other System-page reading
+  # here; uptime has no reason to need finer resolution than that).
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 10
 
   # Kept, despite the fair "what's the point if you can't update from
   # here" objection - this isn't meant to claim "you're up to date", just

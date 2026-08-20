@@ -863,19 +863,48 @@
   // duplicate-address hard-block added to the edit-save flow below, and
   // REQUIREMENTS.md's own writeup) - adding a Modbus device is scan-only
   // again, exactly like before that button ever existed. Built once,
-  // lazily, from ensureDeviceTable() - always BEFORE Scan Bus can
-  // possibly mount (that only happens once its own entity has arrived
-  // over SSE, strictly later than this synchronous call), so a plain
-  // append here is enough to guarantee the final toolbar order (Add
-  // Pulse Meter, then Scan Bus) without needing an insertBefore anchor
-  // dance the other way.
+  // eagerly, from ensureDeviceTable() - both this and Find Modbus
+  // Devices' own placeholder just below are appended together, in this
+  // fixed order, in the same call, so the toolbar's final left-to-right
+  // order (Add Pulse Meter, then Find Modbus Devices) is guaranteed by
+  // construction rather than by which entity's SSE data happens to
+  // arrive first.
   let addPulseBtn = null;
+  // "Find Modbus Devices"'s own placeholder button/status - built here,
+  // eagerly, alongside Add Pulse Meter, NOT left for mountPressureToolbarButton()
+  // to create from scratch once its real entity arrives (2026-08-20,
+  // direct feedback: "Find Modbus Devices GOMB csak 1-2 másodperc után
+  // jelenik meg" - the button only appears after 1-2 seconds, confirmed
+  // real: ESPHome dumps every entity's initial state in a fixed,
+  // cross-domain order at connect time - see the note further up on the
+  // same phenomenon affecting group labels - and `button` entities
+  // aren't dumped first, so the whole toolbar sat with only "Add Pulse
+  // Meter" on it (a client-only control with no entity of its own) for
+  // however long the burst took to reach this one. Disabled/unwired
+  // until mountPressureToolbarButton() (below) actually sees the real
+  // entity and gives it a namePath to POST to - same eager-shell-then-
+  // fill-in pattern the rest of this dashboard already uses everywhere
+  // else (existence model), just not yet applied to this one button.
+  let scanBtn = null;
+  let scanStatusEl = null;
   function mountDeviceAddButtons() {
     if (addPulseBtn) return;
     addPulseBtn = el("button", "dc-btn dc-btn-compact", "Add Pulse Meter");
     addPulseBtn.type = "button";
     addPulseBtn.addEventListener("click", () => toggleDeviceAdd());
-    deviceToolbarEl.append(addPulseBtn);
+    // Label hardcoded, not read from an entity - safe here (unlike a
+    // slot's Display Name elsewhere in this file) because it isn't an
+    // internal/meaningless compile-time id, it's this button's actual,
+    // permanent, non-renameable name (water-collector.yaml's own
+    // "Pressure Sensors Find Modbus Devices"), identical to what
+    // displayName(entity) will produce anyway the moment the real
+    // entity arrives - see mountPressureToolbarButton() below.
+    scanBtn = el("button", "dc-btn dc-btn-compact", "Find Modbus Devices");
+    scanBtn.type = "button";
+    scanBtn.disabled = true;
+    scanStatusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
+    scanStatusEl.hidden = true;
+    deviceToolbarEl.append(addPulseBtn, scanBtn, scanStatusEl);
   }
 
   // Opens the Add row, or closes it if already open (a second click =
@@ -922,13 +951,23 @@
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.idleLabel = displayName(entity);
+      // Wires the placeholder mountDeviceAddButtons() already built and
+      // appended (2026-08-20 - see that function's own comment for why),
+      // rather than creating a fresh button/status pair from scratch
+      // here - this is what actually fixes the 1-2s "pop-in" delay: the
+      // element itself has been visible on the toolbar since the page's
+      // first paint, only its click handler/namePath/enabled state were
+      // ever missing until now.
+      entity.btnEl = scanBtn;
+      entity.statusEl = scanStatusEl;
       // The button's own label never changes (previously swapped to
       // "Scanning…", which - being longer than "Scan Bus" - visibly grew
       // the button itself mid-scan, confirmed to look wrong on real
       // hardware, 2026-08-13). "Scanning…" + the spinner instead live in
       // a separate status element next to the button, so the button's
       // own size is fixed regardless of state.
-      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
+      entity.btnEl.textContent = entity.idleLabel;
+      entity.btnEl.disabled = false;
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
         // A fresh, deliberate scan supersedes any earlier session-local
@@ -938,12 +977,6 @@
         dismissedScanAddresses.clear();
         fetch(`${entity.namePath}/press`, { method: "POST" });
       });
-      entity.statusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
-      entity.statusEl.hidden = true;
-      // Plain append - always lands after the Add buttons (see
-      // mountDeviceAddButtons()'s own comment for why that's guaranteed
-      // regardless of arrival-order timing).
-      deviceToolbarEl.append(entity.btnEl, entity.statusEl);
     }
   }
 
@@ -1403,7 +1436,25 @@
         confirmBtn._busy = true;
         confirmBtn.disabled = true;
         fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-          .then(() => fetch(`${typeEntity.namePath}/set?value=${encodeURIComponent(deviceType)}`, { method: "POST" }))
+          // `?option=`, NOT `?value=` - the REAL bug behind "egyáltalán
+          // megjegyzi a device class-t?" (does it even remember the
+          // device class at all?), confirmed 2026-08-20 from ESPHome's
+          // own installed web_server.cpp: handle_select_request() reads
+          // its target option from the "option" query parameter
+          // specifically (parse_cstr_param_(request, "option", ...)),
+          // unlike number/text's own handlers, which both read "value" -
+          // every OTHER /set call in this file targets a number or text
+          // entity, so this mismatch was invisible everywhere else. Sent
+          // as `?value=` here, ESPHome's select handler found no
+          // "option" param, silently left the SelectCall's option unset,
+          // and call.perform() then applied a no-op - the scratch
+          // "Add Device Type" select never actually changed server-side,
+          // no matter what the dropdown showed client-side. That's
+          // exactly why the live preview (icon/hint, pure client-side JS)
+          // always looked right while the slot itself, once actually
+          // registered, was always "Pressure" - the one value that was
+          // never sent at all.
+          .then(() => fetch(`${typeEntity.namePath}/set?option=${encodeURIComponent(deviceType)}`, { method: "POST" }))
           .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(address)}`, { method: "POST" }))
           .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
           .finally(() => {

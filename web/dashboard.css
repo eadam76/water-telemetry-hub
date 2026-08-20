@@ -804,17 +804,28 @@ body {
 .dc-pulsemeter-expanded-field {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 0;
+  gap: 8px;
+  padding: 4px 0;
 }
 
 .dc-pulsemeter-expanded-field:first-child {
   padding-top: 2px;
 }
 
+/* No min-width (2026-08-20, direct feedback: "az edit nézetben a
+ * komponensek között túl sok helyet hagysz" - you leave too much space
+ * between components in the edit view). Used to be a fixed 130px column
+ * - sized for this box's longest label ("Zero-Flow Timeout"), which left
+ * a large, visibly empty gap before the input on every SHORTER label
+ * ("Reading", "Modbus Address") sharing the same box - confirmed on a
+ * real screenshot, 2026-08-20, that this fixed gap, not the input's own
+ * size, was what actually read as "too much space". Content-sized
+ * instead: each label sits directly next to its own input, at the small
+ * fixed .dc-pulsemeter-expanded-field gap above - the two fields in this
+ * box no longer align their inputs into one shared column, but that
+ * grid-alignment was never the thing asked for; compactness was. */
 .dc-pulsemeter-expanded-label {
   flex: 0 0 auto;
-  min-width: 130px;
   font-size: 12.5px;
   color: var(--dc-text-muted);
 }
@@ -1025,8 +1036,27 @@ body {
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
   color: var(--dc-text);
-  border-radius: var(--dc-radius-sm);
-  padding: 7px 9px;
+  /* --dc-radius-xs (6px), not the -sm (9px) every OTHER input in this
+     file uses (.dc-field input, above) - direct, repeated feedback
+     across this whole project (2026-08-15 and again 2026-08-20) that
+     this table specifically still reads as "a form", not "a table" -
+     GitHub/Linear/Notion-style dense tables (already the explicit
+     comparison cited elsewhere in this file) use noticeably tighter
+     corners than a standalone form field does. Deliberately NOT applied
+     to .dc-field above - that's Service/System's own settings-form
+     layout, genuinely IS a form, and keeping it at -sm keeps this a
+     table-specific choice, not a global one that would fight the rest
+     of the app's own visual language. */
+  border-radius: var(--dc-radius-xs);
+  /* Tightened alongside the radius above, same feedback, same reasoning
+     - was 7px 9px. Vertical padding is what's left doing the "how bulky
+     does this input look" work once font-size can't shrink further (see
+     the iOS note just below) - 5px keeps a comfortable tap target
+     (confirmed against the same 44px-ish minimum every other tappable
+     control in this file already targets, given the 16px line-height
+     this font-size implies) without the extra headroom a plain form
+     field wants. */
+  padding: 5px 8px;
   font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input above */
   min-width: 0;
   transition: background-color 0.1s ease, border-color 0.1s ease, padding 0.1s ease;
@@ -1043,8 +1073,10 @@ body {
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
   color: var(--dc-text);
-  border-radius: var(--dc-radius-sm);
-  padding: 6px 8px;
+  /* -xs, not -sm - matches the table's own text/number inputs just
+     above (2026-08-20 density pass, same reasoning). */
+  border-radius: var(--dc-radius-xs);
+  padding: 5px 8px;
   font-size: 13.5px;
 }
 
