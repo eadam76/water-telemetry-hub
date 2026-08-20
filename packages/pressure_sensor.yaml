@@ -162,7 +162,8 @@ sensor:
       bool collision = false;
       bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), address, ok, collision);
+                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
+                                         collision);
       // A plain timeout (ok == false, collision == false) is inconclusive
       // either way - publish_poll_result() above already leaves the
       // Collision flag untouched for it, same reasoning as before this
@@ -217,7 +218,8 @@ sensor:
       bool collision = false;
       bool ok = rs485_modbus::read_flow_instant(id(rs485_uart), address, value, 50, &collision);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), address, ok, collision);
+                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
+                                         collision);
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}
@@ -274,7 +276,8 @@ sensor:
       bool device_responded = false;
       bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision, &device_responded);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), address, ok, collision, device_responded);
+                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
+                                         collision, device_responded);
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}

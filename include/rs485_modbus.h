@@ -697,6 +697,32 @@ inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_co
   scan_collisions->publish_state(join_address_csv(addresses));
 }
 
+// Same CSV-of-addresses pattern as set_scan_collision_address() just
+// above, for "Scan Mismatches" instead (2026-08-21 - see that
+// text_sensor's own comment in water-collector.yaml for the full
+// reasoning) - a device that answered cleanly but declined this specific
+// request (a validated Modbus exception), as opposed to a collision
+// (garbled/corrupted bytes) or silence (no reply at all). No time-based
+// cooldown here unlike collision's own (COLLISION_COOLDOWN_MS in
+// publish_poll_result() below) - a collision is genuinely
+// bus-arbitration-random (a still-colliding address can occasionally
+// answer cleanly by chance, needing the cooldown to avoid a false-clear
+// flicker), but whether a specific register is supported is a fixed,
+// deterministic property of the device - it either answers usably or it
+// doesn't, poll to poll, with no randomness to smooth over.
+inline void set_scan_mismatch_address(esphome::text_sensor::TextSensor *scan_mismatches, uint8_t address,
+                                       bool present) {
+  auto addresses = parse_address_csv(scan_mismatches->state);
+  bool already_present = std::find(addresses.begin(), addresses.end(), address) != addresses.end();
+  if (present == already_present) return;
+  if (present) {
+    addresses.push_back(address);
+  } else {
+    addresses.erase(std::remove(addresses.begin(), addresses.end(), address), addresses.end());
+  }
+  scan_mismatches->publish_state(join_address_csv(addresses));
+}
+
 // Shared online/collision bookkeeping for any registered slot's own
 // continuous poll, regardless of which device-class reader it just
 // called (read_pressure_bar()/read_flow_instant()/a future one) -
@@ -732,8 +758,15 @@ inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_co
 // so nothing here hides that Total Consumption specifically couldn't be
 // read this poll, only the whole-slot Online/Lost status stops being
 // dragged down by it.
+// `scan_mismatches` (2026-08-21, new required parameter - see
+// set_scan_mismatch_address()'s own comment) - every existing caller
+// needed updating to pass `id(pressure_scan_mismatches)` alongside the
+// Scan Collisions text_sensor it already passed; both entities live in
+// water-collector.yaml, shared across every slot the same way Scan
+// Collisions already was.
 inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, uint32_t &last_collision_ms,
-                                 esphome::text_sensor::TextSensor *scan_collisions, uint8_t address, bool ok,
+                                 esphome::text_sensor::TextSensor *scan_collisions,
+                                 esphome::text_sensor::TextSensor *scan_mismatches, uint8_t address, bool ok,
                                  bool collision, bool device_responded = false) {
   online->publish_state(ok || device_responded);
   const uint32_t COLLISION_COOLDOWN_MS = 2000;
@@ -743,6 +776,12 @@ inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, ui
   } else if (ok && esphome::millis() - last_collision_ms >= COLLISION_COOLDOWN_MS) {
     set_scan_collision_address(scan_collisions, address, false);
   }
+  // Mismatch: the device responded, but not usably, and it wasn't a
+  // collision either - "cleanly declined". Clears the instant a read
+  // either succeeds OR the device stops responding at all (device_responded
+  // itself goes false) - see set_scan_mismatch_address()'s own comment
+  // for why this needs no time-based cooldown, unlike collision's.
+  set_scan_mismatch_address(scan_mismatches, address, device_responded && !ok);
 }
 
 }  // namespace rs485_modbus

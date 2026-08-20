@@ -359,12 +359,36 @@ body {
   display: inline-flex;
 }
 
-.dc-meter-card-header span {
+/* Narrowed from a bare "span" descendant selector to this specific
+ * class (2026-08-21) - the header gained a third span this round, the
+ * new top-right status badge (.dc-pressure-badge, appended in
+ * ensureHomeGroup()) - a bare "span" selector would have forced that
+ * badge into this label's own uppercase/letter-spaced treatment too,
+ * fighting the badge's own styling instead of just labeling the
+ * group name the way this rule always meant to. */
+.dc-meter-card-header-label {
   font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--dc-text-muted);
+}
+
+/* Top-right corner status badge (2026-08-21, new feature - see
+ * ensureHomeGroup()'s own comment on statusEl in dashboard.js) - reuses
+ * .dc-pressure-badge as-is (same dot+color-by-class treatment the
+ * Devices table's own Status column already uses), this class only
+ * handles positioning: margin-left: auto pushes it to the header row's
+ * own right edge (the header is already display: flex - see
+ * .dc-meter-card-header above), landing it in the card's top-right
+ * corner without needing absolute positioning or any assumption about
+ * the header's own height. flex-shrink: 0 - the icon+label pair on the
+ * left already has room to shrink/wrap first on a narrow card if it
+ * ever needs to; this badge's own text ("Collision"/"Mismatch"/
+ * "Checking…") is short and reads worse broken across two lines. */
+.dc-meter-card-status {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* A meter's lowest-weight metric (Total Consumption) - the one figure
@@ -1299,6 +1323,17 @@ body {
 }
 
 .dc-pressure-badge-collision {
+  color: var(--dc-danger);
+}
+
+/* A device that answered cleanly but declined a specific request - not
+ * a real bus collision (see set_scan_mismatch_address()'s own comment,
+ * include/rs485_modbus.h) but still a red/danger-tier problem, direct
+ * feedback, 2026-08-21: "legyen egy Piros 'Mismatch' hiba" (there
+ * should be a red "Mismatch" error) - same color token as Collision on
+ * purpose (both are genuine problems, not just "still settling"), a
+ * distinct label is what actually tells them apart. */
+.dc-pressure-badge-mismatch {
   color: var(--dc-danger);
 }
 

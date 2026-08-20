@@ -368,10 +368,26 @@
     // generic costs nothing.
     const iconEl = el("span", "dc-meter-card-header-icon", svgIcon(groupIcon(name)));
     const labelEl = el("span", "dc-meter-card-header-label", groupLabel(name));
-    header.append(iconEl, labelEl);
+    // Top-right status badge (2026-08-21, new feature: "a dashboardon
+    // minden eszköz dobozának jobb felső sarkában tegyük ki a
+    // státuszt színhelyesen (ugyan azt ami a táblában a sátusz
+    // oszlopban megjelenik)" - put the SAME status the Devices table's
+    // own Status column shows, color-correct, in the top-right corner
+    // of every device's Home card box). Reuses .dc-pressure-badge as-is
+    // (same dot+color-by-class treatment the table already uses,
+    // including the new Mismatch state just added above) rather than
+    // inventing a second badge component - pushed to the row's own
+    // right edge via margin-left: auto (dashboard.css) inside the
+    // header's existing flex row, not absolute-positioned - simpler,
+    // and doesn't need to account for the header's own height varying.
+    // Updated live from updateHomeCardStatus() below - see
+    // syncPressureHomeCard()/updatePulseMeterStatus() for the two
+    // call sites (one per device type).
+    const statusEl = el("span", "dc-pressure-badge dc-meter-card-status", "");
+    header.append(iconEl, labelEl, statusEl);
     const body = el("div", "dc-meter-card-body");
     card.append(header, body);
-    g = { weight: groupWeights.get(name) ?? 500, card, body, iconEl };
+    g = { weight: groupWeights.get(name) ?? 500, card, body, iconEl, statusEl };
     homeGroups.set(name, g);
     document.getElementById("dc-page-home").appendChild(card);
     reorderHomeGroups();
@@ -398,6 +414,40 @@
   function refreshGroupIcon(name) {
     const home = homeGroups.get(name);
     if (home) home.iconEl.innerHTML = svgIcon(groupIcon(name));
+  }
+
+  // Shared text+CSS-class mapping for a pressure/flow slot's tri(+)-state
+  // status - the single source of truth both upsertRegisteredPressureRow()
+  // (Devices table Status column) and updateHomeCardStatus() (the new
+  // Home card corner badge, 2026-08-21) read from, so the two can never
+  // silently drift apart on what "Mismatch" etc. actually means.
+  const PRESSURE_BADGE_CLASSES = [
+    "dc-pressure-badge-ok",
+    "dc-pressure-badge-lost",
+    "dc-pressure-badge-collision",
+    "dc-pressure-badge-mismatch",
+    "dc-pressure-badge-pending",
+  ];
+  function pressureStatusState(online, hasCollision, hasMismatch) {
+    if (hasCollision) return { text: "Collision", cssClass: "dc-pressure-badge-collision" };
+    if (hasMismatch) return { text: "Mismatch", cssClass: "dc-pressure-badge-mismatch" };
+    if (online === undefined) return { text: "Checking…", cssClass: "dc-pressure-badge-pending" };
+    return online ? { text: "OK", cssClass: "dc-pressure-badge-ok" } : { text: "Lost", cssClass: "dc-pressure-badge-lost" };
+  }
+
+  // Updates a device's Home card corner badge (new feature, 2026-08-21 -
+  // see ensureHomeGroup()'s own comment on statusEl) - shared by both
+  // device types; each passes in whichever {text, cssClass} its own
+  // status logic already computed (pressureStatusState() above for
+  // pressure/flow slots, or the plain Idle/Flowing pair pulse meters
+  // already had). A no-op if this group has no Home card (yet/anymore) -
+  // same "call it, it either does something or it doesn't" pattern as
+  // refreshGroupIcon() just above.
+  function updateHomeCardStatus(groupName, text, cssClass) {
+    const home = homeGroups.get(groupName);
+    if (!home || !home.statusEl) return;
+    home.statusEl.textContent = text;
+    for (const c of PRESSURE_BADGE_CLASSES) home.statusEl.classList.toggle(c, c === cssClass);
   }
 
   function reorderHomeGroups() {
@@ -819,6 +869,19 @@
       .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
   }
 
+  // Mirrors latestCollisionAddresses() above, for "Scan Mismatches"
+  // instead (2026-08-21 - a device that answered cleanly but declined a
+  // specific request, distinct from a collision - see that text_sensor's
+  // own comment in water-collector.yaml for the full reasoning).
+  function latestMismatchAddresses() {
+    const e = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Mismatches");
+    if (!e || typeof e.value !== "string" || !e.value.trim()) return [];
+    return e.value
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
+  }
+
   // Cross-slot duplicate check, purely against sensors already registered
   // in *this* list - not a real electrical bus collision check (that
   // needs actually talking Modbus over the real hardware, not available
@@ -1085,7 +1148,7 @@
   // expand row below, only present while editing - the exact same
   // pattern the pulse meters' own Reading/Zero-Flow Timeout already used
   // (upsertRegisteredPulseMeterRow() below), now shared table-wide.
-  function upsertRegisteredPressureRow(tbody, groupName, online, hasCollision, isFirst, isLast, deviceType) {
+  function upsertRegisteredPressureRow(tbody, groupName, online, hasCollision, hasMismatch, isFirst, isLast, deviceType) {
     const key = "reg:" + groupName;
     const nameEntity = pressureSlotEntity(groupName, "Display Name");
     const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
@@ -1313,11 +1376,20 @@
       row._nameInput.value = (nameEntity && nameEntity.value) || "";
       if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
     }
-    row._statusEl.textContent = hasCollision ? "Collision" : online === undefined ? "Checking…" : online ? "OK" : "Lost";
-    row._statusEl.classList.toggle("dc-pressure-badge-ok", online === true && !hasCollision);
-    row._statusEl.classList.toggle("dc-pressure-badge-lost", online === false && !hasCollision);
-    row._statusEl.classList.toggle("dc-pressure-badge-collision", hasCollision);
-    row._statusEl.classList.toggle("dc-pressure-badge-pending", online === undefined && !hasCollision);
+    // Mismatch (2026-08-21, direct feedback: "itt nem lehet OK, a
+    // logban is jelzed a hibát... legyen egy Piros 'Mismatch' hiba" -
+    // can't be OK here, the log itself flags the error too, there
+    // should be a red "Mismatch" error) - a slot whose device answered
+    // cleanly but declined a specific request (see set_scan_mismatch_
+    // address()'s own comment, include/rs485_modbus.h, for the full
+    // "not a collision, not unreachable" reasoning). pressureStatusState()
+    // (above) is the shared source of truth for the text+class mapping -
+    // also feeds the new Home card corner badge just below, so the two
+    // can never silently drift apart.
+    const status = pressureStatusState(online, hasCollision, hasMismatch);
+    row._statusEl.textContent = status.text;
+    for (const c of PRESSURE_BADGE_CLASSES) row._statusEl.classList.toggle(c, c === status.cssClass);
+    updateHomeCardStatus(groupName, status.text, status.cssClass);
     row._upBtn.disabled = !!isFirst;
     row._downBtn.disabled = !!isLast;
     // Device Type is editable after Add too (see that select's own
@@ -1651,6 +1723,7 @@
     const scanAddresses = latestScanAddresses();
     const collisionAddresses = latestCollisionAddresses();
     const collisionSet = new Set(collisionAddresses);
+    const mismatchSet = new Set(latestMismatchAddresses());
     const atCeiling = registered.length >= PRESSURE_MAX_SLOTS;
 
     const seenKeys = new Set();
@@ -1665,6 +1738,7 @@
           d.groupName,
           d.online, // tri-state: true/false/undefined ("never polled yet") - see upsertRegisteredPressureRow()'s own comment
           collisionSet.has(d.address),
+          mismatchSet.has(d.address),
           i === 0,
           i === orderedRegistered.length - 1,
           d.deviceType
@@ -2721,9 +2795,14 @@
     const row = deviceTableRows.get("reg:" + groupName);
     if (!row || !row._statusEl) return;
     const flowing = typeof pulseRate === "number" && pulseRate > 0;
-    row._statusEl.textContent = flowing ? "Flowing" : "Idle";
+    const text = flowing ? "Flowing" : "Idle";
+    row._statusEl.textContent = text;
     row._statusEl.classList.toggle("dc-pressure-badge-ok", flowing);
     row._statusEl.classList.toggle("dc-pressure-badge-pending", !flowing);
+    // Home card corner badge (2026-08-21, new feature - see
+    // ensureHomeGroup()'s own comment on statusEl) - same text/color
+    // this row's own badge just above got.
+    updateHomeCardStatus(groupName, text, flowing ? "dc-pressure-badge-ok" : "dc-pressure-badge-pending");
   }
 
   // Pulse Rate/Total Pulses/Sort Order never get a System-page row -

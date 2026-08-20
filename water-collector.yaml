@@ -580,6 +580,33 @@ text_sensor:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 3.5
 
+  # Addresses whose device DID respond, cleanly and unambiguously (a
+  # real, validated Modbus exception - see read_holding_registers()'s
+  # own "device_responded" out-param) but declined a specific request
+  # this slot's own poll needs (2026-08-21, direct feedback: "itt nem
+  # lehet OK, a logban is jelzed a hibát... legyen egy Piros 'Mismatch'
+  # hiba a táblázatban" - can't be OK here, the log itself flags the
+  # error too, there should be a red "Mismatch" error in the table).
+  # Same CSV-of-addresses pattern as Scan Collisions above (see
+  # set_scan_mismatch_address(), include/rs485_modbus.h) - kept live
+  # between explicit scans by every registered slot's own continuous
+  # poll, not just a scan_bus() snapshot, same reasoning as that entity.
+  # Genuinely distinct from a collision (a validated single-device
+  # exception is the polar opposite of two devices' replies colliding
+  # on the wire - see that fix's own history) - a slot can show
+  # "Mismatch" while still being perfectly reachable and reporting other
+  # readings fine (see publish_poll_result()'s "device_responded" own
+  # comment for why Online itself isn't dragged down by this).
+  - platform: template
+    id: pressure_scan_mismatches
+    name: "Pressure Sensors Scan Mismatches"
+    icon: "mdi:alert-octagon-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.6
+
   # "ok"/"no_response" - published once, right after every "Pressure
   # Sensors Add" press (see that button's own comment) - lets the
   # dashboard's manual "Add -> Modbus" flow (web/dashboard.js) show a
