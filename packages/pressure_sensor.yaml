@@ -157,7 +157,7 @@ sensor:
     update_interval: ${poll_interval}
     lambda: |-
       uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
-      if (address == 0 || id(${id_prefix}_device_type).state != "Pressure") return {};
+      if (address == 0 || id(${id_prefix}_device_type).current_option() != "Pressure") return {};
       float value;
       bool collision = false;
       bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
@@ -209,7 +209,7 @@ sensor:
     update_interval: ${poll_interval}
     lambda: |-
       uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
-      if (address == 0 || id(${id_prefix}_device_type).state != "Flow") return {};
+      if (address == 0 || id(${id_prefix}_device_type).current_option() != "Flow") return {};
       float value;
       bool collision = false;
       bool ok = rs485_modbus::read_flow_instant(id(rs485_uart), address, value, 50, &collision);

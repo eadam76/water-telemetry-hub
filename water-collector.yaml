@@ -853,42 +853,42 @@ button:
                 id: slot1_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot2_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot3_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot4_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot5_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot6_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot7_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
             - script.execute:
                 id: slot8_try_register
                 name: !lambda 'return id(pressure_add_name).state;'
                 address: !lambda 'return (int) id(pressure_add_address).state;'
-                device_type: !lambda 'return id(pressure_add_device_type).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
       - text.set:
           id: pressure_add_name
           value: ""
