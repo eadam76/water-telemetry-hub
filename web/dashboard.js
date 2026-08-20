@@ -86,12 +86,22 @@
     list: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
     gauge: '<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1" fill="currentColor" stroke="none"/>',
-    // "Flow" device type (T3-1-2-H ultrasonic flow meter, 2026-08-19) -
-    // three horizontal ripple/wave lines, distinct from both "gauge"
-    // (pressure) and "water" (pulse meters' own droplet) so all three
-    // device kinds read apart from each other at a glance in the unified
-    // Devices table.
-    flow: '<path d="M3 8c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 14c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>',
+    // "Flow" device type (T3-1-2-H ultrasonic flow meter, 2026-08-19) - a
+    // line-arrow-line "flow direction" glyph. NOT the original design
+    // (three horizontal ripple/wave lines) - direct feedback, 2026-08-20:
+    // "a flow ikonja megegyezik a pressure ikonnal" (the flow icon looks
+    // the same as the pressure icon). Rendered and compared at the
+    // table's actual 17px size (.dc-device-type-icon svg below): the
+    // wave version and "gauge"'s own arc+needle are both thin curved
+    // strokes on a dark background with no fill, and at that size and a
+    // phone screenshot's compression they really do read as near-
+    // identical smudges - not a code bug (the two paths ARE different,
+    // and the change-preview listener does correctly swap between them),
+    // a legibility one. This arrow shape has a completely different
+    // silhouette (two straight segments + a triangular arrowhead) from
+    // "gauge"'s arc, so it stays distinguishable at the same small size -
+    // confirmed via a headless-Chromium render at 17px before shipping.
+    flow: '<path d="M4 12h4M14.5 12H20"/><path d="M9 8l5 4-5 4"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
     // Pressure table row actions (see upsertRegisteredPressureRow() below) -
     // pencil starts editing Name/Address, trash un-registers the slot,
@@ -572,6 +582,11 @@
   const PRESSURE_SLOT_RE = /^Pressure Sensor \d+$/;
   const PRESSURE_ADD_GROUP = "Pressure Sensors";
   const PRESSURE_MAX_SLOTS = 8;
+  // What each Device Type actually reads once added (2026-08-19,
+  // upsertNewPressureRow()'s own type-picker preview) - matches
+  // packages/pressure_sensor.yaml's own Pressure/Instant Flow sensor
+  // entities exactly (unit_of_measurement there, name here).
+  const TYPE_READING_HINT = { Pressure: "→ Pressure, bar", Flow: "→ Instant Flow, m³/h" };
   // Real firmware sorting_group name (water-collector.yaml's
   // sorting_group_pulse_meters) - kept purely for its own sorting_weight
   // (used below to position the unified "Devices" table), same as
@@ -1264,6 +1279,15 @@
       nameRow.appendChild(nameContent);
       nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Modbus address: ${address}`));
 
+      // Name input + Device Type picker share ONE row (2026-08-19, direct
+      // feedback: stacked underneath each other made the name input
+      // stretch to the box's full width for no reason, and read as two
+      // separate steps instead of one - see .dc-pressure-name-edit-row's
+      // own comment in dashboard.css for the actual CSS mechanism this
+      // needed).
+      const editRow = el("div", "dc-pressure-name-edit-row");
+      nameContent.appendChild(editRow);
+
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.maxLength = 32;
@@ -1280,7 +1304,7 @@
         // regardless.
         if (!row._confirmBtn._busy) row._confirmBtn.disabled = atCeiling || !nameInput.value.trim();
       });
-      nameContent.appendChild(nameInput);
+      editRow.appendChild(nameInput);
       row._nameInput = nameInput;
 
       // Device type picker (2026-08-19, T3-1-2-H flow meter - see
@@ -1295,11 +1319,31 @@
       const typeSelect = document.createElement("select");
       typeSelect.className = "dc-pressure-type-select";
       typeSelect.innerHTML = `<option value="Pressure">Pressure</option><option value="Flow">Flow</option>`;
-      typeSelect.addEventListener("change", () => {
-        typeIcon.innerHTML = svgIcon(typeSelect.value === "Flow" ? "flow" : "gauge");
-      });
-      nameContent.appendChild(typeSelect);
+      editRow.appendChild(typeSelect);
       row._typeSelect = typeSelect;
+
+      // What reading/unit this type will actually add - direct feedback,
+      // 2026-08-19 ("a mértékegységet és a kijelzett entitásokat már
+      // tudjuk, miért nem jelenítettük meg?" - we already know the unit
+      // and the entity that'll be shown, why isn't it displayed?). Purely
+      // informational, updates live with the selection, same pattern as
+      // the icon preview right next to it. Its OWN line below editRow,
+      // not squeezed into that row alongside the name input and type
+      // select (2026-08-20: tried inline first, but the row then had
+      // nowhere left to shrink and just overflowed the card sideways
+      // instead - the exact "kilóg a dobozból" complaint this whole
+      // round exists to fix, just moved rather than solved). name input +
+      // type select is the pairing that actually needed to be "one row,
+      // vertically centered" per that feedback; this hint reads fine as
+      // its own compact line, same as .dc-pressure-addr-hint above it.
+      const typeHint = el("span", "dc-pressure-type-hint", TYPE_READING_HINT.Pressure);
+      nameContent.appendChild(typeHint);
+      const updateTypePreview = () => {
+        const flow = typeSelect.value === "Flow";
+        typeIcon.innerHTML = svgIcon(flow ? "flow" : "gauge");
+        typeHint.textContent = flow ? TYPE_READING_HINT.Flow : TYPE_READING_HINT.Pressure;
+      };
+      typeSelect.addEventListener("change", updateTypePreview);
 
       const actionCell = row.querySelector(".dc-pressure-action");
 

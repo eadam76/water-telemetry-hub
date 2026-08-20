@@ -1022,6 +1022,58 @@ body {
   font-size: 13.5px;
 }
 
+/* Name input + Device Type select, one row (2026-08-20, direct feedback:
+ * "a komponensek nincsenek függőlegesen középre rendezve... egy sorban
+ * kéne elrendezni" - stacked on separate lines before this, because the
+ * name input's own width: 100% (.dc-pressure-table input[type="text"]
+ * above) forced it to claim the whole cell width, pushing the type
+ * select onto a line beneath it and widening the block past the card's
+ * edge in the process ("kilóg a dobozból" - same complaint, same root
+ * cause, not a separate bug). No flex-wrap - this cell is already the
+ * narrowest place in the table on a phone, wrapping would just rebuild
+ * the two-line stack under different math; the name input shrinks
+ * instead (flex: 1 1 auto + the width: auto override just below), the
+ * select and hint keep their own natural width. */
+.dc-pressure-name-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.dc-pressure-name-edit-row input[type="text"] {
+  /* Overrides .dc-pressure-table input[type="text"]'s width: 100% -
+     inside this row the name input shares space with the type select
+     and hint instead of owning the whole line by itself. */
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dc-pressure-name-edit-row .dc-pressure-type-select {
+  /* Its own margin-top above was for the old stacked layout; flush here,
+     align-items: center on the row does the vertical alignment now. */
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+
+/* What reading/unit the current Device Type selection will actually add
+ * (2026-08-20, direct feedback: "a mértékegységet és a kijelzett
+ * entitásokat már tudjuk, miért nem jelenítettük meg?") - same small,
+ * muted treatment as .dc-pressure-addr-hint above, and (like that hint)
+ * its own line below the name-input/type-select row rather than
+ * squeezed inline alongside them - tried inline first, but on a narrow
+ * phone width there just isn't room for input + select + this text on
+ * one line without either the text truncating mid-word or the row
+ * overflowing sideways again, see the JS-side comment where this is
+ * appended for the actual reasoning. */
+.dc-pressure-type-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--dc-text-faint);
+}
+
 /* A locked (disabled, not currently being edited) row should read as
  * plain table text, not as a form full of bordered input boxes - direct
  * feedback, 2026-08-15: "A táblázat nekem még mindig nem táblázat
