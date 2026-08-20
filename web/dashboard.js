@@ -54,15 +54,23 @@
   // to them was redundant clutter, not help.
   const HELP_TEXT = {
     "Total Consumption": "Cumulative water use, calculated from the pulse count and the last calibration - not a live meter photograph.",
-    "Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
+    // Renamed from "Flow Rate" to "Calculated Flow Rate" (2026-08-20,
+    // direct feedback) once "Instant Flow" (a Modbus flow meter's own
+    // DIRECTLY-read register) existed alongside it - "Flow Rate" alone no
+    // longer said which of the two kinds of reading it was. This key
+    // must match packages/water_meter.yaml's own entity name exactly
+    // (HELP_TEXT is looked up by the displayName()-stripped label).
+    "Calculated Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
-    "Zero-Flow Timeout": "How long with no pulses before Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
+    "Zero-Flow Timeout": "How long with no pulses before Calculated Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
     // A Modbus flow-meter slot's own reading (2026-08-19) - deliberately
-    // NOT keyed "Flow Rate", which already means the pulse meters' own,
-    // differently-computed field above (see packages/pressure_sensor.yaml's
-    // own comment on this entity for the naming-collision reasoning).
-    "Instant Flow": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Flow Rate is.",
+    // NOT keyed "Calculated Flow Rate", which already means the pulse
+    // meters' own, differently-computed field above (see
+    // packages/pressure_sensor.yaml's own comment on this entity for the
+    // naming-collision reasoning that led to "Instant Flow" in the first
+    // place).
+    "Instant Flow": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Calculated Flow Rate is.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Reboot Device (CR #3, previous round): its confirm dialog
     // already explains the consequence when it matters - a permanent "?"
@@ -86,22 +94,17 @@
     list: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
     gauge: '<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1" fill="currentColor" stroke="none"/>',
-    // "Flow" device type (T3-1-2-H ultrasonic flow meter, 2026-08-19) - a
-    // line-arrow-line "flow direction" glyph. NOT the original design
-    // (three horizontal ripple/wave lines) - direct feedback, 2026-08-20:
-    // "a flow ikonja megegyezik a pressure ikonnal" (the flow icon looks
-    // the same as the pressure icon). Rendered and compared at the
-    // table's actual 17px size (.dc-device-type-icon svg below): the
-    // wave version and "gauge"'s own arc+needle are both thin curved
-    // strokes on a dark background with no fill, and at that size and a
-    // phone screenshot's compression they really do read as near-
-    // identical smudges - not a code bug (the two paths ARE different,
-    // and the change-preview listener does correctly swap between them),
-    // a legibility one. This arrow shape has a completely different
-    // silhouette (two straight segments + a triangular arrowhead) from
-    // "gauge"'s arc, so it stays distinguishable at the same small size -
-    // confirmed via a headless-Chromium render at 17px before shipping.
-    flow: '<path d="M4 12h4M14.5 12H20"/><path d="M9 8l5 4-5 4"/>',
+    // "Flow" device type (T3-1-2-H ultrasonic flow meter, 2026-08-19) -
+    // three horizontal ripple/wave lines. Briefly swapped for an arrow
+    // glyph (2026-08-20) on a theory that this and "gauge" read as
+    // near-identical smudges at the table's small icon size - reverted
+    // the same day on direct feedback ("az előző ikon jó volt") once the
+    // REAL bug behind "a flow ikonja megegyezik a pressure ikonnal" was
+    // found: the Dashboard page's own Home card icon was stuck showing
+    // "gauge" regardless of Device Type (ensureHomeGroup() only ever set
+    // it once, at card-creation time - see refreshGroupIcon()'s own
+    // comment) - not a legibility problem with this icon's shape at all.
+    flow: '<path d="M3 8c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 14c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
     // Pressure table row actions (see upsertRegisteredPressureRow() below) -
     // pencil starts editing Name/Address, trash un-registers the slot,
@@ -226,7 +229,7 @@
   function refreshGroupLabel(name) {
     const label = groupLabel(name);
     const home = homeGroups.get(name);
-    if (home) home.card.querySelector(".dc-meter-card-header span").textContent = label;
+    if (home) home.card.querySelector(".dc-meter-card-header-label").textContent = label;
     const svc = serviceGroups.get(name);
     if (svc) svc.section.querySelector(".dc-section-label").textContent = label;
     const diag = diagGroups.get(name);
@@ -327,19 +330,46 @@
     let g = homeGroups.get(name);
     if (g) return g;
     const card = el("div", "dc-meter-card");
-    const header = el(
-      "div",
-      "dc-meter-card-header",
-      `${svgIcon(groupIcon(name))}<span>${groupLabel(name)}</span>`
-    );
+    const header = el("div", "dc-meter-card-header");
+    // Icon lives in its own element (not just a raw svgIcon() string
+    // baked into the header's innerHTML at creation time) so it can be
+    // refreshed later - see refreshGroupIcon() below. Only matters for
+    // pressure slots today (groupIcon() depends on that slot's own,
+    // async-arriving Device Type entity - every other group's icon is a
+    // static lookup that never changes after creation), but keeping this
+    // generic costs nothing.
+    const iconEl = el("span", "dc-meter-card-header-icon", svgIcon(groupIcon(name)));
+    const labelEl = el("span", "dc-meter-card-header-label", groupLabel(name));
+    header.append(iconEl, labelEl);
     const body = el("div", "dc-meter-card-body");
     card.append(header, body);
-    g = { weight: groupWeights.get(name) ?? 500, card, body };
+    g = { weight: groupWeights.get(name) ?? 500, card, body, iconEl };
     homeGroups.set(name, g);
     document.getElementById("dc-page-home").appendChild(card);
     reorderHomeGroups();
     applyGroupVisibility(name); // no-op until the initial SSE burst settles - see settleInitialBurst()
     return g;
+  }
+
+  // Re-applies a group's current icon to its Home card - mirrors
+  // refreshGroupLabel() just below, same reason: groupIcon() itself was
+  // already correct (it reads the slot's live Device Type value), but
+  // ensureHomeGroup() above only ever CALLED it once, at card-creation
+  // time - a slot whose Device Type wasn't known yet (or was still
+  // "Pressure", the default, before the user's own choice arrived) got
+  // stuck showing the pressure "gauge" icon forever after, even once
+  // the correct Device Type/Flow reading was live everywhere else on the
+  // page. Confirmed on real hardware, 2026-08-20: "a dashboardon még
+  // mindig nyomásmérőként látszik a flowmeter" (the flow meter on the
+  // Dashboard page still shows as a pressure sensor), while the unified
+  // Devices table's own row icon (upsertRegisteredPressureRow(), which
+  // already re-evaluates every render) showed correctly. Called from
+  // syncPressureHomeCard() - i.e. on every pressure-slot entity update,
+  // same trigger renderDeviceTableBody() already uses to keep the
+  // Devices table row in sync - so this is now no less live than that.
+  function refreshGroupIcon(name) {
+    const home = homeGroups.get(name);
+    if (home) home.iconEl.innerHTML = svgIcon(groupIcon(name));
   }
 
   function reorderHomeGroups() {
@@ -1833,6 +1863,10 @@
   }
 
   function syncPressureHomeCard(groupName) {
+    // Live, on every call (this slot's Device Type may have just arrived
+    // or changed) - see refreshGroupIcon()'s own comment for the bug this
+    // fixes. A no-op if this slot has no Home card yet/anymore.
+    refreshGroupIcon(groupName);
     const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
     if (!addrEntity || !(addrEntity.value > 0)) {
       const home = homeGroups.get(groupName);

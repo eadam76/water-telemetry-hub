@@ -142,7 +142,14 @@ sensor:
   # instantaneous rate.
   - platform: template
     id: ${id_prefix}_flow_rate
-    name: "${friendly_name} Flow Rate"
+    # "Calculated", not just "Flow Rate" (2026-08-20, direct feedback) -
+    # since the T3-1-2-H generalization round this project also has a
+    # Modbus flow meter's own DIRECTLY-read "Instant Flow" register - a
+    # bare "Flow Rate" no longer says which of the two kinds of reading
+    # this is. This one is derived from pulse timing (see this sensor's
+    # on_value above), not read off a device register - "Calculated"
+    # names that distinction explicitly rather than leaving it implicit.
+    name: "${friendly_name} Calculated Flow Rate"
     icon: "mdi:water-pump"
     unit_of_measurement: "L/min"
     accuracy_decimals: 3

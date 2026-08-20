@@ -349,6 +349,16 @@ body {
   color: var(--dc-text-muted);
 }
 
+/* Icon now lives in its own wrapping span, not raw in the header
+ * (2026-08-20, see ensureHomeGroup()/refreshGroupIcon() in dashboard.js
+ * for why - a pressure slot's icon needs to be replaceable after
+ * creation, once its Device Type is known/changes). inline-flex so it
+ * doesn't add any of a bare <span>'s own inline-box quirks around the
+ * <svg> it wraps. */
+.dc-meter-card-header-icon {
+  display: inline-flex;
+}
+
 .dc-meter-card-header span {
   font-size: 13px;
   font-weight: 600;
@@ -825,7 +835,23 @@ body {
  * a liters/m³ Reading, or a Zero-Flow Timeout in seconds, with room to
  * keep typing past that without the field itself trying to fill the
  * card. */
-.dc-pulsemeter-expanded-field input[type="number"] {
+/* .dc-pressure-table prefixed in on purpose, not just
+ * .dc-pulsemeter-expanded-field input[type="number"] as originally
+ * written - that had the SAME specificity (one class + one attribute
+ * selector) as .dc-pressure-table input[type="number"] below, so which
+ * one actually won was decided by source order alone, and a later
+ * unrelated edit put the generic width: 100% rule after this one in the
+ * cascade - silently un-capping Modbus Address/Reading/Zero-Flow
+ * Timeout back to full-row width again (real, confirmed regression,
+ * 2026-08-20 - screenshot showed exactly this on a real device: "A
+ * modbus address komponens (és a többi szerkeszthető is) olyan széles
+ * lett hogy kilóg a dobozból", still true after the width: 100px rule
+ * itself was untouched - the FIX from 2026-08-15 never actually
+ * regressed, it just stopped winning). The extra class here makes this
+ * rule's specificity strictly higher than the generic one, so it wins
+ * no matter what gets added before or after it in the file from now
+ * on. */
+.dc-pressure-table .dc-pulsemeter-expanded-field input[type="number"] {
   flex: 0 0 auto;
   width: 100px;
 }
