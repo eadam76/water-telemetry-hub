@@ -53,7 +53,16 @@
   // explains the consequence right when it matters - a permanent "?" next
   // to them was redundant clutter, not help.
   const HELP_TEXT = {
-    "Total Consumption": "Cumulative water use, calculated from the pulse count and the last calibration - not a live meter photograph.",
+    // Shared, on purpose, by BOTH a pulse meter's own Total Consumption
+    // AND a Modbus flow meter's own (packages/pressure_sensor.yaml,
+    // added 2026-08-21) - unlike "Flow Rate"/"Instant Flow" earlier,
+    // which genuinely needed separate names for separate meanings, this
+    // one is a deliberate shared meaning: direct feedback, same round,
+    // that the two device types' UI "nem sokban kell eltérjen" (shouldn't
+    // differ much) where the underlying concept really is the same one.
+    // The wording below stays accurate for both ways of arriving at that
+    // number.
+    "Total Consumption": "Cumulative water use - read directly from the meter's own accumulated total (Modbus flow meters), or calculated from the pulse count and the last calibration (pulse meters). Either way, not a live meter photograph.",
     // Renamed from "Flow Rate" to "Calculated Flow Rate" (2026-08-20,
     // direct feedback) once "Instant Flow" (a Modbus flow meter's own
     // DIRECTLY-read register) existed alongside it - "Flow Rate" alone no
@@ -147,7 +156,27 @@
     if (GROUP_ICON_BY_NAME[name]) return GROUP_ICON_BY_NAME[name];
     if (PRESSURE_SLOT_RE.test(name)) {
       const typeEntity = pressureSlotEntity(name, "Device Type");
-      return typeEntity && typeEntity.value === "Flow" ? "flow" : "gauge";
+      // "dot" (neutral), not "gauge", while Device Type genuinely isn't
+      // known yet - NOT the same thing as "Pressure" (2026-08-21, real
+      // bug confirmed on hardware: "egy felparaméterett flow meter a
+      // dashboardon először bar-t mutat majd a végén vált át flow-ra...
+      // valahogy a kódban kiemelt szerepet kap a pressure" - a
+      // configured flow meter shows bar first, then eventually switches
+      // to flow - can only happen if Pressure gets a privileged role in
+      // the code). It did: `typeEntity.value === "Flow" ? ... : "gauge"`
+      // silently treated "don't know yet" (typeEntity missing, or its
+      // value not arrived over SSE yet - a real, brief window right
+      // after connect) exactly the same as an ACTUAL "Pressure" choice.
+      // Every real "unknown, don't guess" case elsewhere in this file
+      // shows nothing/neutral rather than defaulting to one specific
+      // answer - this one silently didn't, which is exactly the
+      // structural bias being described. Same fix applied to
+      // pressureSlotValueLabels() (Home card value) and
+      // registeredPressureSlots() (Devices table row) below - all three
+      // read this same entity the same slightly-wrong way independently
+      // before this round.
+      if (!typeEntity || typeEntity.value === undefined) return "dot";
+      return typeEntity.value === "Flow" ? "flow" : "gauge";
     }
     return "dot";
   }
@@ -618,7 +647,15 @@
   // "" (the unselected placeholder option - 2026-08-21, direct feedback:
   // Device Type has no default anymore, always requires an explicit
   // choice) has its own neutral entry, same pattern as Pressure/Flow.
-  const TYPE_READING_HINT = { "": "Choose a device type to see what it'll add", Pressure: "→ Pressure, bar", Flow: "→ Flow Rate, m³/h" };
+  const TYPE_READING_HINT = {
+    "": "Choose a device type to see what it'll add",
+    Pressure: "→ Pressure, bar",
+    // Both entities, not just Flow Rate (2026-08-21) - a Flow-configured
+    // slot now also gets its own Total Consumption (the flow meter's own
+    // accumulated total, read directly from the device), matching
+    // packages/pressure_sensor.yaml's own two sensor entities for "Flow".
+    Flow: "→ Total Consumption, m³ + Flow Rate, m³/h",
+  };
   // Real firmware sorting_group name (water-collector.yaml's
   // sorting_group_pulse_meters) - kept purely for its own sorting_weight
   // (used below to position the unified "Devices" table), same as
@@ -671,18 +708,23 @@
           // Which device class this slot actually is (2026-08-19,
           // T3-1-2-H flow meter generalization - see
           // packages/pressure_sensor.yaml's own "Device Type" select).
-          // Falls back to "Pressure" if the entity hasn't been seen yet
-          // (same brief connection-window gap `online` above already
-          // tolerates) - matches that select's own firmware-side default,
-          // so nothing renders as an unrecognized/blank type even for the
-          // first render or a not-yet-updated firmware.
+          // undefined (not a "Pressure" guess) if the entity hasn't been
+          // seen yet (same brief connection-window gap `online` above
+          // already tolerates) - a silent "Pressure" fallback here was a
+          // real, confirmed bug (2026-08-21: "a felparaméterett flow
+          // meter... először bar-t mutat" - see groupIcon()'s own
+          // comment for the full writeup), not a harmless placeholder -
+          // every consumer of this field (upsertRegisteredPressureRow()'s
+          // own row icon, etc.) needs to treat undefined as its own
+          // "not known yet" state, distinct from an actual "Pressure"
+          // reading.
           const typeEntity = pressureSlotEntity(e.groupName, "Device Type");
           slots.push({
             groupName: e.groupName,
             address,
             online: onlineEntity && onlineEntity.value !== undefined ? onlineEntity.value === true : undefined,
             order: orderEntity ? Math.round(orderEntity.value || 0) : 0,
-            deviceType: (typeEntity && typeEntity.value) || "Pressure",
+            deviceType: typeEntity ? typeEntity.value : undefined,
           });
         }
       }
@@ -1268,8 +1310,10 @@
     row._downBtn.disabled = !!isLast;
     // Device Type is editable after Add too (see that select's own
     // comment in pressure_sensor.yaml), so re-checked every render, not
-    // just set once at row creation.
-    row._typeIconEl.innerHTML = svgIcon(deviceType === "Flow" ? "flow" : "gauge");
+    // just set once at row creation. "dot" (neutral), not "gauge", while
+    // deviceType is undefined (not known yet, distinct from an actual
+    // "Pressure" reading - see registeredPressureSlots()'s own comment).
+    row._typeIconEl.innerHTML = svgIcon(deviceType === "Flow" ? "flow" : deviceType === "Pressure" ? "gauge" : "dot");
     // Mirrors what upsertServiceText() does for the water meters (CR #8) -
     // this slot's Home card header uses the same shared groupLabel()/
     // refreshGroupLabel() machinery, which otherwise has no other way to
@@ -1899,25 +1943,32 @@
     }
   }
 
-  // Home card existence, gated purely on Modbus Address != 0 - see this
-  // section's own header comment for why this (not create-then-hide) is
-  // what actually avoids a flash. Reuses upsertHomeMetric()/
-  // ensureHomeGroup() as-is once registered; on the way back to
-  // unregistered (Delete), removes the card outright rather than just
-  // hiding it - a deleted slot has genuinely nothing left to show.
-  // Which sensor entity actually carries this slot's live reading -
-  // "Pressure" or "Flow Rate", depending on its own Device Type select
-  // (2026-08-19, T3-1-2-H flow meter generalization; the Modbus entity
-  // itself was renamed from "Instant Flow" to plain "Flow Rate"
-  // 2026-08-20, direct feedback - see packages/pressure_sensor.yaml's
-  // own comment on that entity for the naming-collision history this
-  // sidesteps). Both always exist on every slot (existence model,
-  // packages/pressure_sensor.yaml), only one of them is ever actually
-  // populated (non-NaN) at a time.
-  function pressureSlotValueEntity(groupName) {
+  // All three of this slot's possible sensor entities, ever - used only
+  // to know which OTHER ones to clean up in syncPressureHomeCard() below
+  // (the actual selection lives in pressureSlotValueLabels()).
+  const PRESSURE_METRIC_LABELS = ["Pressure", "Total Consumption", "Flow Rate"];
+
+  // Which sensor entities actually carry this slot's live reading(s) -
+  // a LIST, not a single entity (2026-08-21, direct feedback: "a
+  // felületen nem sokban kell eltérjen" - the UI shouldn't differ much
+  // between the two device types - once the flow meter's own totalizer
+  // existed (Total Consumption, packages/pressure_sensor.yaml), a
+  // Flow-configured slot's Home card should look like a pulse meter's
+  // own (Total Consumption headline + Flow Rate underneath), not the
+  // single-value card a Pressure-configured slot still shows (nothing
+  // else on that side to pair Pressure with). Returns [] (show nothing),
+  // not a "Pressure" guess, while Device Type genuinely isn't known yet
+  // - same fix, same real-hardware-confirmed bug, as groupIcon()'s own
+  // comment above ("egy felparaméterett flow meter... először bar-t
+  // mutat majd a végén vált át flow-ra... a kódban kiemelt szerepet kap
+  // a pressure" - a configured flow meter shows bar first, then
+  // eventually switches to flow - can only happen if Pressure gets a
+  // privileged role in the code. It did, in exactly this function,
+  // exactly like that).
+  function pressureSlotValueLabels(groupName) {
     const typeEntity = pressureSlotEntity(groupName, "Device Type");
-    const label = typeEntity && typeEntity.value === "Flow" ? "Flow Rate" : "Pressure";
-    return pressureSlotEntity(groupName, label);
+    if (!typeEntity || typeEntity.value === undefined) return [];
+    return typeEntity.value === "Flow" ? ["Total Consumption", "Flow Rate"] : ["Pressure"];
   }
 
   function syncPressureHomeCard(groupName) {
@@ -1946,52 +1997,55 @@
       // actually being deleted by the user: e.g. a brief
       // address-not-yet-settled moment during Add, or anything else that
       // transiently makes this check true and false again in quick
-      // succession. Clears BOTH possible value entities, not just
+      // succession. Clears every possible value entity, not just
       // whichever Device Type currently says - a slot deleted right
-      // after its type was changed could otherwise leave the OTHER
-      // (now-stale) one's cached DOM reference dangling instead.
-      const pressureEntity = pressureSlotEntity(groupName, "Pressure");
-      if (pressureEntity) pressureEntity.el = null;
-      const flowEntity = pressureSlotEntity(groupName, "Flow Rate");
-      if (flowEntity) flowEntity.el = null;
+      // after its type was changed could otherwise leave one of the
+      // OTHER (now-stale) ones' cached DOM reference dangling instead.
+      for (const label of PRESSURE_METRIC_LABELS) {
+        const e = pressureSlotEntity(groupName, label);
+        if (e) e.el = null;
+      }
       return;
     }
-    const valueEntity = pressureSlotValueEntity(groupName);
-    // Removes the OTHER entity's own metric row, if upsertHomeMetric()
-    // ever built one for it (2026-08-21, real bug confirmed on a real
-    // device: a Home card showed BOTH "-- bar / Pressure" AND the
-    // correct "0 m³/h / Flow Rate" stacked together, after a page
-    // refresh). Root cause: Device Type isn't always known the FIRST
-    // time this function runs for a slot (same arrival-order race this
-    // whole file has hit repeatedly elsewhere - the Modbus Address
-    // entity, gating whether this slot even counts as "registered" at
-    // all, can easily arrive before Device Type does) - pressureSlotValueEntity()
-    // falls back to "Pressure" for that brief window, so upsertHomeMetric()
-    // built a row for the PRESSURE entity first. Moments later, once
-    // Device Type's real "Flow" value lands, this function reruns,
-    // valueEntity switches to Flow Rate, and upsertHomeMetric() builds a
-    // SECOND row for that instead - but nothing ever removed the first,
-    // now-stale Pressure row, since upsertHomeMetric() only ever
-    // appends, keyed per-entity, with no concept of "this entity is
-    // mutually exclusive with that one." Only Pressure/Flow Rate need
-    // this (pulse meters' Total Consumption/Calculated Flow Rate are
-    // BOTH always legitimately shown together, by design - this
-    // cleanup must stay scoped to this pair, not become generic).
-    const otherLabel = valueEntity && displayName(valueEntity) === "Flow Rate" ? "Pressure" : "Flow Rate";
-    const otherEntity = pressureSlotEntity(groupName, otherLabel);
-    if (otherEntity && otherEntity.el) {
-      otherEntity.el.remove();
-      otherEntity.el = null;
+    const activeLabels = pressureSlotValueLabels(groupName);
+    // Removes every metric row NOT currently selected, if
+    // upsertHomeMetric() ever built one for it (2026-08-21, real bug
+    // confirmed on a real device: a Home card showed BOTH "-- bar /
+    // Pressure" AND the correct "0 m³/h / Flow Rate" stacked together,
+    // after a page refresh). Root cause: Device Type isn't always known
+    // the FIRST time this function runs for a slot (same arrival-order
+    // race this whole file has hit repeatedly elsewhere - the Modbus
+    // Address entity, gating whether this slot even counts as
+    // "registered" at all, can easily arrive before Device Type does) -
+    // pressureSlotValueLabels() used to fall back to "Pressure" for that
+    // brief window (fixed the same round - see its own comment), so
+    // upsertHomeMetric() built a row for the PRESSURE entity first.
+    // Moments later, once Device Type's real "Flow" value lands, this
+    // function reruns, the active labels switch to Total Consumption/
+    // Flow Rate, and upsertHomeMetric() builds rows for those instead -
+    // but nothing ever removed the first, now-stale Pressure row, since
+    // upsertHomeMetric() only ever appends, keyed per-entity, with no
+    // concept of "this entity is mutually exclusive with that one."
+    for (const label of PRESSURE_METRIC_LABELS) {
+      if (activeLabels.includes(label)) continue;
+      const e = pressureSlotEntity(groupName, label);
+      if (e && e.el) {
+        e.el.remove();
+        e.el = null;
+      }
     }
-    if (valueEntity) {
-      // Same collision signal the Service table's own badge already
-      // uses (latestCollisionAddresses(), fed by the debounced "Scan
-      // Collisions" CSV - see set_scan_collision_address()'s cooldown in
-      // pressure_sensor.yaml) - a slot flagged here shows "--" instead
-      // of whatever its last poll happened to read, see
-      // upsertHomeMetric()'s own comment for why.
-      const collision = latestCollisionAddresses().includes(Math.round(addrEntity.value));
-      upsertHomeMetric(valueEntity, collision);
+    // Same collision signal the Service table's own badge already uses
+    // (latestCollisionAddresses(), fed by the debounced "Scan
+    // Collisions" CSV - see set_scan_collision_address()'s cooldown in
+    // pressure_sensor.yaml) - a slot flagged here shows "--" instead of
+    // whatever its last poll happened to read, see upsertHomeMetric()'s
+    // own comment for why. Applies to every active metric, not just one
+    // - a Flow-type slot's Total Consumption AND Flow Rate are both
+    // reads from the same physically-colliding device.
+    const collision = latestCollisionAddresses().includes(Math.round(addrEntity.value));
+    for (const label of activeLabels) {
+      const e = pressureSlotEntity(groupName, label);
+      if (e) upsertHomeMetric(e, collision);
     }
   }
 
@@ -2301,13 +2355,24 @@
         // Reading and Zero-Flow Timeout each commit independently on
         // their OWN blur - so leaving edit mode by ANY path, not just
         // Cancel, needs to revert whichever of the two, if either, is
-        // still sitting uncommitted. Reads each entity's value fresh
-        // here rather than a snapshot cached back at enterEdit() - a
-        // value that WAS successfully committed mid-edit (its own blur
-        // already fired) is now the real server value and must not be
-        // reverted past it.
-        const readingEntity = pulseMeterSlotEntity(groupName, "Reading");
-        if (readingEntity) row._readingInput.value = readingEntity.value ?? "";
+        // still sitting uncommitted.
+        //
+        // Reading reverts to Total Consumption specifically (2026-08-21,
+        // NOT the "Reading" scratch entity's own value - see
+        // upsertPulseMeterExpandedField()'s own comment on that same
+        // entity for the full reasoning: the scratch field only ever
+        // holds whatever was last typed, forever, with nothing to ever
+        // refresh it from real consumption data, so reverting to IT
+        // would just re-show the same stale typed-and-forgotten number
+        // this whole fix exists to stop happening). Zero-Flow Timeout
+        // has no such live counterpart - it genuinely IS its own
+        // persisted setting - so it still reverts to its own entity's
+        // value, read fresh here rather than a snapshot cached back at
+        // enterEdit() - a value that WAS successfully committed mid-edit
+        // (its own blur already fired) is now the real server value and
+        // must not be reverted past it.
+        const totalConsumptionEntity = pulseMeterSlotEntity(groupName, "Total Consumption");
+        row._readingInput.value = totalConsumptionEntity ? totalConsumptionEntity.value ?? "" : "";
         const zftEntity = pulseMeterSlotEntity(groupName, "Zero-Flow Timeout");
         if (zftEntity) row._zftInput.value = zftEntity.value ?? "";
       };
@@ -2421,20 +2486,73 @@
       if (entity.min !== undefined) input.min = entity.min;
       if (entity.max !== undefined) input.max = entity.max;
       if (entity.step !== undefined) input.step = entity.step;
+      // Displays/reverts to Total Consumption - the meter's own actual
+      // live reading - NOT this "Reading" entity's own stored value
+      // (2026-08-21, direct feedback: "a reading továbbra is azt jegyzi
+      // meg amit beírtam... még akkor sem amikor volt impulzus és van
+      // fogyasztás adat. A beírt értékkel csak update-elni szabad, sehol
+      // nem szabad megjegyeznie" - Reading keeps remembering whatever
+      // was typed in, even once real consumption data exists; a typed
+      // value must ONLY ever be used to Update, never remembered
+      // anywhere). Root cause: this "Reading" number entity
+      // (${id_prefix}_sync_target in packages/water_meter.yaml) is a
+      // pure write-only staging field by design ("input only, does
+      // nothing by itself" per its own comment there) - its OWN value
+      // literally IS whatever was last typed and committed via blur,
+      // forever, until typed into again; nothing ever republishes fresh
+      // consumption data into it. Reading it back for the input's own
+      // display (the previous code) meant the field could only ever
+      // show a stale, one-time-typed number, never the actual meter
+      // state - exactly the reported bug. The live Total Consumption
+      // sensor is what actually tracks real accumulated usage; showing
+      // THAT here (except while a typed-but-uncommitted edit is still
+      // focused) is what makes this field read as "the current reading,
+      // which you can type over to correct" rather than "a scratchpad
+      // that remembers whatever you last typed forever."
+      const liveEntity = () => pulseMeterSlotEntity(entity.groupName, "Total Consumption");
       if (!row._readingWired) {
         input.addEventListener("change", () => {
           const parsed = parseFloat(input.value);
           const outOfRange =
             Number.isNaN(parsed) || (entity.min !== undefined && parsed < entity.min) || (entity.max !== undefined && parsed > entity.max);
+          const live = liveEntity();
           if (outOfRange) {
-            input.value = entity.value ?? "";
+            input.value = live ? live.value ?? "" : "";
             return;
           }
+          // Still POSTs to the scratch entity's own namePath, not
+          // Total Consumption's - Update's own press handler
+          // (packages/water_meter.yaml) is what actually reads this
+          // staged value and applies it; nothing changes about that
+          // mechanism, only what the input DISPLAYS when not focused.
           fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        });
+        // Enter = Update (with its own confirm dialog, same as a mouse
+        // click there - see that button's own handler just below), NOT
+        // "Save the whole row" the way Name's Enter works - Reading
+        // commits only through the explicit Update action, direct
+        // feedback: "azt valahogy külön kéne kezelni, csak update-re
+        // engednék fogyasztást felülírni" (it needs handling separately
+        // somehow, I'd only allow overwriting consumption via Update).
+        // Escape = the same whole-row Cancel every other field in this
+        // table already uses, discarding any uncommitted typed value
+        // (reverts to Total Consumption on the very next render either
+        // way, per the fix above, but this also closes the row).
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            row._updateBtn.click();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            row._cancelEdit();
+          }
         });
         row._readingWired = true;
       }
-      if (document.activeElement !== input) input.value = entity.value ?? "";
+      if (document.activeElement !== input) {
+        const live = liveEntity();
+        input.value = live ? live.value ?? "" : "";
+      }
     } else if (label === "Update") {
       if (!row._updateWired) {
         row._updateBtn.addEventListener("click", () => {
@@ -2460,6 +2578,25 @@
             return;
           }
           fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        });
+        // Enter/Esc (2026-08-21, direct feedback: "zero flow timeout
+        // mezőben nem működik az enter / esc" - neither worked here,
+        // confirmed a real gap: every other editable field in this
+        // table's edit rows had this wired already, this one was simply
+        // missed). Enter commits (blurring first, so the "change"
+        // listener just above actually fires - unlike Reading, this
+        // field has no separate Update-style confirm gate, it's a
+        // plain, directly-adjustable setting, so Enter committing it
+        // outright is consistent with how it already behaves on blur).
+        // Escape is the same whole-row Cancel every other field uses.
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            input.blur();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            row._cancelEdit();
+          }
         });
         row._zftWired = true;
       }

@@ -183,10 +183,10 @@ sensor:
   # slot's actual configured Device Type - a no-op unless it's "Flow", so
   # a Pressure-configured slot pays nothing extra for this sensor also
   # existing on it (same existence-model reasoning as every other
-  # per-slot entity in this file). Only the instant flow rate is
-  # implemented so far, not the totalizer - see read_flow_instant()'s own
-  # comment for why that's a deliberate, documented scope cut for now,
-  # not an oversight.
+  # per-slot entity in this file). The totalizer (cumulative usage) is a
+  # SEPARATE sensor, "Total Consumption" just below - originally deferred
+  # here as a documented scope cut, implemented 2026-08-21 once real
+  # hardware confirmed this register range's own convention.
   #
   # Named "Flow Rate" (renamed from "Instant Flow", 2026-08-20, direct
   # feedback). Originally named "Instant Flow" specifically to dodge a
@@ -222,6 +222,60 @@ sensor:
     web_server:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 11
+
+  # The flow meter's own accumulated total (2026-08-21, direct feedback:
+  # "a flow meter a dashboardon nem mutat total consumption-t... nem is
+  # nekünk kéne számolni hanem majd jön a device-tól ahogy pollozzuk" -
+  # shouldn't be calculated by us, should come straight from the device
+  # as it's polled - unlike the pulse meters' own Total Consumption,
+  # which really IS computed here from a pulse count, this reads the
+  # meter's own internal totalizer register directly, see
+  # include/rs485_modbus.h's read_flow_total() for the full register/
+  # scaling writeup, and the file header's GENERALIZATION note for why
+  # this is its own isolated reader rather than folded into Flow Rate's).
+  #
+  # Named "Total Consumption" - the EXACT SAME label the pulse meters'
+  # own field uses (packages/water_meter.yaml), deliberately, not a
+  # dodge like "Flow Rate"/"Instant Flow" needed (see that entity's own
+  # naming-collision history above) - direct feedback, same round: "ez
+  # ugyan olyan vízóra mint a pulse meteres csak teljesen más a
+  # technológia/mérési elv/hardver/connection/protokol, de a felületen
+  # nem sokban kell eltérjen" (it's the same kind of water meter as the
+  # pulse-meter one, just completely different technology/measurement
+  # principle/hardware/connection/protocol, but the UI shouldn't differ
+  # much) - the two ARE the same concept here, so sharing the label (and
+  # HELP_TEXT entry, dashboard.js) is intentional, not a naming
+  # collision to avoid.
+  - platform: template
+    id: ${id_prefix}_flow_total
+    name: "${friendly_name} Total Consumption"
+    icon: "mdi:water"
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    disabled_by_default: true
+    update_interval: ${poll_interval}
+    lambda: |-
+      uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+      if (address == 0 || id(${id_prefix}_device_type).current_option() != "Flow") return {};
+      float value;
+      bool collision = false;
+      bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision);
+      rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
+                                         id(pressure_scan_collisions), address, ok, collision);
+      return ok ? value : NAN;
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      # Same weight as Pressure (10), not a new, higher one - the two
+      # are mutually exclusive per slot (a slot is never BOTH Pressure
+      # and Flow at once), so they never actually appear in the same
+      # Home card together; sharing the "headline" weight is what makes
+      # THIS one the headline figure on a Flow-type card, exactly the
+      # role Pressure already plays on a Pressure-type one (see
+      # upsertHomeMetric()'s own "lowest weight = headline" comment,
+      # web/dashboard.js).
+      sorting_weight: 10
 
 binary_sensor:
   # Live/ephemeral only - never persisted (see the file header) - purely
@@ -458,6 +512,7 @@ button:
       - lambda: |-
           id(${id_prefix}_pressure).publish_state(NAN);
           id(${id_prefix}_flow_rate).publish_state(NAN);
+          id(${id_prefix}_flow_total).publish_state(NAN);
           id(${id_prefix}_online).publish_state(false);
 
 script:

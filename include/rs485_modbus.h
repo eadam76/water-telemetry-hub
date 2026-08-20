@@ -22,6 +22,7 @@
 // lambda without an explicit #include.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -469,6 +470,74 @@ inline bool read_flow_instant(UARTComponent *bus, uint8_t address, float &out, u
   float value;
   std::memcpy(&value, &bits, sizeof(value));
   out = value;
+  return true;
+}
+
+// The flow meter's own accumulated total - added 2026-08-21, direct
+// feedback: the totalizer this project's own earlier design note
+// deliberately deferred (see read_flow_instant()'s own comment above)
+// until real hardware confirmed the scaling actually behaved as
+// documented. "a flow meter a dashboardon nem mutat total
+// consumption-t... nem is nekünk kéne számolni hanem majd jön a
+// device-tól ahogy pollozzuk" - shouldn't be calculated by us, it
+// should come straight from the device as it's polled, exactly like
+// this reads it: document registers 0009-0012 (a LONG integer part +
+// an IEEE754 decimal part, both PDU-adjacent so one 4-register
+// transaction covers both) plus a THIRD, distant register (1439, the
+// scale exponent) read separately, per the document's own "Skálázási
+// képlet" (docs/hardver/t3-1-2-h-aramlasmero-jegyzet.md):
+//
+//   final = (N + Nf) × 10^n
+//
+// The exponent is re-read on every call rather than cached - it's a
+// fixed calibration value that should never actually change at
+// runtime, so this is one extra short single-register transaction per
+// poll purely for simplicity/correctness (no cache-staleness class of
+// bug possible), not because the value is expected to move.
+//
+// NOT YET HARDWARE-CONFIRMED for this specific register range
+// (2026-08-21) - read_flow_instant() above (document registers
+// 0001-0002, this driver's START_REG=0 convention) is now confirmed
+// working against the real unit ("FLOW2" reads a real, live m³/h value
+// on the dashboard), which is meaningful evidence FOR the same "doc
+// register N -> PDU address N-1" convention holding here too (same
+// document, same table, same numbering scheme) - but the totalizer's
+// OWN scaling formula, and the exponent register specifically, haven't
+// been read back from real hardware yet. If this returns an
+// implausible number (wildly too large/small, or changes by an
+// unreasonable jump between polls) on the real device, the exponent
+// register (1439, document numbering - PDU_EXPONENT_REG below) is the
+// first thing worth double-checking, the same off-by-one caveat as
+// every other register in this file.
+inline bool read_flow_total(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200,
+                             bool *collision = nullptr) {
+  const uint16_t START_REG = 8;           // document register "0009" (0009 - 1, same convention as read_flow_instant())
+  const uint16_t PDU_EXPONENT_REG = 1438;  // document register "1439"
+  std::vector<uint16_t> regs;
+  bool any_reply = false;
+  if (!read_holding_registers(bus, address, START_REG, 4, regs, timeout_ms, &any_reply)) {
+    ESP_LOGD(TAG, "address %d: flow total read failed%s", address, any_reply ? " (possible collision)" : "");
+    if (collision) *collision = any_reply;
+    return false;
+  }
+  uint32_t n_bits = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
+  uint32_t nf_bits = (static_cast<uint32_t>(regs[2]) << 16) | regs[3];
+  float nf;
+  std::memcpy(&nf, &nf_bits, sizeof(nf));
+
+  std::vector<uint16_t> exp_regs;
+  bool exp_any_reply = false;
+  if (!read_holding_registers(bus, address, PDU_EXPONENT_REG, 1, exp_regs, timeout_ms, &exp_any_reply)) {
+    ESP_LOGD(TAG, "address %d: flow total scale exponent read failed%s", address, exp_any_reply ? " (possible collision)" : "");
+    if (collision) *collision = any_reply || exp_any_reply;
+    return false;
+  }
+  if (collision) *collision = false;
+  // Document range is -4..3 - a signed 16-bit register (int16_t, not
+  // uint16_t) so a negative exponent (dividing, not multiplying) reads
+  // back correctly rather than as a huge positive value.
+  int16_t n_exp = static_cast<int16_t>(exp_regs[0]);
+  out = (static_cast<float>(n_bits) + nf) * std::pow(10.0f, static_cast<float>(n_exp));
   return true;
 }
 

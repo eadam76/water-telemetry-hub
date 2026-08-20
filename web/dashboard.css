@@ -1194,8 +1194,24 @@ body {
   border-color: var(--dc-accent);
 }
 
+/* min-width, not just width: 1% - 2026-08-21, direct feedback: "A
+ * status oszlop nem fix széles, így ha idle -> flowing váltás van akkor
+ * ugrik a tábla, majd vissza" (the Status column isn't a fixed width,
+ * so an Idle -> Flowing transition makes the table jump, then jump
+ * back). width: 1% under table-layout: auto (the default - this table
+ * never sets table-layout: fixed) is only ever a hint toward "shrink
+ * this column as much as the other columns allow", not an actual cap -
+ * the column still resizes to fit whichever status text happens to be
+ * showing right now ("Idle"/"OK" are short, "Checking…"/"Collision" are
+ * the two longest strings this badge ever shows), so a transition
+ * between a short and a long status visibly reflowed the whole table.
+ * Sized to comfortably fit the longest of the two ("Checking…"/
+ * "Collision", both 9 characters) plus the badge's own dot+gap, so the
+ * column - and everything to its right - now holds still regardless of
+ * which status is currently showing. */
 .dc-pressure-table td.dc-pressure-status {
   width: 1%;
+  min-width: 90px;
   white-space: nowrap;
   text-align: center;
 }
