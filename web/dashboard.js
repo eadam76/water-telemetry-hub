@@ -64,13 +64,12 @@
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Calculated Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
-    // A Modbus flow-meter slot's own reading (2026-08-19) - deliberately
-    // NOT keyed "Calculated Flow Rate", which already means the pulse
-    // meters' own, differently-computed field above (see
-    // packages/pressure_sensor.yaml's own comment on this entity for the
-    // naming-collision reasoning that led to "Instant Flow" in the first
-    // place).
-    "Instant Flow": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Calculated Flow Rate is.",
+    // A Modbus flow-meter slot's own reading (2026-08-19, renamed from
+    // "Instant Flow" to "Flow Rate" 2026-08-20, direct feedback) - safe
+    // now that the pulse meters' own field above is "Calculated Flow
+    // Rate", not plain "Flow Rate" (see packages/pressure_sensor.yaml's
+    // own comment on this entity for the full naming-collision history).
+    "Flow Rate": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Calculated Flow Rate is.",
     // Forget Wi-Fi deliberately has no entry here either, same reasoning as
     // Update/Reboot Device (CR #3, previous round): its confirm dialog
     // already explains the consequence when it matters - a permanent "?"
@@ -614,9 +613,9 @@
   const PRESSURE_MAX_SLOTS = 8;
   // What each Device Type actually reads once added (2026-08-19,
   // upsertNewPressureRow()'s own type-picker preview) - matches
-  // packages/pressure_sensor.yaml's own Pressure/Instant Flow sensor
+  // packages/pressure_sensor.yaml's own Pressure/Flow Rate sensor
   // entities exactly (unit_of_measurement there, name here).
-  const TYPE_READING_HINT = { Pressure: "→ Pressure, bar", Flow: "→ Instant Flow, m³/h" };
+  const TYPE_READING_HINT = { Pressure: "→ Pressure, bar", Flow: "→ Flow Rate, m³/h" };
   // Real firmware sorting_group name (water-collector.yaml's
   // sorting_group_pulse_meters) - kept purely for its own sorting_weight
   // (used below to position the unified "Devices" table), same as
@@ -863,48 +862,36 @@
   // duplicate-address hard-block added to the edit-save flow below, and
   // REQUIREMENTS.md's own writeup) - adding a Modbus device is scan-only
   // again, exactly like before that button ever existed. Built once,
-  // eagerly, from ensureDeviceTable() - both this and Find Modbus
-  // Devices' own placeholder just below are appended together, in this
-  // fixed order, in the same call, so the toolbar's final left-to-right
-  // order (Add Pulse Meter, then Find Modbus Devices) is guaranteed by
-  // construction rather than by which entity's SSE data happens to
-  // arrive first.
+  // lazily, from ensureDeviceTable() - always BEFORE Find Modbus Devices
+  // can possibly mount (that only happens once its own entity has
+  // arrived over SSE, strictly later than this synchronous call), so a
+  // plain append here is enough to guarantee the final toolbar order
+  // (Add Pulse Meter, then Find Modbus Devices) without needing an
+  // insertBefore anchor dance the other way.
+  //
+  // REVERTED, 2026-08-20 (same day as the change below): a same-day
+  // attempt eagerly built Find Modbus Devices' own button/status here
+  // too, as a disabled placeholder, meant to fix its own ~1-2s "pop-in"
+  // delay (see mountPressureToolbarButton()'s own comment for that
+  // symptom). Direct feedback confirmed it made things WORSE, not
+  // better - "disabled, majd pár másodperc múlva enabled, de nem
+  // reagál" (disabled, then after a few seconds enabled, but doesn't
+  // respond) - and the exact mechanism was never conclusively pinned
+  // down from code alone before this revert. Rather than layer another
+  // unverified guess on top of one that already made things worse, this
+  // went back to the simpler, previously-reliable lazy-build pattern -
+  // the 1-2s pop-in is a real but minor cosmetic issue; a button that
+  // doesn't work at all is not. If the pop-in delay gets revisited
+  // again, it needs to be diagnosed WITH live evidence (browser
+  // console/network tab from the actual failure) first, not guessed at
+  // blind a second time.
   let addPulseBtn = null;
-  // "Find Modbus Devices"'s own placeholder button/status - built here,
-  // eagerly, alongside Add Pulse Meter, NOT left for mountPressureToolbarButton()
-  // to create from scratch once its real entity arrives (2026-08-20,
-  // direct feedback: "Find Modbus Devices GOMB csak 1-2 másodperc után
-  // jelenik meg" - the button only appears after 1-2 seconds, confirmed
-  // real: ESPHome dumps every entity's initial state in a fixed,
-  // cross-domain order at connect time - see the note further up on the
-  // same phenomenon affecting group labels - and `button` entities
-  // aren't dumped first, so the whole toolbar sat with only "Add Pulse
-  // Meter" on it (a client-only control with no entity of its own) for
-  // however long the burst took to reach this one. Disabled/unwired
-  // until mountPressureToolbarButton() (below) actually sees the real
-  // entity and gives it a namePath to POST to - same eager-shell-then-
-  // fill-in pattern the rest of this dashboard already uses everywhere
-  // else (existence model), just not yet applied to this one button.
-  let scanBtn = null;
-  let scanStatusEl = null;
   function mountDeviceAddButtons() {
     if (addPulseBtn) return;
     addPulseBtn = el("button", "dc-btn dc-btn-compact", "Add Pulse Meter");
     addPulseBtn.type = "button";
     addPulseBtn.addEventListener("click", () => toggleDeviceAdd());
-    // Label hardcoded, not read from an entity - safe here (unlike a
-    // slot's Display Name elsewhere in this file) because it isn't an
-    // internal/meaningless compile-time id, it's this button's actual,
-    // permanent, non-renameable name (water-collector.yaml's own
-    // "Pressure Sensors Find Modbus Devices"), identical to what
-    // displayName(entity) will produce anyway the moment the real
-    // entity arrives - see mountPressureToolbarButton() below.
-    scanBtn = el("button", "dc-btn dc-btn-compact", "Find Modbus Devices");
-    scanBtn.type = "button";
-    scanBtn.disabled = true;
-    scanStatusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
-    scanStatusEl.hidden = true;
-    deviceToolbarEl.append(addPulseBtn, scanBtn, scanStatusEl);
+    deviceToolbarEl.append(addPulseBtn);
   }
 
   // Opens the Add row, or closes it if already open (a second click =
@@ -951,23 +938,13 @@
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.idleLabel = displayName(entity);
-      // Wires the placeholder mountDeviceAddButtons() already built and
-      // appended (2026-08-20 - see that function's own comment for why),
-      // rather than creating a fresh button/status pair from scratch
-      // here - this is what actually fixes the 1-2s "pop-in" delay: the
-      // element itself has been visible on the toolbar since the page's
-      // first paint, only its click handler/namePath/enabled state were
-      // ever missing until now.
-      entity.btnEl = scanBtn;
-      entity.statusEl = scanStatusEl;
       // The button's own label never changes (previously swapped to
       // "Scanning…", which - being longer than "Scan Bus" - visibly grew
       // the button itself mid-scan, confirmed to look wrong on real
       // hardware, 2026-08-13). "Scanning…" + the spinner instead live in
       // a separate status element next to the button, so the button's
       // own size is fixed regardless of state.
-      entity.btnEl.textContent = entity.idleLabel;
-      entity.btnEl.disabled = false;
+      entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
         // A fresh, deliberate scan supersedes any earlier session-local
@@ -977,6 +954,12 @@
         dismissedScanAddresses.clear();
         fetch(`${entity.namePath}/press`, { method: "POST" });
       });
+      entity.statusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
+      entity.statusEl.hidden = true;
+      // Plain append - always lands after the Add buttons (see
+      // mountDeviceAddButtons()'s own comment for why that's guaranteed
+      // regardless of arrival-order timing).
+      deviceToolbarEl.append(entity.btnEl, entity.statusEl);
     }
   }
 
@@ -1899,17 +1882,17 @@
   // unregistered (Delete), removes the card outright rather than just
   // hiding it - a deleted slot has genuinely nothing left to show.
   // Which sensor entity actually carries this slot's live reading -
-  // "Pressure" or "Instant Flow", depending on its own Device Type select
-  // (2026-08-19, T3-1-2-H flow meter generalization - see
-  // packages/pressure_sensor.yaml's own comment on that entity for why
-  // it's "Instant Flow", not "Flow Rate", despite that being the more
-  // obvious name: a real HELP_TEXT naming collision with the pulse
-  // meters' own "Flow Rate" field). Both always exist on every slot
-  // (existence model, packages/pressure_sensor.yaml), only one of them
-  // is ever actually populated (non-NaN) at a time.
+  // "Pressure" or "Flow Rate", depending on its own Device Type select
+  // (2026-08-19, T3-1-2-H flow meter generalization; the Modbus entity
+  // itself was renamed from "Instant Flow" to plain "Flow Rate"
+  // 2026-08-20, direct feedback - see packages/pressure_sensor.yaml's
+  // own comment on that entity for the naming-collision history this
+  // sidesteps). Both always exist on every slot (existence model,
+  // packages/pressure_sensor.yaml), only one of them is ever actually
+  // populated (non-NaN) at a time.
   function pressureSlotValueEntity(groupName) {
     const typeEntity = pressureSlotEntity(groupName, "Device Type");
-    const label = typeEntity && typeEntity.value === "Flow" ? "Instant Flow" : "Pressure";
+    const label = typeEntity && typeEntity.value === "Flow" ? "Flow Rate" : "Pressure";
     return pressureSlotEntity(groupName, label);
   }
 
@@ -1945,7 +1928,7 @@
       // (now-stale) one's cached DOM reference dangling instead.
       const pressureEntity = pressureSlotEntity(groupName, "Pressure");
       if (pressureEntity) pressureEntity.el = null;
-      const flowEntity = pressureSlotEntity(groupName, "Instant Flow");
+      const flowEntity = pressureSlotEntity(groupName, "Flow Rate");
       if (flowEntity) flowEntity.el = null;
       return;
     }
@@ -2252,6 +2235,31 @@
         row._editing = false;
         if (expandedRow.isConnected) expandedRow.remove();
         if (deviceEditingRow === row) deviceEditingRow = null;
+        // Discard any typed-but-never-committed Reading/Zero-Flow
+        // Timeout edit (2026-08-20, direct feedback: type a value into
+        // Reading, close the row via Cancel or the checkmark WITHOUT
+        // ever blurring the field first - so its own "change" listener,
+        // upsertPulseMeterExpandedField() below, never actually fired -
+        // and the typed text just sat in the input forever after:
+        // nothing else ever resets it, since no new SSE event for this
+        // entity arrives unless something was genuinely sent to the
+        // device. Re-opening the row later showed that leftover typed
+        // text as if it had been saved, when it never was - confirmed a
+        // real regression, this used to reset correctly. Unlike Name/
+        // Modbus Address (committed together, only by Save/checkmark,
+        // see cancelEdit() below and the pressure row's own equivalent),
+        // Reading and Zero-Flow Timeout each commit independently on
+        // their OWN blur - so leaving edit mode by ANY path, not just
+        // Cancel, needs to revert whichever of the two, if either, is
+        // still sitting uncommitted. Reads each entity's value fresh
+        // here rather than a snapshot cached back at enterEdit() - a
+        // value that WAS successfully committed mid-edit (its own blur
+        // already fired) is now the real server value and must not be
+        // reverted past it.
+        const readingEntity = pulseMeterSlotEntity(groupName, "Reading");
+        if (readingEntity) row._readingInput.value = readingEntity.value ?? "";
+        const zftEntity = pulseMeterSlotEntity(groupName, "Zero-Flow Timeout");
+        if (zftEntity) row._zftInput.value = zftEntity.value ?? "";
       };
       const cancelEdit = () => {
         nameInput.value = row._editOrigName;

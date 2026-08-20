@@ -188,18 +188,21 @@ sensor:
   # comment for why that's a deliberate, documented scope cut for now,
   # not an oversight.
   #
-  # Named "Instant Flow", NOT "Flow Rate" - a real, found-before-shipping
-  # naming collision: dashboard.js's own HELP_TEXT (keyed purely by the
-  # displayName()-stripped label, group-unaware - the same mechanism that
-  # caused the MQTT group's own real bugs earlier this project, see
-  # REQUIREMENTS.md) already has a "Flow Rate" entry for the PULSE
-  # METERS' own field (pulse-timing-based, mentions "Zero-Flow Timeout" -
-  # neither concept applies to this Modbus register read). Naming this
-  # one differently sidesteps the collision entirely rather than trying
-  # to make that lookup group-aware.
+  # Named "Flow Rate" (renamed from "Instant Flow", 2026-08-20, direct
+  # feedback). Originally named "Instant Flow" specifically to dodge a
+  # real, found-before-shipping HELP_TEXT collision: dashboard.js's own
+  # HELP_TEXT is keyed purely by the displayName()-stripped label,
+  # group-unaware - the same mechanism that caused the MQTT group's own
+  # real bugs earlier this project (see REQUIREMENTS.md) - and at the
+  # time "Flow Rate" already meant the PULSE METERS' own, differently-
+  # computed field. That collision is gone now: the same round that
+  # asked for this rename also renamed the pulse meters' own field to
+  # "Calculated Flow Rate" (packages/water_meter.yaml) specifically to
+  # free "Flow Rate" up for this one - both changes together, not
+  # independently, are what actually keep the two apart.
   - platform: template
     id: ${id_prefix}_flow_rate
-    name: "${friendly_name} Instant Flow"
+    name: "${friendly_name} Flow Rate"
     icon: "mdi:pulse"
     unit_of_measurement: "m³/h"
     device_class: volume_flow_rate
