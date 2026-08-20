@@ -107,6 +107,18 @@ globals:
     restore_value: false
     initial_value: "0"
 
+  # Same as ${id_prefix}_last_collision_ms just above, for "Mismatch"
+  # instead (2026-08-21, real flicker confirmed on real hardware - see
+  # publish_poll_result()'s own comment, include/rs485_modbus.h, for the
+  # exact mechanism: a Flow-configured slot's TWO independent sensors,
+  # Flow Rate and Total Consumption, poll the same address separately -
+  # one succeeding while the other mismatches flipped this flag back and
+  # forth every poll cycle without a cooldown to smooth it out).
+  - id: ${id_prefix}_last_mismatch_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
 sensor:
   # The actual reading, shown on the Home page once registered - see
   # dashboard.js. disabled_by_default here (unlike the water meters' own
@@ -162,8 +174,8 @@ sensor:
       bool collision = false;
       bool ok = rs485_modbus::read_pressure_bar(id(rs485_uart), address, value, 50, &collision);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
-                                         collision);
+                                         id(${id_prefix}_last_mismatch_ms), id(pressure_scan_collisions),
+                                         id(pressure_scan_mismatches), address, ok, collision);
       // A plain timeout (ok == false, collision == false) is inconclusive
       // either way - publish_poll_result() above already leaves the
       // Collision flag untouched for it, same reasoning as before this
@@ -218,8 +230,8 @@ sensor:
       bool collision = false;
       bool ok = rs485_modbus::read_flow_instant(id(rs485_uart), address, value, 50, &collision);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
-                                         collision);
+                                         id(${id_prefix}_last_mismatch_ms), id(pressure_scan_collisions),
+                                         id(pressure_scan_mismatches), address, ok, collision);
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}
@@ -276,8 +288,8 @@ sensor:
       bool device_responded = false;
       bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision, &device_responded);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), id(pressure_scan_mismatches), address, ok,
-                                         collision, device_responded);
+                                         id(${id_prefix}_last_mismatch_ms), id(pressure_scan_collisions),
+                                         id(pressure_scan_mismatches), address, ok, collision, device_responded);
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}

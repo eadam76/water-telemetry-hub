@@ -702,14 +702,19 @@ inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_co
 // text_sensor's own comment in water-collector.yaml for the full
 // reasoning) - a device that answered cleanly but declined this specific
 // request (a validated Modbus exception), as opposed to a collision
-// (garbled/corrupted bytes) or silence (no reply at all). No time-based
-// cooldown here unlike collision's own (COLLISION_COOLDOWN_MS in
-// publish_poll_result() below) - a collision is genuinely
-// bus-arbitration-random (a still-colliding address can occasionally
-// answer cleanly by chance, needing the cooldown to avoid a false-clear
-// flicker), but whether a specific register is supported is a fixed,
-// deterministic property of the device - it either answers usably or it
-// doesn't, poll to poll, with no randomness to smooth over.
+// (garbled/corrupted bytes) or silence (no reply at all). This function
+// itself is a dumb CSV set/clear with no cooldown logic of its own - the
+// same as set_scan_collision_address() above, whichever cooldown
+// applies lives in the caller (publish_poll_result() below, see its own
+// MISMATCH_COOLDOWN_MS). An EARLIER version of this comment claimed no
+// cooldown was needed at all ("a fixed, deterministic property of the
+// device, no randomness to smooth over") - true for a single sensor
+// polling one address, but wrong once a slot can have MULTIPLE
+// independent sensors sharing one address (Flow Rate succeeding while
+// Total Consumption mismatches, on the same T3-1-2-H) - each one's own
+// poll flipped this flag independently, producing a real, confirmed
+// flicker between Mismatch and OK every poll cycle. See
+// publish_poll_result()'s own comment for the actual fix.
 inline void set_scan_mismatch_address(esphome::text_sensor::TextSensor *scan_mismatches, uint8_t address,
                                        bool present) {
   auto addresses = parse_address_csv(scan_mismatches->state);
@@ -764,8 +769,30 @@ inline void set_scan_mismatch_address(esphome::text_sensor::TextSensor *scan_mis
 // Scan Collisions text_sensor it already passed; both entities live in
 // water-collector.yaml, shared across every slot the same way Scan
 // Collisions already was.
+// `last_mismatch_ms` (2026-08-21, new required parameter, mirrors
+// `last_collision_ms`) - real bug found on real hardware right after
+// Mismatch shipped: a Flow-configured slot has TWO sensors polling the
+// SAME address independently (Flow Rate, which succeeds, and Total
+// Consumption, which mismatches) - each one calls this function
+// separately, on its own poll. Flow Rate's own call passes
+// device_responded=false (its own successful read never sets that flag
+// at all) with ok=true, which - under the ORIGINAL "clear the instant
+// ok is true" logic below - immediately cleared the mismatch flag Total
+// Consumption's own poll had *just* set moments earlier, then Total
+// Consumption's next poll set it again, and so on: the badge flickered
+// between Mismatch and OK every poll cycle, direct feedback ("most
+// villog a mismatch... tartani kéne az állapotot pár sikeres
+// pollozásig"). set_scan_mismatch_address()'s own comment (claiming no
+// cooldown was needed, "a fixed, deterministic property of the device")
+// was only true for a SINGLE sensor polling one address - it didn't
+// account for multiple independent sensors sharing one address's flag,
+// each with a genuinely different per-poll outcome. Fixed the same way
+// collision's own flicker (a DIFFERENT cause - true bus-arbitration
+// randomness) was fixed: a real time-based cooldown, not just "the last
+// poll happened to be clean" - see that field's own original comment
+// for the general shape of the fix, now applied here too.
 inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, uint32_t &last_collision_ms,
-                                 esphome::text_sensor::TextSensor *scan_collisions,
+                                 uint32_t &last_mismatch_ms, esphome::text_sensor::TextSensor *scan_collisions,
                                  esphome::text_sensor::TextSensor *scan_mismatches, uint8_t address, bool ok,
                                  bool collision, bool device_responded = false) {
   online->publish_state(ok || device_responded);
@@ -776,12 +803,14 @@ inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, ui
   } else if (ok && esphome::millis() - last_collision_ms >= COLLISION_COOLDOWN_MS) {
     set_scan_collision_address(scan_collisions, address, false);
   }
-  // Mismatch: the device responded, but not usably, and it wasn't a
-  // collision either - "cleanly declined". Clears the instant a read
-  // either succeeds OR the device stops responding at all (device_responded
-  // itself goes false) - see set_scan_mismatch_address()'s own comment
-  // for why this needs no time-based cooldown, unlike collision's.
-  set_scan_mismatch_address(scan_mismatches, address, device_responded && !ok);
+  const uint32_t MISMATCH_COOLDOWN_MS = 2000;
+  bool is_mismatch = device_responded && !ok;
+  if (is_mismatch) {
+    last_mismatch_ms = esphome::millis();
+    set_scan_mismatch_address(scan_mismatches, address, true);
+  } else if (ok && esphome::millis() - last_mismatch_ms >= MISMATCH_COOLDOWN_MS) {
+    set_scan_mismatch_address(scan_mismatches, address, false);
+  }
 }
 
 }  // namespace rs485_modbus
