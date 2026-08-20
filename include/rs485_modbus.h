@@ -148,7 +148,12 @@ inline std::vector<uint8_t> transact(UARTComponent *bus, const std::vector<uint8
   // least the first 3 (address, function, byte-count-or-exception-code)
   // before deciding how much more to read.
   if (!wait_for_bytes(bus, 3, timeout_ms)) {
-    ESP_LOGVV(TAG, "<- address %d: no reply within %ums", request[0], timeout_ms);
+    // Real build warning, found in the same 2026.7.3 build log that
+    // caught the Select::state removal above, 2026-08-19: on the
+    // xtensa/ESP32 target, uint32_t is `unsigned long`, not `unsigned
+    // int` - %u mismatched it. Cast, not a PRIu32/<inttypes.h> macro -
+    // simplest fix for one log line, no new include needed.
+    ESP_LOGVV(TAG, "<- address %d: no reply within %ums", request[0], static_cast<unsigned int>(timeout_ms));
     return {};
   }
   if (any_reply) *any_reply = true;
