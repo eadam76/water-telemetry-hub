@@ -950,6 +950,18 @@
     if (deviceEditingRow && deviceEditingRow._cancelEdit) deviceEditingRow._cancelEdit();
     deviceAddOpen = !deviceAddOpen;
     renderDeviceTableBody();
+    // Focus the Device name field the moment the row actually opens
+    // (2026-08-21, direct feedback: "amikor add pulse meter-t nyomok
+    // akkor a fókusz a device name mezőre kell menjen" - pressing Add
+    // Pulse Meter should move focus straight to the name field). Only
+    // on the open transition, not every re-render - this same function
+    // isn't re-called on later SSE-driven refreshes, only on the actual
+    // toolbar click, so there's no risk of this yanking focus away
+    // mid-typing later (unlike a focus() call placed inside
+    // renderDeviceTableBody() itself, which reruns continuously).
+    // deviceAddRow is guaranteed to exist by now - renderDeviceTableBody()
+    // above just built/reused and appended it synchronously.
+    if (deviceAddOpen && deviceAddRow && deviceAddRow._nameInput) deviceAddRow._nameInput.focus();
   }
 
   // Disables the Add button once there's nothing left to add (both GPIO
@@ -1794,6 +1806,10 @@
       // must be cleared here too, not just on Cancel/successful Add.
       if (deviceAddRow._nameInput) deviceAddRow._nameInput.value = "";
       if (deviceAddRow._errorEl) deviceAddRow._errorEl.textContent = "";
+      // See _slotSelectTouched's own comment (buildDeviceAddRow()) - each
+      // new Add session should default to the first free slot, not
+      // whatever was left selected from a previous session.
+      deviceAddRow._slotSelectTouched = false;
       if (deviceAddRow.isConnected) deviceAddRow.remove();
     }
   }
@@ -1842,6 +1858,29 @@
     row._nameInput = nameInput;
     row._slotSelect = slotSelect;
     row._errorEl = errorEl;
+    // Whether the person actually touched this dropdown themselves this
+    // session (2026-08-21, direct feedback: register both pulse meters,
+    // delete both, open Add again - the slot defaulted to IO2, not IO1,
+    // "erősen sejteti az unprofessional kódot" - strongly suggests
+    // unprofessional code). It did: refreshDeviceAddRow()'s own "keep
+    // the current selection if it's still valid" logic below is
+    // reasonable WHILE the row is open and the free-slot set changes in
+    // the background, but this <select> is built once and reused across
+    // every open/close cycle for the entire page session (see this
+    // function's own header comment) - so a stale, un-reset .value left
+    // over from a PREVIOUS Add session could get silently "restored"
+    // the next time both slots happened to become free again, purely
+    // depending on which slot was deleted last, with no relation to
+    // anything the user actually chose this time. Reset to false in
+    // closeDeviceAddRow() below (same place the name field's own leftover
+    // draft already gets cleared) so every NEW Add session starts from
+    // the same deterministic default (the first free slot) regardless of
+    // history, while still preserving an in-progress choice against
+    // background changes during the SAME still-open session.
+    row._slotSelectTouched = false;
+    slotSelect.addEventListener("change", () => {
+      row._slotSelectTouched = true;
+    });
 
     // This row (and its inputs) is built once and reused for every open/
     // close cycle (see the `if (!deviceAddRow)` cache further down) - a
@@ -1853,6 +1892,12 @@
     const resetForm = () => {
       nameInput.value = "";
       errorEl.textContent = "";
+      // See _slotSelectTouched's own comment above - each new Add
+      // session should default to the first free slot, not whatever was
+      // left selected from a previous session (this is the actual path
+      // exercised by the reported bug: Add IO1 -> confirm -> Add IO2 ->
+      // confirm -> delete both -> Add again defaulted to IO2, not IO1).
+      row._slotSelectTouched = false;
     };
 
     const cancel = () => {
@@ -1939,7 +1984,13 @@
       const select = row._slotSelect;
       const prevValue = select.value;
       select.innerHTML = free.map((g) => `<option value="${g}">${pulseSlotOptionLabel(g)}</option>`).join("");
-      if (free.includes(prevValue)) select.value = prevValue;
+      // Only preserves the previous selection if the person actually
+      // chose it THIS session (_slotSelectTouched - see
+      // buildDeviceAddRow()'s own comment on that flag for the bug this
+      // fixes) - otherwise always the first free slot, deterministically,
+      // regardless of which slot happened to be freed/claimed last in
+      // whatever unrelated history came before this Add session opened.
+      if (row._slotSelectTouched && free.includes(prevValue)) select.value = prevValue;
     }
   }
 

@@ -227,6 +227,36 @@ inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t
   auto request = build_read_request(address, start_reg, count);
   size_t expected_len = 5 + 2 * static_cast<size_t>(count);
   auto reply = transact(bus, request, expected_len, timeout_ms, any_reply);
+  // A genuine Modbus exception (function code | 0x80) - real bug found
+  // and fixed 2026-08-21, from a device log the user attached showing
+  // exactly this: reading a real, correctly-addressed device's own
+  // register range it simply doesn't support (this project's own
+  // read_flow_total()'s scale-exponent register, on the actual T3-1-2-H
+  // hardware) came back as a clean 5-byte exception frame - which
+  // transact() already fully validated (CRC correct, address matches
+  // the request) before returning it here at all, exactly the same
+  // validation any normal successful reply gets. That's unambiguous
+  // proof exactly ONE device answered, coherently, with a real (if
+  // negative) Modbus-protocol response - the polar opposite of a
+  // collision (2+ devices answering at once corrupts the bytes on the
+  // wire, which fails transact()'s own CRC check and comes back empty,
+  // never as a clean validated exception). Despite that, this fell
+  // through to the plain expected_len mismatch below - a 5-byte
+  // exception is essentially never as long as a real data reply wants -
+  // returning `false` correctly, but leaving `any_reply` (set true by
+  // transact() the moment ANY bytes arrived in time, before any of this
+  // validation) sitting at true, which every caller in this file reads
+  // as "possible collision". Confirmed on real hardware: a Flow-type
+  // slot whose totalizer scale-exponent register isn't supported
+  // permanently showed "Collision?" - registering the exact same
+  // physical address as "Pressure" instead (never hitting this
+  // register at all) showed no collision, the same address, same bus,
+  // same everything else - the collision flag itself was the only thing
+  // that differed, confirming it was never a real bus condition.
+  if (reply.size() == 5 && (reply[1] & 0x80) != 0) {
+    if (any_reply) *any_reply = false;
+    return false;
+  }
   if (reply.size() != expected_len) return false;
   if (reply[1] != 0x03) return false;               // exception (or, in principle, garbage)
   if (reply[2] != 2 * count) return false;           // byte-count sanity check
