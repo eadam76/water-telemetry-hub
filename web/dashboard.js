@@ -615,7 +615,10 @@
   // upsertNewPressureRow()'s own type-picker preview) - matches
   // packages/pressure_sensor.yaml's own Pressure/Flow Rate sensor
   // entities exactly (unit_of_measurement there, name here).
-  const TYPE_READING_HINT = { Pressure: "→ Pressure, bar", Flow: "→ Flow Rate, m³/h" };
+  // "" (the unselected placeholder option - 2026-08-21, direct feedback:
+  // Device Type has no default anymore, always requires an explicit
+  // choice) has its own neutral entry, same pattern as Pressure/Flow.
+  const TYPE_READING_HINT = { "": "Choose a device type to see what it'll add", Pressure: "→ Pressure, bar", Flow: "→ Flow Rate, m³/h" };
   // Real firmware sorting_group name (water-collector.yaml's
   // sorting_group_pulse_meters) - kept purely for its own sorting_weight
   // (used below to position the unified "Devices" table), same as
@@ -1318,7 +1321,16 @@
       const nameCell = row.querySelector(".dc-pressure-name");
       const nameRow = el("div", "dc-pressure-name-row");
       nameCell.appendChild(nameRow);
-      const typeIcon = el("span", "dc-device-type-icon", svgIcon("gauge"));
+      // "dot" (neutral/unset), not "gauge" - matches the type select's
+      // own unselected placeholder just below (2026-08-21, direct
+      // feedback: "a pressure defult device class nem indokolt.
+      // Mindenképpen ki kelljen választani. A két eszköz típus teljesen
+      // egyenrangú" - defaulting to Pressure isn't justified, the type
+      // MUST always be explicitly chosen, the two device types are
+      // completely equal/peer). Defaulting the icon to "gauge" here
+      // (Pressure's own icon) before any real choice was made was the
+      // same implicit bias in miniature.
+      const typeIcon = el("span", "dc-device-type-icon", svgIcon("dot"));
       nameRow.appendChild(typeIcon);
       row._typeIconEl = typeIcon;
       const nameContent = el("div", "dc-pressure-name-content");
@@ -1348,7 +1360,7 @@
         // from this row's creation, same as every other read of it in
         // this function - reconciled again on the next real render
         // regardless.
-        if (!row._confirmBtn._busy) row._confirmBtn.disabled = atCeiling || !nameInput.value.trim();
+        if (!row._confirmBtn._busy) row._confirmBtn.disabled = atCeiling || !nameInput.value.trim() || !typeSelect.value;
       });
       editRow.appendChild(nameInput);
       row._nameInput = nameInput;
@@ -1358,13 +1370,20 @@
       // full generalization writeup) - a bare probe can't tell a QDW90A
       // pressure sensor apart from a T3-1-2-H flow meter (both just
       // answer "something's here"), so the person adding it has to say
-      // which. Defaults to "Pressure" - every device this project
-      // supported before this round was one, and the icon next to it
-      // updates live with the selection so the choice is visually
-      // obvious before Confirm is even pressed.
+      // which. No default (2026-08-21, direct feedback: "a pressure
+      // defult device class nem indokolt. Mindenképpen ki kelljen
+      // választani. A két eszköz típus teljesen egyenrangú" - defaulting
+      // to Pressure isn't justified, the choice must always be explicit,
+      // the two types are completely equal/peer) - was "Pressure"
+      // pre-selected, on the reasoning that every device this project
+      // supported before the T3-1-2-H existed was one; now an
+      // unselectable placeholder option instead, forcing an explicit
+      // pick before Confirm unlocks (see its own disabled logic below) -
+      // same treatment as the Name field already got, just for the type
+      // instead of the label.
       const typeSelect = document.createElement("select");
       typeSelect.className = "dc-pressure-type-select";
-      typeSelect.innerHTML = `<option value="Pressure">Pressure</option><option value="Flow">Flow</option>`;
+      typeSelect.innerHTML = `<option value="" selected disabled>Type…</option><option value="Pressure">Pressure</option><option value="Flow">Flow</option>`;
       editRow.appendChild(typeSelect);
       row._typeSelect = typeSelect;
 
@@ -1382,22 +1401,24 @@
       // type select is the pairing that actually needed to be "one row,
       // vertically centered" per that feedback; this hint reads fine as
       // its own compact line, same as .dc-pressure-addr-hint above it.
-      const typeHint = el("span", "dc-pressure-type-hint", TYPE_READING_HINT.Pressure);
+      const typeHint = el("span", "dc-pressure-type-hint", TYPE_READING_HINT[""]);
       nameContent.appendChild(typeHint);
       const updateTypePreview = () => {
         const flow = typeSelect.value === "Flow";
-        typeIcon.innerHTML = svgIcon(flow ? "flow" : "gauge");
-        typeHint.textContent = flow ? TYPE_READING_HINT.Flow : TYPE_READING_HINT.Pressure;
+        typeIcon.innerHTML = svgIcon(typeSelect.value ? (flow ? "flow" : "gauge") : "dot");
+        typeHint.textContent = TYPE_READING_HINT[typeSelect.value];
+        if (!row._confirmBtn._busy) row._confirmBtn.disabled = atCeiling || !nameInput.value.trim() || !typeSelect.value;
       };
       typeSelect.addEventListener("change", updateTypePreview);
 
       const actionCell = row.querySelector(".dc-pressure-action");
 
-      // Disabled with no name typed - a device isn't necessarily a
-      // pressure sensor (more Modbus device types are planned), so
-      // silently falling back to a generic "Pressure Sensor N" label on
-      // an empty name would be actively wrong for those, confirmed a
-      // problem, 2026-08-13.
+      // Disabled with no name typed or no type chosen - a device isn't
+      // necessarily a pressure sensor (more Modbus device types are
+      // planned), so silently falling back to a generic "Pressure Sensor
+      // N" label, or to the Pressure type by default, would be actively
+      // wrong (name: confirmed a problem, 2026-08-13; type: confirmed a
+      // problem, 2026-08-21 - see typeSelect's own comment above).
       const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
       confirmBtn.type = "button";
       confirmBtn.disabled = true;
@@ -1474,12 +1495,15 @@
     // whatever atCeiling says here, undoing that guard.
     if (!row._confirmBtn._busy) {
       const nameEmpty = !row._nameInput.value.trim();
-      row._confirmBtn.disabled = atCeiling || nameEmpty;
+      const typeUnset = !row._typeSelect.value;
+      row._confirmBtn.disabled = atCeiling || nameEmpty || typeUnset;
       row._confirmBtn.title = atCeiling
         ? "All 8 sensor slots are already registered - delete one first to add another."
         : nameEmpty
           ? "Enter a name first."
-          : "Add";
+          : typeUnset
+            ? "Choose a device type first."
+            : "Add";
     }
   }
 
@@ -1933,6 +1957,32 @@
       return;
     }
     const valueEntity = pressureSlotValueEntity(groupName);
+    // Removes the OTHER entity's own metric row, if upsertHomeMetric()
+    // ever built one for it (2026-08-21, real bug confirmed on a real
+    // device: a Home card showed BOTH "-- bar / Pressure" AND the
+    // correct "0 m³/h / Flow Rate" stacked together, after a page
+    // refresh). Root cause: Device Type isn't always known the FIRST
+    // time this function runs for a slot (same arrival-order race this
+    // whole file has hit repeatedly elsewhere - the Modbus Address
+    // entity, gating whether this slot even counts as "registered" at
+    // all, can easily arrive before Device Type does) - pressureSlotValueEntity()
+    // falls back to "Pressure" for that brief window, so upsertHomeMetric()
+    // built a row for the PRESSURE entity first. Moments later, once
+    // Device Type's real "Flow" value lands, this function reruns,
+    // valueEntity switches to Flow Rate, and upsertHomeMetric() builds a
+    // SECOND row for that instead - but nothing ever removed the first,
+    // now-stale Pressure row, since upsertHomeMetric() only ever
+    // appends, keyed per-entity, with no concept of "this entity is
+    // mutually exclusive with that one." Only Pressure/Flow Rate need
+    // this (pulse meters' Total Consumption/Calculated Flow Rate are
+    // BOTH always legitimately shown together, by design - this
+    // cleanup must stay scoped to this pair, not become generic).
+    const otherLabel = valueEntity && displayName(valueEntity) === "Flow Rate" ? "Pressure" : "Flow Rate";
+    const otherEntity = pressureSlotEntity(groupName, otherLabel);
+    if (otherEntity && otherEntity.el) {
+      otherEntity.el.remove();
+      otherEntity.el = null;
+    }
     if (valueEntity) {
       // Same collision signal the Service table's own badge already
       // uses (latestCollisionAddresses(), fed by the debounced "Scan
