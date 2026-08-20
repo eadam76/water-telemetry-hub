@@ -220,9 +220,19 @@ inline std::vector<uint8_t> build_write_request(uint8_t address, uint16_t reg, u
 // section, reproduced/confirmed on real hardware) - this does NOT
 // auto-chunk a larger request, callers must respect the limit
 // themselves (none of this project's own reads ever need more than 2).
+// `device_responded` (2026-08-21, optional - only read_flow_total()
+// passes it so far) is a THIRD, distinct outcome from `any_reply`/the
+// return value: true whenever the reply this function actually received
+// was a real, coherent, validated answer from exactly the address asked
+// - whether that answer was a successful read OR a clean Modbus
+// exception. Left null (and simply not written to) by every OTHER
+// existing caller, which don't need this extra nuance - see
+// publish_poll_result()'s own comment for what this is actually used
+// for once a caller does pass it.
 inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t start_reg, uint16_t count,
                                     std::vector<uint16_t> &out, uint32_t timeout_ms = 200,
-                                    bool *any_reply = nullptr) {
+                                    bool *any_reply = nullptr, bool *device_responded = nullptr) {
+  if (device_responded) *device_responded = false;
   if (count == 0 || count > 20) return false;
   auto request = build_read_request(address, start_reg, count);
   size_t expected_len = 5 + 2 * static_cast<size_t>(count);
@@ -255,6 +265,7 @@ inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t
   // that differed, confirming it was never a real bus condition.
   if (reply.size() == 5 && (reply[1] & 0x80) != 0) {
     if (any_reply) *any_reply = false;
+    if (device_responded) *device_responded = true;
     return false;
   }
   if (reply.size() != expected_len) return false;
@@ -267,6 +278,7 @@ inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t
     uint16_t lo = reply[4 + i * 2];
     out.push_back(static_cast<uint16_t>((hi << 8) | lo));
   }
+  if (device_responded) *device_responded = true;
   return true;
 }
 
@@ -540,7 +552,8 @@ inline bool read_flow_instant(UARTComponent *bus, uint8_t address, float &out, u
 // first thing worth double-checking, the same off-by-one caveat as
 // every other register in this file.
 inline bool read_flow_total(UARTComponent *bus, uint8_t address, float &out, uint32_t timeout_ms = 200,
-                             bool *collision = nullptr) {
+                             bool *collision = nullptr, bool *device_responded = nullptr) {
+  if (device_responded) *device_responded = false;
   const uint16_t START_REG = 8;           // document register "0009" (0009 - 1, same convention as read_flow_instant())
   const uint16_t PDU_EXPONENT_REG = 1438;  // document register "1439"
   std::vector<uint16_t> regs;
@@ -557,12 +570,31 @@ inline bool read_flow_total(UARTComponent *bus, uint8_t address, float &out, uin
 
   std::vector<uint16_t> exp_regs;
   bool exp_any_reply = false;
-  if (!read_holding_registers(bus, address, PDU_EXPONENT_REG, 1, exp_regs, timeout_ms, &exp_any_reply)) {
-    ESP_LOGD(TAG, "address %d: flow total scale exponent read failed%s", address, exp_any_reply ? " (possible collision)" : "");
-    if (collision) *collision = any_reply || exp_any_reply;
+  bool exp_device_responded = false;
+  if (!read_holding_registers(bus, address, PDU_EXPONENT_REG, 1, exp_regs, timeout_ms, &exp_any_reply,
+                               &exp_device_responded)) {
+    // Real bug found and fixed 2026-08-21 (a second fix, same day as the
+    // read_holding_registers() one above - a real device log showed the
+    // status badge STILL reading "Collision" after that first fix): this
+    // branch is only ever reached once the FIRST read above has already
+    // SUCCEEDED - `any_reply` from that call is simply true because a
+    // device answered, which is normal/expected for a successful read,
+    // not a collision signal at all. `*collision = any_reply ||
+    // exp_any_reply` was silently ORing that stale, unrelated "yes,
+    // something replied to the FIRST request" flag back in here,
+    // guaranteeing collision=true regardless of what the exponent read's
+    // own any_reply actually said. Uses exp_any_reply alone now - the
+    // only one of the two that's actually about THIS read.
+    ESP_LOGD(TAG, "address %d: flow total scale exponent read failed%s", address,
+              exp_device_responded ? " (device responded, register not supported)"
+              : exp_any_reply       ? " (possible collision)"
+                                     : "");
+    if (collision) *collision = exp_any_reply;
+    if (device_responded) *device_responded = exp_device_responded;
     return false;
   }
   if (collision) *collision = false;
+  if (device_responded) *device_responded = true;
   // Document range is -4..3 - a signed 16-bit register (int16_t, not
   // uint16_t) so a negative exponent (dividing, not multiplying) reads
   // back correctly rather than as a huge positive value.
@@ -678,10 +710,32 @@ inline void set_scan_collision_address(esphome::text_sensor::TextSensor *scan_co
 // was clean") is needed at all: true bus-arbitration randomness lets a
 // genuinely still-colliding address occasionally answer cleanly by
 // chance, confirmed on real hardware, 2026-08-13.
+// `device_responded` (2026-08-21, default false - only read_flow_total()
+// passes true so far, on its own exponent-register read specifically):
+// true when the read FAILED (ok=false) but the device still gave a
+// real, coherent, validated protocol answer (a clean Modbus exception -
+// read_holding_registers()'s own out-param of the same name) rather
+// than silence or a corrupted/collided reply. Direct feedback,
+// 2026-08-21, after the collision-vs-exception fix above still left
+// this showing "Lost": "ha nem is olvassa ki a flowrate-et, attól még
+// az eszköz válaszol, csak nem jól" (even if it can't read the value,
+// the device still answers) - Online should mean *reachable*, not
+// "every single reading this slot ever asks for happened to succeed".
+// A clean exception is unambiguous proof of exactly one healthy,
+// reachable device - this project's own "show the honest state, don't
+// guess" principle says that should read as reachable (Online, on this
+// poll at least), not as unreachable (Lost) OR as a suspected collision.
+// The specific failing reading (read_flow_total()'s own float `out`)
+// still comes back unavailable regardless of this flag - its own
+// sensor lambda already publishes NAN whenever `ok` is false, entirely
+// independent of what this function does with the shared Online flag -
+// so nothing here hides that Total Consumption specifically couldn't be
+// read this poll, only the whole-slot Online/Lost status stops being
+// dragged down by it.
 inline void publish_poll_result(esphome::binary_sensor::BinarySensor *online, uint32_t &last_collision_ms,
                                  esphome::text_sensor::TextSensor *scan_collisions, uint8_t address, bool ok,
-                                 bool collision) {
-  online->publish_state(ok);
+                                 bool collision, bool device_responded = false) {
+  online->publish_state(ok || device_responded);
   const uint32_t COLLISION_COOLDOWN_MS = 2000;
   if (collision) {
     last_collision_ms = esphome::millis();

@@ -261,9 +261,20 @@ sensor:
       if (address == 0 || id(${id_prefix}_device_type).current_option() != "Flow") return {};
       float value;
       bool collision = false;
-      bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision);
+      // device_responded (2026-08-21, direct feedback: "ha nem is
+      // olvassa ki a flowrate-et, attól még az eszköz válaszol, csak
+      // nem jól" - even if it can't read the value, the device still
+      // answers) - see publish_poll_result()'s own comment for the full
+      // reasoning. This slot's Online status should reflect the device
+      // being reachable, not "this ONE reading also happened to
+      // succeed" - a real, still-open T3-1-2-H hardware limitation (the
+      // scale exponent register isn't readable as documented) shouldn't
+      // make an otherwise perfectly healthy, responding device look
+      // Lost or falsely flag a Collision.
+      bool device_responded = false;
+      bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision, &device_responded);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
-                                         id(pressure_scan_collisions), address, ok, collision);
+                                         id(pressure_scan_collisions), address, ok, collision, device_responded);
       return ok ? value : NAN;
     web_server:
       sorting_group_id: ${sorting_group_id}
