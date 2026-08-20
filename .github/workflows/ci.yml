@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: python -m pip install --disable-pip-version-check esphome==2026.7.3
+
+      - name: Create non-production build secrets
+        run: |
+          printf '%s\n' \
+            'api_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="' \
+            'ota_password: "ci-placeholder"' \
+            > secrets.yaml
+
+      - name: Check dashboard JavaScript
+        run: node --check web/dashboard.js
+
+      - name: Validate ESPHome configuration
+        run: esphome config water-collector.yaml >/dev/null
+
+      - name: Compile firmware
+        run: esphome compile water-collector.yaml
