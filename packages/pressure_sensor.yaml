@@ -1,150 +1,11 @@
-# Modbus device slot - reusable ESPHome package.
-#
-# One of 8 fixed "slots" for a real-time-polled RS485/Modbus device - see
-# REQUIREMENTS.md (Hungarian), "Nyomásmérő modul" for the original
-# rationale, and "Architekturális megfontolás v3" (2026-08-13) for the
-# design this file implements. STILL NAMED "pressure_sensor.yaml"/
-# "Pressure Sensor N" (the internal id_prefix/friendly_name, e.g.
-# "slot3"/"Pressure Sensor 3") for historical reasons - this is
-# deliberately NOT renamed (see the GENERALIZATION note below for why
-# that's a safe simplification, not sloppiness).
-#
-# GENERALIZATION (2026-08-19, direct feedback: "kellően generalizált
-# architektúra és sw felépítés kell" - the architecture needs to be
-# sufficiently generalized): originally, and still by default, every
-# slot was a QDW90A pressure sensor. A second device class (a T3-1-2-H
-# ultrasonic flow meter, ordered same day - see docs/hardver/
-# t3-1-2-h-aramlasmero-jegyzet.md) is now supported too, picked per-slot
-# by the new "Device Type" select below. The design principle: a device
-# CLASS is one small, isolated reader function in include/rs485_modbus.h
-# (read_pressure_bar()/read_flow_instant()) plus one more always-exists
-# sensor entity here (existence model, same as every other per-slot
-# entity) - adding a THIRD class later only means adding another such
-# pair, never touching the shared scan/probe/Add/Delete/reorder
-# machinery below, which was already class-agnostic from the start (it
-# only ever cared about "does something answer at this Modbus address",
-# never what kind of device that is). The internal id_prefix/
-# friendly_name ("slot3"/"Pressure Sensor 3") staying literally
-# "Pressure"-named despite this is intentional, not an oversight - see
-# the file's own PERSISTENT DATA MODEL note below: this compile-time
-# name is NEVER shown anywhere in the dashboard (only the runtime
-# Display Name is), so a slot holding a flow meter having "Pressure" in
-# its own internal, invisible id costs nothing real - renaming 8 slots'
-# worth of ids/sorting-group keys purely for source-code aesthetics was
-# judged not worth the diff size/regression risk against that zero
-# actual benefit.
-#
-# STATUS: real Modbus RTU over the Waveshare ESP32-S3-RS485-CAN board's
-# RS485 bus (water-collector.yaml's `uart: rs485_uart`, protocol helpers
-# in include/rs485_modbus.h) - the earlier commissioning-UX-only pass's
-# "Mock Pressure (Test)" scaffold is gone; the Pressure/Flow Rate sensors
-# below now poll the real device directly, whichever this slot's own
-# Device Type select currently says to use.
-#
-# EXISTENCE MODEL (v3): every entity below is a normal, always-compiled-in,
-# never-`internal` entity (same "don't rely on deprecated set_internal()"
-# reasoning as v2 - see git history for that finding).
-#
-# PERSISTENT DATA MODEL (v3, simplified from v2): a slot's identity is
-# exactly two persisted fields - Modbus Address and Display Name. That's
-# it. v2 also had a separate "Commissioned" bool/binary_sensor; v3 drops
-# it entirely - "registered or not" is now derived purely from Modbus
-# Address != 0 (the same sentinel v1 originally used), both in firmware
-# (this file) and in the dashboard's own join logic (web/dashboard.js).
-# One fewer persisted concept, one fewer thing that could drift out of
-# sync with the address. "Online" below is the live counterpart - never
-# persisted, always recomputed by the poll.
-#
-# A third persisted field, Sort Order (added 2026-08-13), is deliberately
-# NOT part of that identity - it carries no meaning about the sensor
-# itself, purely the dashboard's own display position (see that entity's
-# own comment below), and is reset independently of the two identity
-# fields (Delete resets it too, but for a different reason - see the
-# Delete button's own comment).
-#
-# Instantiate per slot from the top-level config (water-collector.yaml)
-# via `!include ... vars:`. Required vars:
-#   id_prefix         - unique internal id prefix, e.g. slot1 / slot2 / ...
-#                        (never shown anywhere - which physical slot
-#                        number a sensor happens to occupy is deliberately
-#                        meaningless; only its Display Name is ever shown -
-#                        see water-collector.yaml's bus-scan/Add flow for
-#                        why slot order otherwise doesn't matter)
-#   friendly_name     - fallback Display Name if a sensor is commissioned
-#                        with an empty name; also this slot's compiled-in
-#                        entity name prefix (never shown in the custom
-#                        dashboard UI, which always renders the Display
-#                        Name instead - could still appear in Home
-#                        Assistant's own entity IDs)
-#   sorting_group_id  - web_server sorting group id for this slot
-#                        (declared in water-collector.yaml) - purely an
-#                        internal grouping key, never shown as a label
-#                        (the dashboard's own pressure table renders from
-#                        each entity's Display Name, not group names)
-#   poll_interval     - this slot's own Pressure update_interval (e.g.
-#                        "560ms") - deliberately a different value per
-#                        slot (water-collector.yaml staggers all 8), not
-#                        one shared constant. See the Pressure sensor's
-#                        own comment below for why.
 
 globals:
-  # millis() timestamp of this slot's last collision-flagged poll (0 =
-  # never) - see the Pressure sensor's own lambda below for why clearing
-  # "Collision" needs more than just the latest poll's result. A fixed
-  # *count* of consecutive clean polls (the first version of this,
-  # 2026-08-13) turned out not to be robust enough on its own - with true
-  # bus-arbitration randomness, two clean polls in a row can still happen
-  # by chance while the collision is genuinely ongoing (confirmed a real,
-  # if less frequent, remaining false-"OK" flash on real hardware even
-  # with a streak requirement). A time-based cooldown is stronger: *any*
-  # collision seen during the cooldown window resets it, no matter how
-  # many individual polls in between happened to look clean - see
-  # COLLISION_COOLDOWN_MS below. Not persisted (restore_value: false) - a
-  # reboot has no memory of an in-progress cooldown anyway, starting over
-  # at 0 (= "long enough ago") is exactly correct.
   - id: ${id_prefix}_last_collision_ms
     type: uint32_t
     restore_value: false
     initial_value: "0"
 
 sensor:
-  # The actual reading, shown on the Home page once registered - see
-  # dashboard.js. disabled_by_default here (unlike the water meters' own
-  # Flow Rate/Total Consumption) is a deliberate exception to this
-  # project's usual "the device's actual job is enabled by default" rule:
-  # since Home Assistant can't be kept from seeing an unregistered slot's
-  # entities at all (ESPHome has no supported way to hide an entity from
-  # HA at runtime - see git history), the least-surprising default is for
-  # a fresh HA connection to show 8 disabled pressure sensors rather than
-  # 8 enabled-but-meaningless ones - opt in per slot once it's actually
-  # registered.
-  #
-  # Polls the real sensor directly (rs485_modbus::read_pressure_bar(),
-  # include/rs485_modbus.h - H:22-H:23 as Float32, see
-  # docs/hardver/qdw90a-modbus-referencia.md) - a no-op (returns {}, no
-  # publish at all) while this slot is unregistered, OR while it's
-  # registered as the OTHER device type (2026-08-19 generalization - see
-  # the file header) - checked via this slot's own "Device Type" select
-  # below. This same poll is also this slot's *only* source of live
-  # online/offline status - see "Online" below - deliberately not derived
-  # from the shared bus-scan result the way a not-yet-registered "New
-  # device" row is; a scan is for discovering addresses we don't have a
-  # slot for yet, this is for continuously watching one we do.
-  #
-  # `poll_interval` is staggered per slot (not one shared value) so 8
-  # registered slots' polls don't all land on the same main-loop tick -
-  # every read here runs synchronously (wait_for_bytes() blocks the main
-  # loop for up to its own timeout), so 8 *simultaneous* polls would
-  # briefly block for the sum of all 8 timeouts, not just one. Spread
-  # across ~280ms (520-800ms in ~40ms steps), they drift apart over
-  # multiple cycles instead of staying permanently in lockstep (all 8
-  # start at nearly the same boot-time moment, and with one shared
-  # interval would never separate on their own). Read timeout is 50ms
-  # (passed explicitly below, i.e. read_pressure_bar()'s own 200ms
-  # default is NOT used here) - real hardware responses have been well
-  # under that; worst case with every slot simultaneously unreachable is
-  # still bounded (8 x 50ms = 400ms) within the shortest slot's own
-  # ~520ms window, not runaway backlog.
   - platform: template
     id: ${id_prefix}_pressure
     name: "${friendly_name} Pressure"
@@ -176,31 +37,6 @@ sensor:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 10
 
-  # Same continuous-poll pattern as Pressure above, for the "Flow" device
-  # type instead (2026-08-19, T3-1-2-H ultrasonic flow meter - see the
-  # file header's GENERALIZATION note and include/rs485_modbus.h's
-  # read_flow_instant() for the full sourcing/uncertainty writeup on this
-  # specific reading). Always exists on every slot regardless of that
-  # slot's actual configured Device Type - a no-op unless it's "Flow", so
-  # a Pressure-configured slot pays nothing extra for this sensor also
-  # existing on it (same existence-model reasoning as every other
-  # per-slot entity in this file). The totalizer (cumulative usage) is a
-  # SEPARATE sensor, "Total Consumption" just below - originally deferred
-  # here as a documented scope cut, implemented 2026-08-21 once real
-  # hardware confirmed this register range's own convention.
-  #
-  # Named "Flow Rate" (renamed from "Instant Flow", 2026-08-20, direct
-  # feedback). Originally named "Instant Flow" specifically to dodge a
-  # real, found-before-shipping HELP_TEXT collision: dashboard.js's own
-  # HELP_TEXT is keyed purely by the displayName()-stripped label,
-  # group-unaware - the same mechanism that caused the MQTT group's own
-  # real bugs earlier this project (see REQUIREMENTS.md) - and at the
-  # time "Flow Rate" already meant the PULSE METERS' own, differently-
-  # computed field. That collision is gone now: the same round that
-  # asked for this rename also renamed the pulse meters' own field to
-  # "Calculated Flow Rate" (packages/water_meter.yaml) specifically to
-  # free "Flow Rate" up for this one - both changes together, not
-  # independently, are what actually keep the two apart.
   - platform: template
     id: ${id_prefix}_flow_rate
     name: "${friendly_name} Flow Rate"
@@ -225,29 +61,6 @@ sensor:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 11
 
-  # The flow meter's own accumulated total (2026-08-21, direct feedback:
-  # "a flow meter a dashboardon nem mutat total consumption-t... nem is
-  # nekünk kéne számolni hanem majd jön a device-tól ahogy pollozzuk" -
-  # shouldn't be calculated by us, should come straight from the device
-  # as it's polled - unlike the pulse meters' own Total Consumption,
-  # which really IS computed here from a pulse count, this reads the
-  # meter's own internal totalizer register directly, see
-  # include/rs485_modbus.h's read_flow_total() for the full register/
-  # scaling writeup, and the file header's GENERALIZATION note for why
-  # this is its own isolated reader rather than folded into Flow Rate's).
-  #
-  # Named "Total Consumption" - the EXACT SAME label the pulse meters'
-  # own field uses (packages/water_meter.yaml), deliberately, not a
-  # dodge like "Flow Rate"/"Instant Flow" needed (see that entity's own
-  # naming-collision history above) - direct feedback, same round: "ez
-  # ugyan olyan vízóra mint a pulse meteres csak teljesen más a
-  # technológia/mérési elv/hardver/connection/protokol, de a felületen
-  # nem sokban kell eltérjen" (it's the same kind of water meter as the
-  # pulse-meter one, just completely different technology/measurement
-  # principle/hardware/connection/protocol, but the UI shouldn't differ
-  # much) - the two ARE the same concept here, so sharing the label (and
-  # HELP_TEXT entry, dashboard.js) is intentional, not a naming
-  # collision to avoid.
   - platform: template
     id: ${id_prefix}_flow_total
     name: "${friendly_name} Total Consumption"
@@ -263,16 +76,8 @@ sensor:
       if (address == 0 || id(${id_prefix}_device_type).current_option() != "Flow") return {};
       float value;
       bool collision = false;
-      // device_responded (2026-08-21, direct feedback: "ha nem is
-      // olvassa ki a flowrate-et, attól még az eszköz válaszol, csak
-      // nem jól" - even if it can't read the value, the device still
-      // answers) - see publish_poll_result()'s own comment for the full
-      // reasoning. This slot's Online status should reflect the device
-      // being reachable, not "this ONE reading also happened to
-      // succeed" - a real, still-open T3-1-2-H hardware limitation (the
-      // scale exponent register isn't readable as documented) shouldn't
-      // make an otherwise perfectly healthy, responding device look
-      // Lost or falsely flag a Collision.
+      // A validated Modbus exception still proves that the device is
+      // reachable even when this optional register cannot be decoded.
       bool device_responded = false;
       bool ok = rs485_modbus::read_flow_total(id(rs485_uart), address, value, 50, &collision, &device_responded);
       rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(${id_prefix}_last_collision_ms),
@@ -311,19 +116,6 @@ binary_sensor:
       sorting_weight: 15
 
 select:
-  # Which device class this slot's Modbus Address actually belongs to -
-  # added 2026-08-19 alongside the T3-1-2-H flow meter (see the file
-  # header's GENERALIZATION note). Gates which of the two sensor lambdas
-  # above (Pressure/Flow Rate) actually polls the bus - the other one
-  # short-circuits to a no-op. "Pressure" is both the first option AND
-  # the initial_option/restore fallback, matching every slot's existing,
-  # already-deployed behavior before this entity existed at all - a slot
-  # that's never had this touched (any slot registered before this
-  # update) keeps acting exactly as it always did, no migration step
-  # needed. Set once, at Add time (the dashboard's Add flow picks a type
-  # before pressing Add - see water-collector.yaml's own Add button), but
-  # also freely editable afterwards like Modbus Address/Display Name, for
-  # the rare case a slot was added as the wrong type.
   - platform: template
     id: ${id_prefix}_device_type
     name: "${friendly_name} Device Type"
@@ -349,38 +141,6 @@ select:
       sorting_weight: 5
 
 number:
-  # The single source of truth for "registered or not" - see the file
-  # header. 0 = empty slot, 1-247 = a real Modbus address. Restored from
-  # flash on boot (restore_value: true), same as Display Name below - no
-  # separate persisted flag needed on top of this.
-  #
-  # set_action fires with `x` = the new value and (per TemplateNumber::
-  # control(), confirmed from the installed esphome package's own
-  # template_number.cpp - set_trigger_ runs before publish_state()) the
-  # entity's own .state field still holding the *old* value, which is
-  # what makes the reprogram-vs-no-op distinction below possible without
-  # a second variable anywhere else. Only an edit on an already-
-  # registered slot (old and new both non-zero and different) actually
-  # reprograms the physical sensor - a fresh Add (old == 0, from
-  # try_register below) just records an address the sensor is already
-  # using because the bus scan just found it there, and Delete (new == 0)
-  # just forgets our own record - neither needs to touch the device at
-  # all. See include/rs485_modbus.h's change_address_and_save() for the
-  # two-step write+save sequence this performs, and
-  # docs/hardver/qdw90a-modbus-referencia.md's "Betanítás / cím
-  # módosítása" for why it can't be one atomic Modbus transaction.
-  #
-  # A failed reprogram is logged (ESP_LOGW, visible on the Log page) but
-  # the local record still updates regardless - there is no clean way to
-  # roll a TemplateNumber's own optimistic-publish/restore_value-save
-  # back to the old value from inside set_action (both fire unconditionally
-  # from control(), independent of what set_action itself decides - see
-  # the same template_number.cpp). This is an accepted, self-correcting
-  # gap: if the physical address genuinely didn't change, the next poll
-  # of the (wrongly recorded) new address simply fails, and the slot
-  # shows Lost - the same real diagnostic signal a truly offline sensor
-  # would produce, prompting a retry rather than silently believing a
-  # failed reprogram succeeded.
   - platform: template
     id: ${id_prefix}_modbus_address
     name: "${friendly_name} Modbus Address"
@@ -404,11 +164,7 @@ number:
           if (old_address != 0 && new_address != 0 && old_address != new_address) {
             if (rs485_modbus::change_address_and_save(id(rs485_uart), old_address, new_address)) {
               ESP_LOGI("pressure", "${friendly_name}: reprogrammed sensor address %d -> %d", old_address, new_address);
-              // Without this, the old address lingers in "Scan Results"
-              // until the next actual bus scan and the dashboard's JOIN
-              // renders it as a phantom "New device" row for an address
-              // nothing answers at anymore - confirmed wrong (not just
-              // stale), not merely cosmetic, on real hardware, 2026-08-13.
+              // Keep the scan snapshot consistent with the physical address.
               rs485_modbus::update_scan_result_address(id(pressure_scan_results), old_address, new_address);
             } else {
               ESP_LOGW("pressure", "${friendly_name}: FAILED to reprogram sensor address %d -> %d - it may not have actually switched, check it before trusting this slot", old_address, new_address);
@@ -420,26 +176,6 @@ number:
       sorting_group_id: ${sorting_group_id}
       sorting_weight: 20
 
-  # Pure dashboard-side ordering (2026-08-13, direct feedback: the
-  # displayed row order should be able to represent physical pipe layout,
-  # not just Modbus address order) - no relation whatsoever to the
-  # physical Modbus address or which slot this happens to be (still
-  # meaningless - see the file header). 0 = "never customized"; the
-  # dashboard falls back to sorting by address for any slot still at 0
-  # (web/dashboard.js's orderedRegisteredSlots()).
-  #
-  # Two things ever write this: try_register below assigns each freshly-
-  # registered slot the current water-collector.yaml next_device_sort_
-  # order counter (then bumps it) - so a new Add always sorts after every
-  # existing row, not by address among however many are still at 0 -
-  # confirmed a real complaint, 2026-08-13. Every registered slot's own
-  # value also gets rewritten together by each Up/Down press in the
-  # unified devices table (moveDeviceRow() in dashboard.js), collapsing
-  # back down to small sequential ranks (1..N) - the counter (which only
-  # ever grows, and is now SHARED with the pulse meters - see
-  # water-collector.yaml's own comment) still guarantees the next Add, of
-  # either device type, sorts after those. max_value matches the
-  # counter's own uint16_t range, well beyond the small manual-rank case.
   - platform: template
     id: ${id_prefix}_sort_order
     name: "${friendly_name} Sort Order"
@@ -478,34 +214,6 @@ text:
       sorting_weight: 30
 
 button:
-  # Un-registers this slot: resets Modbus Address back to 0 (the "empty"
-  # sentinel - see file header), Display Name back to its default, and
-  # clears the live Pressure/Online readouts. Deliberately does NOT touch
-  # the physical sensor itself (no factory reset/re-address-to-unknown) -
-  # this only forgets our own record; the sensor keeps answering at
-  # whatever address it already has, and a re-scan will find it again as
-  # a "New device" if it's ever re-added. Confirmed before firing on the
-  # dashboard itself (CONFIRM_ON_PRESS in web/dashboard.js), same pattern
-  # as Update/Restart/Forget Wi-Fi.
-  #
-  # Also forgets this address from "Scan Results"/"Scan Collisions" (the
-  # first lambda below, which has to run *before* the Modbus Address
-  # reset that follows it - it's the last moment this slot still knows
-  # its own address). Without this the deleted device's address lingered
-  # in the last scan's stale snapshot and immediately reappeared as a
-  # "New device" row from that old data - looking like it could never
-  # actually be removed from the list - rather than genuinely
-  # disappearing until an actual re-scan confirms something still
-  # answers there, confirmed real on the dashboard, 2026-08-13.
-  #
-  # Also resets Sort Order back to 0 - a re-added sensor in this slot
-  # later starts fresh at the bottom of any custom order (falls back to
-  # address, same as any never-customized slot) rather than silently
-  # inheriting a stale rank from whatever used to be here. The other
-  # slots' own Sort Order values are untouched - gaps left behind in the
-  # numbering are harmless, only relative order matters (see
-  # web/dashboard.js's orderedRegisteredSlots()), so nothing needs to be
-  # renumbered just because one slot dropped out.
   - platform: template
     id: ${id_prefix}_delete
     name: "${friendly_name} Delete"
@@ -542,46 +250,6 @@ button:
           id(${id_prefix}_online).publish_state(false);
 
 script:
-  # Called (unconditionally, on every press) from water-collector.yaml's
-  # per-discovered-address "Add" buttons, once per slot in sequence -
-  # claims the given address+name into this slot only if BOTH this slot
-  # is still free AND no other slot has already claimed it in this same
-  # Add (the global `modbus_add_claimed`, reset to false right before
-  # this sequence starts - see that global's own comment in
-  # water-collector.yaml). Checking only "am I free?" is NOT enough on
-  # its own - confirmed on real hardware, 2026-08-13: with all 8 slots
-  # free, every single one independently satisfied that check and all 8
-  # claimed the same address+name at once. Which slot number ends up
-  # actually claiming it is otherwise never shown/meaningful - see the
-  # id_prefix note in the file header.
-  #
-  # Takes the address as a parameter (v3) rather than always writing 0
-  # and leaving it to be typed in later (v2) - the bus-scan/Add flow
-  # already knows the address before Add is ever pressed. Just records
-  # it (via the Modbus Address number's own set_action above) - it does
-  # NOT write anything to the physical sensor, since the address it's
-  # given is one the bus scan just found the sensor already answering
-  # to.
-  #
-  # Also requires a non-empty name (2026-08-13) - the dashboard's own Add
-  # button already refuses to fire this at all without one, but this is
-  # the actual point where an empty name could otherwise become a real,
-  # persisted Display Name. Used to silently substitute "${friendly_name}"
-  # (this slot's own internal id, e.g. "Pressure Sensor 3") in that case
-  # - direct feedback, same day: that internal id must never end up
-  # anywhere a real Display Name is expected, not even as a one-time
-  # fallback, so an empty name now simply isn't claimed at all rather
-  # than being silently replaced with something else.
-  # `device_type` (2026-08-19, added alongside the flow-meter
-  # generalization - see the file header) - a plain string, "Pressure" or
-  # "Flow", set by the Add flow's own type picker (water-collector.yaml)
-  # BEFORE this fires, same "dashboard already knows it, just pass it
-  # through" reasoning as `address` above. Not validated against the
-  # select's own options list here - an unrecognized value would just
-  # leave this slot's Device Type at whatever it already was (this
-  # select's own `optimistic: true` set_action has no validation of its
-  # own either), which for a fresh, never-registered slot is always the
-  # "Pressure" default - safe either way.
   - id: ${id_prefix}_try_register
     mode: single
     parameters:
@@ -613,20 +281,6 @@ script:
             - globals.set:
                 id: next_device_sort_order
                 value: !lambda 'return id(next_device_sort_order) + 1;'
-            # Publishes Online optimistically, right now, instead of
-            # waiting for this slot's first real poll (up to its own
-            # ~600-670ms interval away) - justified because Add only ever
-            # fires for an address the bus scan *just* confirmed answers.
-            # Without this, "Online" kept whatever it last held before
-            # this claim - for a slot that had been Deleted before (its
-            # own Delete button explicitly publishes Online: false, since
-            # that value is otherwise meaningless while unregistered),
-            # that stale `false` was still sitting there the instant this
-            # slot became registered again, showing a real, if brief,
-            # "Lost" flash on a perfectly healthy, freshly-added sensor -
-            # confirmed on real hardware, 2026-08-13. The very next poll
-            # corrects this either way if the optimistic guess ever turns
-            # out wrong.
             - lambda: 'id(${id_prefix}_online).publish_state(true);'
             - globals.set:
                 id: modbus_add_claimed

@@ -1,28 +1,8 @@
-# Water Data Collector - pulse-counter data acquisition unit.
-# This device collects raw measurements only; Home Assistant owns
-# historization, statistics and presentation. See REQUIREMENTS.md
-# (Hungarian) at the repo root for the full spec.
-#
-# Production hardware (2026-08-13): Waveshare ESP32-S3-RS485-CAN,
-# docs/hardver/esp32-s3-rs485-can-board.md - `board_type`/pulse pins below
-# now target it directly. The old non-S3 test board's values are kept
-# commented out purely as a reference for whoever needs to go back to
-# bench-testing without the real hardware in hand.
 
 substitutions:
   device_name: water-collector
   friendly_device_name: "Water Data Collector"
 
-  # --- Hardware: production (Waveshare ESP32-S3-RS485-CAN) ---
-  # esp32-s3-devkitc1-n16r8: the actual chip on this board is an
-  # ESP32-S3R8 (per the manufacturer's own PDF, docs/hardver/
-  # esp32-s3-rs485-can-board.pdf) - "R8" = 8 MB Octal PSRAM - plus 16 MB
-  # flash. The plain `esp32-s3-devkitc-1` preset (N8, no PSRAM) would
-  # still boot fine (it just under-declares what's physically there,
-  # always safe - the opposite, over-declaring, would try to address
-  # memory that doesn't exist), but wastes half the flash and all of the
-  # PSRAM for no reason - this preset matches the real hardware exactly
-  # (confirmed against the installed esphome package's own boards.py).
   board_type: esp32-s3-devkitc1-n16r8
   meter1_pulse_pin: GPIO1
   meter2_pulse_pin: GPIO2
@@ -63,38 +43,6 @@ esp32:
     sdkconfig_options:
       CONFIG_LWIP_MAX_SOCKETS: "20"
 
-# Local override of ESPHome's built-in web_server_idf component (components/web_server_idf/,
-# a full copy of the upstream 2026.7.3 source with one fix applied) - works around a genuine,
-# confirmed use-after-free in web_server_idf.cpp still present upstream as of 2026.7.3 and the
-# current esphome/esphome main branch as of 2026-08-10.
-#
-# Root cause, confirmed by decoding a real crash's backtrace (xtensa-esp32-elf-addr2line
-# against the build's own .elf) and reading the actual upstream source:
-#   - process_buffer_()'s "stuck EventSource connection" path (fires after ~20s of failed
-#     sends - the same symptom power_save_mode: none above was meant to reduce, but doesn't
-#     eliminate outright, e.g. a client that goes to sleep/loses network without a clean TCP
-#     close can still trigger it) used to call `this->fd_.store(0)` directly.
-#   - That makes the very next main-loop tick `delete` the C++ session object - but the
-#     underlying httpd session (req->sess_ctx) still points at it, and httpd hasn't actually
-#     closed the socket yet.
-#   - When httpd later retires that socket for real (its own idle/error handling), it invokes
-#     free_ctx (destroy()) on what is by then a dangling pointer - a use-after-free write into
-#     already-freed/reused heap memory.
-#   - That corruption gets detected later, elsewhere, by an unrelated free() - which is
-#     exactly what was observed: `assert failed: block_merge_prev ... "prev block is not free
-#     though marked as such"` inside lwIP's own tcpip_thread housekeeping (sys_check_timeouts
-#     -> memp_free), a few seconds after a "Closing stuck EventSource connection" log line and
-#     the fd's own (already-dangling) "Event source connection closed" log line.
-#
-# Fix applied in components/web_server_idf/web_server_idf.cpp: that path now only calls the
-# proper ESP-IDF API, httpd_sess_trigger_close(), and leaves fd_/deletion to the same safe
-# close_fn -> free_ctx path a normal client-initiated disconnect already goes through -
-# instead of racing ahead of httpd itself. See the comment at the call site for the full
-# writeup. Not yet reported upstream.
-#
-# If/when this is fixed in a released ESPHome version, this whole external_components block
-# (and the components/web_server_idf/ copy) can be deleted again - it's a temporary override,
-# not a fork to maintain long-term.
 external_components:
   - source:
       type: local
@@ -107,15 +55,6 @@ external_components:
 preferences:
   flash_write_interval: 60s
 
-# Cross-slot coordination for the "Pressure Sensors Add" button below -
-# NOT persisted (restore_value: false, initial_value doesn't matter since
-# the Add button always resets this to false before using it) - purely a
-# same-press guard. Each of the 8 packages/pressure_sensor.yaml
-# try_register scripts only ever knows about its *own* slot's address -
-# without a shared "already claimed this round" flag, every still-free
-# slot independently satisfies its own "am I free?" check and all of them
-# claim the same address+name at once (confirmed on real hardware,
-# 2026-08-13, on a fresh board with all 8 slots free).
 globals:
   - id: modbus_add_claimed
     type: bool
@@ -130,25 +69,6 @@ globals:
     restore_value: false
     initial_value: "false"
 
-  # Monotonically-increasing counter, SHARED across every device type
-  # (2026-08-13, "Devices" table unification - see web/dashboard.js and
-  # REQUIREMENTS.md) - handed out (and bumped) by whichever slot's
-  # try_register-style logic actually claims a new registration
-  # (packages/pressure_sensor.yaml's try_register script, water_meter.yaml's
-  # own per-meter Add button). Gives every freshly-added device, of
-  # *either* type, a Sort Order strictly higher than any previously
-  # issued one, so it always lands at the bottom of the unified table by
-  # default, matching plain add-order across the whole device list, not
-  # just within its own type - confirmed a real complaint, 2026-08-13.
-  # Renamed from next_pressure_sort_order the same day, once pulse meters
-  # started participating in the same ordering scheme too - a name that's
-  # still pressure-specific would be actively misleading now.
-  # restore_value: true - a reboot must not reissue a smaller value than
-  # is already sitting on an existing slot (which could put a *new* add
-  # ahead of older ones after a restart). uint16_t, not uint8_t: only 10
-  # slots exist at once (8 pressure + 2 pulse meter), but this never
-  # decreases even across delete/re-add cycles over the device's whole
-  # lifetime, so it needs more headroom than the slot count itself.
   - id: next_device_sort_order
     type: uint16_t
     restore_value: true
@@ -168,51 +88,17 @@ logger:
   level: VERY_VERBOSE
   initial_level: DEBUG
 
-# RAM-only ring buffer of recent log lines, downloadable as a plain text
-# file at GET /log.txt (components/log_ring_buffer/ - see that component's
-# own __init__.py for the full "why RAM, not flash" reasoning). Direct
-# feedback, 2026-08-15: the Log page only ever showed what happened to
-# arrive over SSE while a browser tab was connected; this covers the same
-# since-boot horizon retroactively. web/dashboard.js's Log page links to
-# this with a plain static <a href="/log.txt"> - no JS needed, the
-# Content-Disposition header the component sets is what makes the browser
-# download it instead of just navigating there.
 log_ring_buffer:
 
 api:
   encryption:
     key: !secret api_encryption_key
-  # Default (15min, not the 5min the C++ member default alone would
-  # suggest - confirmed from api/__init__.py's schema) is: reboot if no
-  # *native API* client (HA, `esphome logs`, ...) has connected in that
-  # window. That's the right safety net once HA is actually the ongoing
-  # primary client - but nothing currently connects over this protocol
-  # at all (the custom web dashboard talks plain HTTP/SSE on port 80, a
-  # completely different thing) - which meant the device was rebooting
-  # itself, unconditionally, every 15 minutes, regardless of whether
-  # anything was actually wrong. Disabled for now; once HA is connected
-  # and stays connected, this would rarely if ever fire anyway (the
-  # countdown resets on every connection), so there's nothing to
-  # remember to revert later.
   reboot_timeout: 0s
 
 ota:
   - platform: esphome
     password: !secret ota_password
 
-# RS485 bus to the QDW90A pressure sensors, over the Waveshare
-# ESP32-S3-RS485-CAN board's isolated RS485 interface (see
-# docs/hardver/esp32-s3-rs485-can-board.md - GPIO17 TX / GPIO18 RX /
-# GPIO21 EN). flow_control_pin makes ESPHome's esp-idf UART driver run in
-# hardware RS485 half-duplex mode (UART_MODE_RS485_HALF_DUPLEX, confirmed
-# from the installed esphome package's own uart_component_esp_idf.cpp) -
-# the driver toggles GPIO21 for us on every write_array(), matching the
-# board's own spec ("Direction Control: Automatically controlled via
-# host hardware flow setting"). 9600 8N1 matches the QDW90A's factory
-# default (docs/hardver/qdw90a-modbus-referencia.md) - every sensor has
-# to already be on this baud/framing before this device can talk to it
-# at all, since the baud itself is one of the only two things (besides
-# address) that can differ per sensor and isn't autodetected.
 uart:
   id: rs485_uart
   tx_pin: GPIO17
@@ -271,36 +157,12 @@ web_server:
     - id: sorting_group_pulse_meters
       name: "Pulse Meters"
       sorting_weight: 8
-    # Names deliberately generic ("Pulse Meter 1/2", not "Main"/"Garden") -
-    # which physical meter is which is a fact about *this* installation,
-    # not something to bake into the firmware. Rename via each meter's own
-    # "Display Name" field on the Service page instead - see the note next
-    # to friendly_name below. Renamed from "Water Meter N" to "Pulse Meter
-    # N" (2026-08-13) alongside the "Pulse Meters" table above, for the
-    # same reason - this project counts pulses in general, water is just
-    # the current use. Changing this DOES change these entities'
-    # generated Home-Assistant entity_ids (ESPHome derives them from
-    # `name:`, not `id:`) - deliberately fine to do now, before there's
-    # any real HA integration/PROD deployment to break (explicit call,
-    # 2026-08-13 - do this kind of rename while it's still cheap, not
-    # after). id_prefix (meter1/meter2 below) stays unchanged either way
-    # - that's a separate, purely internal identifier, invisible even in
-    # HA (see the note next to it below).
     - id: sorting_group_meter1
       name: "Pulse Meter 1"
       sorting_weight: 10
     - id: sorting_group_meter2
       name: "Pulse Meter 2"
       sorting_weight: 20
-    # Pressure sensors: one umbrella group (houses the bus-scan + generic
-    # add controls) plus 8 fixed per-slot groups (packages/pressure_sensor.yaml) -
-    # see REQUIREMENTS.md "Architekturális megfontolás v3" (2026-08-13) for
-    # why 8 (cheap headroom vs. the hub's real 32-node bus capacity, not
-    # tied 1:1 to its 4 physical ports anymore). All of this is intercepted
-    # client-side into one compact, scan-joined table (web/dashboard.js) -
-    # these sorting_group names/weights only matter as internal grouping
-    # keys, never shown as literal labels (see pressure_sensor.yaml's own
-    # header on why slot numbering is otherwise meaningless).
     - id: sorting_group_pressure
       name: "Pressure Sensors"
       sorting_weight: 30
@@ -346,98 +208,13 @@ wifi:
   id: wifi_id
   ap:
     ssid: "${friendly_device_name} Setup"
-    # Default is 90s (confirmed from source, wifi/__init__.py's
-    # DEFAULT_AP_TIMEOUT) - how long to keep trying a configured network
-    # before falling back to this setup AP + BLE improv. This is the exact
-    # ~90s delay observed after "Forget Wi-Fi": that button intentionally
-    # saves an empty network, so the device is *always* going to end up
-    # here - there's nothing to gain from waiting the full default out.
-    # Trade-off: this is the same single timeout used for a genuine,
-    # temporary Wi-Fi outage (e.g. the router rebooting) - too short and a
-    # normal blip could bounce the device into setup mode instead of just
-    # waiting it out; too long and Forget Wi-Fi feels broken. 30s is a
-    # reasonable middle ground between the two.
     ap_timeout: 30s
-  # ESPHome's own default on ESP32 is "light" (modem-sleep power saving) -
-  # a well-documented source of exactly the symptom seen on real hardware
-  # (dashboard/ping unreachable for many seconds while the device is
-  # still alive and logging over serial, web_server_idf logging "Closing
-  # stuck EventSource connection after 2500 failed sends" - an ~20s
-  # continuous inability to get a single TCP send out). Trades a small
-  # amount of extra power draw (irrelevant - this device is always
-  # mains/USB powered) for the radio never dropping into a sleep state
-  # that can stall an in-progress send.
   power_save_mode: none
-  # Real-device symptom: once actually connected, ping to this device shows
-  # wide, erratic RTT swings (double-digit ms up to >1s, occasional outright
-  # timeouts) with *zero* corresponding wifi:-component log activity (no
-  # roam scan, no disconnect/reassociate) - i.e. this isn't a connection
-  # drop, it's happening below the level ESPHome's own Wi-Fi state machine
-  # would ever log anything about.
-  #
-  # Root cause: the ESP32 has a single 2.4GHz radio, time-shared between
-  # Wi-Fi and Bluetooth (BLE) via coexistence scheduling - and
-  # esp32_improv (below) leaves BLE running for the device's entire uptime,
-  # not just while unprovisioned, permanently competing with Wi-Fi for
-  # radio time. BLE is only actually needed while there's no working Wi-Fi
-  # connection to provision it over - once connected, it's pure overhead.
-  # Confirmed from source (esp32_ble/ble.cpp) that ble.disable/ble.enable
-  # actually tear down/reinit the BLE stack (not just stop advertising),
-  # and that esp32_improv's own stop() (called automatically once Wi-Fi
-  # connects - see esp32_improv_component.cpp's check_wifi_connection_())
-  # only stops its own GATT service, never the underlying BLE stack -
-  # explaining why BLE was confirmed still active (BLE Client connected
-  # seen in a real log) long after Wi-Fi provisioning was already done.
-  #
-  # Confirmed (not just plausible) by a real captured log: during a mesh
-  # roaming/auth-storm episode (repeated "Auth Expired"/"Association
-  # Expired" across every BSSID for close to an hour), BLE advertising
-  # writes (BTM_BleWriteAdvData/BTM_BleWriteScanRsp) were seen firing
-  # seconds apart from failed reconnect attempts - because naive
-  # on_disconnect: ble.enable turns BLE back on *immediately* on every
-  # single disconnect, including the ones in the middle of that storm,
-  # so the radio is contending with itself for the whole duration. Every
-  # failed auth attempt keeps the link down, which keeps BLE on, which
-  # keeps contending - a self-sustaining feedback loop, not just jitter.
-  #
-  # Fix: re-enable BLE through a restart-mode script with a grace delay
-  # instead of instantly. A single, isolated disconnect (the common case -
-  # reconnects in seconds) never actually turns BLE on at all, since
-  # on_connect cancels the pending script before the delay elapses. Only
-  # a disconnection that's still ongoing after the full grace period
-  # actually enables BLE - by which point a normal reconnect would already
-  # have succeeded, so it's a genuine extended outage where local BLE
-  # recovery access is worth the radio contention. The original
-  # "BLE only goes away while there's a working Wi-Fi connection, comes
-  # back the instant that's no longer true" intent is preserved, just
-  # debounced against the reconnect storm actively sabotaging itself.
   on_connect:
     - script.stop: reenable_ble_after_disconnect
     - ble.disable
   on_disconnect:
     - script.execute: reenable_ble_after_disconnect
-  # Real-device root cause, confirmed from source (wifi_component.h/.cpp):
-  # while connected, ESPHome checks the current signal every 5 minutes
-  # (ROAMING_CHECK_INTERVAL) and, if it's below -49 dBm (ROAMING_GOOD_RSSI -
-  # not a total loss, just "not excellent"), proactively runs an active
-  # scan (the "Roam scan" log line) looking for a better BSSID of the same
-  # SSID - i.e. another node on this mesh. That scan itself involves
-  # channel-hopping, which can miss beacons from the AP actually in use -
-  # this matches a real captured cascade exactly: "Roam scan (-86 dBm...)"
-  # immediately followed by "Disconnected ... reason='Beacon Timeout'".
-  # On a well-behaved mesh this proactive roaming is the point (it's what
-  # makes "mesh" better than isolated APs); on this one it was plausibly
-  # self-inflicted instability - actively going looking for a better node
-  # made a marginal-but-working link worse, rather than staying put.
-  #
-  # post_connect_roaming: false only disables that proactive, still-
-  # connected background check - it does NOT touch the normal reconnect
-  # logic at all, which is a separate code path that already runs
-  # unconditionally on an actual disconnect (a real Beacon Timeout, the AP
-  # going away, etc.) regardless of this setting. So this is exactly
-  # "don't go looking for a better node while things still work; still
-  # reconnect immediately and fully if the link genuinely drops" - not a
-  # blanket "never roam".
   post_connect_roaming: false
 
 # Backs the wifi: on_disconnect/on_connect BLE debounce above - see the
@@ -499,17 +276,9 @@ sensor:
       sorting_group_id: sorting_group_network
       sorting_weight: 10
 
-  # (Uptime itself moved to text_sensor below, 2026-08-20 - see that
-  # entity's own comment for why.)
 
   - platform: internal_temperature
     name: "Unit Temperature"
-    # Was ESPHome's own PollingComponent default (60s) - direct feedback,
-    # 2026-08-15: not actually live, same complaint "Wi-Fi Signal" above
-    # already had and was fixed for. Same reasoning applies here too:
-    # this reads the ESP32's own on-die temperature sensor, a cheap ADC
-    # read with no network/bus cost, so there's nothing to lose by
-    # polling it just as often.
     update_interval: 2s
     entity_category: diagnostic
     disabled_by_default: true
@@ -564,12 +333,6 @@ text_sensor:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 3
 
-  # Addresses where the last scan got *something* back but it failed its
-  # own CRC check - confirmed on real hardware, 2026-08-13, as the actual
-  # signature of two+ devices sharing one address (three sensors
-  # deliberately set to the same address produced exactly this, not a
-  # timeout - see include/rs485_modbus.h's scan_bus()/probe()). The
-  # dashboard renders these as a distinct "Collision?" status.
   - platform: template
     id: pressure_scan_collisions
     name: "Pressure Sensors Scan Collisions"
@@ -580,23 +343,6 @@ text_sensor:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 3.5
 
-  # Addresses whose device DID respond, cleanly and unambiguously (a
-  # real, validated Modbus exception - see read_holding_registers()'s
-  # own "device_responded" out-param) but declined a specific request
-  # this slot's own poll needs (2026-08-21, direct feedback: "itt nem
-  # lehet OK, a logban is jelzed a hibát... legyen egy Piros 'Mismatch'
-  # hiba a táblázatban" - can't be OK here, the log itself flags the
-  # error too, there should be a red "Mismatch" error in the table).
-  # Same CSV-of-addresses pattern as Scan Collisions above (see
-  # set_scan_mismatch_address(), include/rs485_modbus.h) - kept live
-  # between explicit scans by every registered slot's own continuous
-  # poll, not just a scan_bus() snapshot, same reasoning as that entity.
-  # Genuinely distinct from a collision (a validated single-device
-  # exception is the polar opposite of two devices' replies colliding
-  # on the wire - see that fix's own history) - a slot can show
-  # "Mismatch" while still being perfectly reachable and reporting other
-  # readings fine (see publish_poll_result()'s "device_responded" own
-  # comment for why Online itself isn't dragged down by this).
   - platform: template
     id: pressure_scan_mismatches
     name: "Pressure Sensors Scan Mismatches"
@@ -639,9 +385,6 @@ text_sensor:
       web_server:
         sorting_group_id: sorting_group_network
         sorting_weight: 30
-    # Direct feedback, 2026-08-15: useful on its own for anything that
-    # identifies the device by MAC (router client lists, DHCP reservations,
-    # network scanners) rather than having to cross-reference the IP.
     mac_address:
       name: "MAC Address"
       entity_category: diagnostic
@@ -650,24 +393,6 @@ text_sensor:
         sorting_group_id: sorting_group_network
         sorting_weight: 40
 
-  # Moved here from a plain `sensor: platform: uptime` (2026-08-20, direct
-  # feedback: "az uptime mindig sec-ben mér? Egy év után is? Mi erre az
-  # ipari bevált standard?" - does uptime always measure in seconds, even
-  # after a year, what's the industry standard here). It genuinely did -
-  # a raw sensor: platform: uptime only ever publishes a float in seconds,
-  # no unit conversion of its own, so a real long-running device would
-  # have shown something like "2678401 s" on the System page. ESPHome's
-  # OWN answer to this - not a hand-rolled formatter here - is this
-  # text_sensor variant of the same platform: it publishes a human string
-  # ("3d 4h 12m", "45m 30s", ...), automatically dropping units finer
-  # than this entity's own update_interval can usefully report (the
-  # default 30s interval means seconds never show at all - sampling noise
-  # at that resolution - and minutes/hours drop away themselves the same
-  # way as uptime grows past 30 min/12h) and always showing days once
-  # there's more than one. Kept the default `format`/`separator`/`expand`
-  # (a plain "3d 4h 12m" reads fine without extra styling) and the
-  # default 30s update_interval (matches every other System-page reading
-  # here; uptime has no reason to need finer resolution than that).
   - platform: uptime
     name: "Uptime"
     entity_category: diagnostic
@@ -732,11 +457,6 @@ switch:
           tag: "modbus"
 
 button:
-  # entity_category: config, same as it's always been - the dashboard's
-  # own JS special-cases this by name to render it on the "System" page
-  # instead of the generic config-goes-to-Devices rule (2026-08-15, see
-  # web/dashboard.js's render()) now that the Devices page is just the
-  # unified device table and this isn't about any one row in it.
   - platform: restart
     name: "Reboot Device"
     entity_category: config
@@ -819,13 +539,6 @@ button:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 5
     on_press:
-      # modbus_scan_in_progress brackets the actual scan - NOT the same
-      # as the dashboard's fetch() promise for this /press request, which
-      # (confirmed on real hardware, 2026-08-13) resolves almost
-      # immediately, well before the ~6s scan itself is done - ESPHome's
-      # web_server evidently doesn't hold the HTTP response open for a
-      # button's on_press: to finish. This binary_sensor is what the
-      # dashboard's own "Scanning…" state now actually watches instead.
       - lambda: 'id(modbus_scan_in_progress).publish_state(true);'
       - lambda: |-
           auto result = rs485_modbus::scan_bus(id(rs485_uart), 1, 247);
@@ -841,38 +554,6 @@ button:
           id(pressure_scan_collisions).publish_state(to_csv(result.collisions));
       - lambda: 'id(modbus_scan_in_progress).publish_state(false);'
 
-  # Registers the first still-free pressure sensor slot (out of the 8 in
-  # packages/pressure_sensor.yaml) with the address+name set in "Pressure
-  # Sensors Add Target Address"/"...Add Name" below - the dashboard sets
-  # both of those immediately before pressing this, so from the user's
-  # perspective it looks like a per-row "Add" button, even though
-  # underneath it's one shared trigger. Fires from two different UI
-  # paths now (2026-08-13, "Devices" table unification): a scan-
-  # discovered "New device" row's own one-click Add (address already
-  # known to answer, from the last Scan Bus), and the unified table's
-  # manual "Add -> Modbus" flow (a hand-typed address, never scanned) -
-  # both go through this exact same button/sequence, no separate code
-  # path needed for either.
-  #
-  # Probes the target address first (rs485_modbus::probe(), same
-  # three-way FOUND/COLLISION/NO_RESPONSE signal scan_bus() itself uses)
-  # and only actually registers on a clean FOUND - direct feedback,
-  # 2026-08-13: a hand-typed address has no prior scan to already
-  # guarantee something answers there (unlike a scan-discovered row's
-  # Add, which - now redundantly, but harmlessly, since a repeat probe
-  # of an address confirmed seconds ago is cheap and still correct -
-  # goes through the exact same check). A mistyped/nonexistent address
-  # now simply isn't registered at all, rather than creating a slot that
-  # would only ever show Lost - cheaper to notice immediately (nothing
-  # happened) than to notice `later` (a phantom slot stuck on Lost).
-  #
-  # Resets modbus_add_claimed to false first, so exactly one of the 8
-  # try_register calls below claims the slot - see that global's own
-  # comment for why this is needed at all (a bug, found on real hardware,
-  # 2026-08-13: each try_register only ever checked *its own* slot's
-  # address, never whether some other slot had already claimed this
-  # address in the same Add - on a fresh board, with every slot free,
-  # every single one of them independently claimed it).
   - platform: template
     id: pressure_add
     name: "Pressure Sensors Add"
@@ -989,20 +670,6 @@ number:
       sorting_weight: 15
 
 select:
-  # Set by the dashboard immediately before pressing "Pressure Sensors
-  # Add" - same transient-scratch pattern as
-  # pressure_add_name/pressure_add_address above, added 2026-08-19
-  # alongside the T3-1-2-H flow meter (see packages/pressure_sensor.yaml's
-  # own "Device Type" select for the full generalization writeup) - the
-  # Add flow now needs to say not just WHICH address/name, but also WHAT
-  # KIND of device it's registering, since a scan alone can't tell a
-  # QDW90A pressure sensor apart from a T3-1-2-H flow meter (both just
-  # answer "something's here" to a bare probe). "Pressure" is the
-  # default/first option, matching every device this project has ever
-  # actually supported before this - a dashboard build that doesn't yet
-  # render a type picker (or a stale cached page) still Adds a plain
-  # pressure sensor exactly as before, never silently misregisters
-  # anything as "Flow" by omission.
   - platform: template
     id: pressure_add_device_type
     name: "Pressure Sensors Add Device Type"
@@ -1020,27 +687,6 @@ select:
       sorting_weight: 17
 
 packages:
-  # friendly_name is deliberately generic ("Pulse Meter 1/2", not "Main"/
-  # "Garden") - which physical meter is which is a fact about *this*
-  # installation, not the firmware; it drives both the compiled-in entity
-  # names (e.g. "Pulse Meter 1 Reading") and the "Display Name" field's
-  # starting value, which is what you'd actually rename on the Service
-  # page ("Main Meter"/"Garden Meter", or whatever fits) without needing
-  # a recompile. Renamed from "Water Meter N" 2026-08-13 (matches the
-  # sorting_groups rename above, same reasoning) - deliberately done now,
-  # while it's still cheap (no HA integration/PROD yet to have entity_ids
-  # in it worth protecting - see that comment for the full reasoning),
-  # not held off until it'd actually cost something to change.
-  #
-  # id_prefix (meter1/meter2 below), same "purely internal, never shown
-  # anywhere" reasoning - left unchanged (unlike friendly_name above),
-  # since renaming *this* would actually cost something real even now:
-  # it's part of the flash preference key for offset_m3 (see
-  # water_meter.yaml), so an existing, already-calibrated meter would
-  # lose its saved calibration offset (not its raw pulse_count/Total
-  # Consumption - those are keyed differently and stay fine) - a real,
-  # if minor and recoverable (one manual re-sync), cost regardless of
-  # HA/PROD status, unlike the purely-cosmetic friendly_name rename above.
   meter1: !include
     file: packages/water_meter.yaml
     vars:
@@ -1061,27 +707,6 @@ packages:
       zero_flow_timeout_default: "60"
       sorting_group_id: sorting_group_meter2
 
-  # 8 fixed pressure sensor slots (cheap headroom vs. the hub's real
-  # 32-node bus capacity - see REQUIREMENTS.md "Architekturális
-  # megfontolás v3", 2026-08-13) - see packages/pressure_sensor.yaml's own
-  # header for the id_prefix/friendly_name rename caveat and the current
-  # (real Modbus RTU over `uart: rs485_uart` above) status.
-  #
-  # poll_interval is staggered 10ms apart per slot (600ms..670ms) -
-  # deliberately not one shared value for all 8 - see
-  # packages/pressure_sensor.yaml's own Pressure sensor comment for why
-  # (avoids all 8 slots' polls landing on the same main-loop tick). Any 8
-  # distinct fixed values already guarantees that - it doesn't take a
-  # wide spread, and a wide one (520ms..800ms, ~1.5x slowest-to-fastest,
-  # used until 2026-08-13) made the slowest slot refresh noticeably less
-  # often than the fastest for no real benefit; narrowed to keep every
-  # slot close to equally responsive while keeping the same guaranteed-
-  # never-lockstep property (still 8 distinct constants, just closer
-  # together - true per-poll randomization was considered instead and
-  # rejected: unlike this deterministic ladder, it could occasionally
-  # recreate the exact simultaneous-poll collision this exists to avoid,
-  # purely by chance, and would be harder to reason about/debug for an
-  # unclear benefit).
   pressure_slot1: !include
     file: packages/pressure_sensor.yaml
     vars:

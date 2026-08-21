@@ -38,27 +38,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Recolored 2026-08-13 (visual redesign round) on checked values, not
- * eyeballed - see the redesign artifact linked from REQUIREMENTS.md for
- * the actual contrast numbers.
- *
- * Neutrals + status colors (--dc-status-good/--dc-warning/--dc-danger)
- * are this project's own dataviz skill's reference palette's validated
- * dark-mode steps (contrast-checked against these exact surfaces, not
- * picked by eye). --dc-accent is a fresh, separate pick (sky blue, not
- * the old teal) - also contrast-checked (7.3-9.1:1 against every
- * surface it sits on).
- *
- * The one change in MEANING, not just hue: status colors are now
- * deliberately distinct from the accent. "OK/Ready" used to share the
- * exact same teal as every button/link/focus ring - a status reading and
- * "this is clickable" were the same color, which a real status palette
- * (this project's own dataviz skill included) exists to prevent: status
- * colors are reserved, never doubling as the interactive/brand color.
- * --dc-status-good and --dc-accent sit far enough apart on the wheel
- * (~80deg) to be unambiguous even as same-sized dots. --dc-danger/
- * --dc-warning were already semantic-only before this round and keep
- * that role, just with updated (also validated) hex values. */
+
 :root {
   --dc-bg: #0d0d0d;
   --dc-surface: #1a1a19;
@@ -229,27 +209,7 @@ body {
   background: var(--dc-status-good);
 }
 
-/* Header Wi-Fi signal indicator - see updateSignalBars() in dashboard.js
- * for what drives this and why it's a separate thing from #dc-status
- * above (browser<->device link vs. the device's own upstream Wi-Fi
- * RSSI). Exact dBm is a hover/long-press tooltip (title attribute) plus
- * its own Diagnostics-page row, not shown as text here.
- *
- * Classic concentric-arc "wifi" glyph (2026-08-15, direct feedback:
- * "A wifi legyen függőleges csíkok helyett az köríves megoldás" - arcs,
- * not vertical bars) - reuses the exact paths already drawn for the nav/
- * group "wifi" icon (ICONS.wifi, dashboard.js) rather than a second,
- * slightly-different piece of art, just split into individually
- * colorable pieces here. Tiered by color - weak: red, fair: amber,
- * good/excellent: blue (2026-08-15, direct feedback: "Wi-Fi jelző lehet
- * piros/sárga/kék" - a revision of an even-more-recent same-day change
- * that made every tier blue; that one didn't survive the next round of
- * feedback). Same "recolor everything currently lit" pattern the old
- * vertical-bar version used: at tier 2 both the dot AND arc-1 turn
- * amber, not just arc-2 alone - the whole lit portion reflects the
- * CURRENT tier's color, not one color per fixed segment. Default
- * --dc-border (unfilled/grey) for tier 0 (unknown/no reading yet, set on
- * load and whenever the SSE link itself drops) and anything not yet lit. */
+
 #dc-wifi-signal {
   display: flex;
   align-items: center;
@@ -349,23 +309,12 @@ body {
   color: var(--dc-text-muted);
 }
 
-/* Icon now lives in its own wrapping span, not raw in the header
- * (2026-08-20, see ensureHomeGroup()/refreshGroupIcon() in dashboard.js
- * for why - a pressure slot's icon needs to be replaceable after
- * creation, once its Device Type is known/changes). inline-flex so it
- * doesn't add any of a bare <span>'s own inline-box quirks around the
- * <svg> it wraps. */
+
 .dc-meter-card-header-icon {
   display: inline-flex;
 }
 
-/* Narrowed from a bare "span" descendant selector to this specific
- * class (2026-08-21) - the header gained a third span this round, the
- * new top-right status badge (.dc-pressure-badge, appended in
- * ensureHomeGroup()) - a bare "span" selector would have forced that
- * badge into this label's own uppercase/letter-spaced treatment too,
- * fighting the badge's own styling instead of just labeling the
- * group name the way this rule always meant to. */
+
 .dc-meter-card-header-label {
   font-size: 13px;
   font-weight: 600;
@@ -374,18 +323,7 @@ body {
   color: var(--dc-text-muted);
 }
 
-/* Top-right corner status badge (2026-08-21, new feature - see
- * ensureHomeGroup()'s own comment on statusEl in dashboard.js) - reuses
- * .dc-pressure-badge as-is (same dot+color-by-class treatment the
- * Devices table's own Status column already uses), this class only
- * handles positioning: margin-left: auto pushes it to the header row's
- * own right edge (the header is already display: flex - see
- * .dc-meter-card-header above), landing it in the card's top-right
- * corner without needing absolute positioning or any assumption about
- * the header's own height. flex-shrink: 0 - the icon+label pair on the
- * left already has room to shrink/wrap first on a narrow card if it
- * ever needs to; this badge's own text ("Collision"/"Mismatch"/
- * "Checking…") is short and reads worse broken across two lines. */
+
 .dc-meter-card-status {
   margin-left: auto;
   flex-shrink: 0;
@@ -527,14 +465,7 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* Device-level action buttons (Reboot Device/Forget Wi-Fi - see
- * upsertDiagButton() in dashboard.js) that moved onto this page,
- * 2026-08-15. Stacked, intrinsically sized - NOT the .dc-service-group/
- * .dc-fields bordered-card layout (that stretches to the full row width
- * via .dc-btn's own width: 100%, fine inside .dc-service-group's capped
- * 560px, but this page has no such cap and it looked clearly too wide,
- * confirmed on real hardware). Only present at all once at least one
- * button has actually been appended (empty otherwise, zero height). */
+
 .dc-diag-actions {
   display: flex;
   flex-direction: column;
@@ -553,12 +484,7 @@ body {
 
 .dc-service-group {
   margin-bottom: 26px;
-  /* Was a flat 420px regardless of viewport - on anything wider than a
-     phone that left most of the Service page's own width sitting empty
-     for no reason ("nem igazodnak a komponensek a szélességhez",
-     confirmed a real complaint, not just an aspiration, 2026-08-13).
-     Still just a max-width, not a fixed width - shrinks to fit a narrow
-     viewport exactly as before, this only raises the ceiling. */
+
   max-width: 560px;
 }
 
@@ -716,12 +642,7 @@ body {
 }
 
 .dc-btn {
-  /* inline-flex + text-decoration: none (2026-08-15) - .dc-btn now also
-     styles a plain <a> (the Log page's "Download Log" link, no JS needed
-     for it - see buildShell()), not just <button>s. A <button> is
-     already inline-block-ish by default so this changes nothing visible
-     there; an <a> is plain inline by default, which would otherwise
-     ignore width/vertical padding and keep its underline. */
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -746,12 +667,7 @@ body {
   color: var(--dc-bg);
 }
 
-/* Without this, a disabled button (e.g. Scan Bus mid-scan) still looked
- * hoverable/clickable - the accent hover fill above has no :disabled
- * exception of its own, and a disabled form control doesn't reliably
- * stop `:hover` from matching in every engine. Reverts back to the
- * plain (non-hover) look explicitly instead of relying on that,
- * confirmed necessary on real hardware, 2026-08-13. */
+
 .dc-btn:disabled {
   cursor: not-allowed;
   opacity: 0.6;
@@ -774,50 +690,14 @@ body {
   padding: 9px 16px;
 }
 
-/* --- Unified "Devices" table (Service page) - see dashboard.js's own
- * ensureDeviceTable()/renderDeviceTableBody() for why this is one compact
- * table (Name | Status | edit/delete | reorder) shared by BOTH device
- * types (Modbus pressure sensors and local GPIO pulse meters,
- * 2026-08-13 unification - previously two separate, near-identical
- * tables) instead of a .dc-fields block per slot like every other
- * Service section above. A row is either "registered" (a real device -
- * Name, and for Modbus rows Address too, are locked read-only until its
- * own pencil button is pressed, see .dc-pressure-icon-btn below) or, for
- * a scan-discovered Modbus address only, "new" (read-only, a per-row
- * Add) - see .dc-pressure-badge-* below for the Status pill each
- * renders. Type-specific detail (Modbus Address / Reading+Zero-Flow
- * Timeout) lives in a second, expand-only <tr> beneath a row while it's
- * being edited - see .dc-pulsemeter-expanded below (name predates the
- * unification, kept since the pattern itself is domain-agnostic). */
+
 
 .dc-pressure-group {
-  /* Deliberately wider than a plain .dc-service-group (was matched to it
-     at 420px, 2026-08-13, to fix an *unintentional* mismatch) - this one
-     holds an actual multi-column table, not a single stacked field, so
-     it benefits from the extra room in a way a form field doesn't; a
-     future extra column (see the table-scroll wrapper's own comment in
-     dashboard.js) needs the room even more. Still just a max-width -
-     shrinks to fit a narrow viewport same as every other card, this only
-     raises the ceiling on wider screens ("desktopon jóval szélesebb
-     táblázat is működhet", direct feedback, same day). */
+
   max-width: 900px;
 }
 
-/* Reading/Update/Zero-Flow Timeout (pulse meter rows) or Modbus Address
- * (pressure rows) - either type's inline detail area, only in the DOM
- * while its own row is being edited (see upsertRegisteredPulseMeterRow()/
- * upsertRegisteredPressureRow() in dashboard.js). border-top: none joins
- * it seamlessly to the row above (no visible seam), and the matching
- * accent-tinted background (same token .dc-pressure-row-editing already
- * uses on the row itself) is what actually answers "which fields belong
- * to which device" - direct feedback, 2026-08-13. Higher specificity
- * than the plain `.dc-pressure-table td` rule (equal class+type count
- * alone wouldn't reliably win on source order), so it isn't a
- * stylesheet-order accident. Class name predates the "Devices" table
- * unification (this pattern started on the pulse meters, then got
- * reused for pressure's own Modbus Address field too) - kept rather than
- * renamed, since the pattern itself was always domain-agnostic despite
- * the name, same reasoning as .dc-pressure-* throughout this file. */
+
 .dc-pressure-table tr.dc-pulsemeter-expanded td {
   border-top: none;
   background: var(--dc-accent-dim);
@@ -836,18 +716,7 @@ body {
   padding-top: 2px;
 }
 
-/* No min-width (2026-08-20, direct feedback: "az edit nézetben a
- * komponensek között túl sok helyet hagysz" - you leave too much space
- * between components in the edit view). Used to be a fixed 130px column
- * - sized for this box's longest label ("Zero-Flow Timeout"), which left
- * a large, visibly empty gap before the input on every SHORTER label
- * ("Reading", "Modbus Address") sharing the same box - confirmed on a
- * real screenshot, 2026-08-20, that this fixed gap, not the input's own
- * size, was what actually read as "too much space". Content-sized
- * instead: each label sits directly next to its own input, at the small
- * fixed .dc-pulsemeter-expanded-field gap above - the two fields in this
- * box no longer align their inputs into one shared column, but that
- * grid-alignment was never the thing asked for; compactness was. */
+
 .dc-pulsemeter-expanded-label {
   flex: 0 0 auto;
   font-size: 12.5px;
@@ -859,33 +728,8 @@ body {
   min-width: 0;
 }
 
-/* Number fields here (Modbus Address, Reading, Zero-Flow Timeout) are all
- * short, fixed-format values - direct feedback, 2026-08-15: "az
- * attibútumok kompenesei túl szélesek. Igazodjon a beviteli mező
- * adattípusához" (the attribute fields are too wide, should size to the
- * input field's own data type) - stretching them the full remaining row
- * width (the plain rule above, still what a free-text field like a name
- * would actually want) read as oversized for a 3-6 digit number. Fixed,
- * capped width instead - comfortably fits "247" (Modbus Address, 1-247),
- * a liters/m³ Reading, or a Zero-Flow Timeout in seconds, with room to
- * keep typing past that without the field itself trying to fill the
- * card. */
-/* .dc-pressure-table prefixed in on purpose, not just
- * .dc-pulsemeter-expanded-field input[type="number"] as originally
- * written - that had the SAME specificity (one class + one attribute
- * selector) as .dc-pressure-table input[type="number"] below, so which
- * one actually won was decided by source order alone, and a later
- * unrelated edit put the generic width: 100% rule after this one in the
- * cascade - silently un-capping Modbus Address/Reading/Zero-Flow
- * Timeout back to full-row width again (real, confirmed regression,
- * 2026-08-20 - screenshot showed exactly this on a real device: "A
- * modbus address komponens (és a többi szerkeszthető is) olyan széles
- * lett hogy kilóg a dobozból", still true after the width: 100px rule
- * itself was untouched - the FIX from 2026-08-15 never actually
- * regressed, it just stopped winning). The extra class here makes this
- * rule's specificity strictly higher than the generic one, so it wins
- * no matter what gets added before or after it in the file from now
- * on. */
+
+
 .dc-pressure-table .dc-pulsemeter-expanded-field input[type="number"] {
   flex: 0 0 auto;
   width: 100px;
@@ -926,19 +770,10 @@ body {
   overflow-x: auto;
 }
 
-/* Add Pulse Meter/Add Modbus Device/Scan Bus (see mountDeviceAddButtons()/
- * mountPressureToolbarButton() in dashboard.js) - the card's own bottom
- * section, below the table (moved from above, 2026-08-13, direct
- * feedback), separated by a hairline rather than floating as a second,
- * separate block underneath the card (redesign round). */
+
 .dc-pressure-toolbar {
   display: flex;
-  /* Was flex-end - fine back when the toolbar only ever held the button
-     itself, but once "Scanning…"+the spinner (.dc-pressure-scan-status,
-     a shorter/smaller-font element next to it) moved in as a sibling,
-     bottom-aligning left it visibly sitting below the button's own
-     center instead of level with it - confirmed on real hardware,
-     2026-08-13. */
+
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
@@ -950,13 +785,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* "Scanning…" + the spinner - a separate element next to the Scan Bus
- * button (mountPressureToolbarButton() in dashboard.js), not inside the
- * button itself, specifically so the button's own width stays fixed
- * regardless of state (a "Scanning…" label swapped into the button in an
- * earlier version was longer than "Scan Bus", visibly growing the
- * button mid-scan - confirmed to look wrong on real hardware,
- * 2026-08-13). */
+
 .dc-pressure-scan-status {
   display: flex;
   align-items: center;
@@ -1013,38 +842,14 @@ body {
   padding: 12px 12px 8px;
 }
 
-/* Status column header - centered to match the badge itself
-   (.dc-pressure-table td.dc-pressure-status below). Was right-aligned,
-   for the old dedicated Address column that column used to be - gone,
-   2026-08-13, "Devices" table unification (folded into a small hint
-   inside the Name cell instead, see .dc-pressure-addr-hint below). */
+
 .dc-pressure-table thead th:nth-child(2) {
   text-align: center;
 }
 
-/* One hairline divider between rows, not a boxed border on every cell
- * (redesign round) - the earlier version bordered each <td> on all four
- * sides (needed back when the table had its own outer frame; now the
- * frame lives on .dc-devices-card instead, see above), which made the
- * table read as a dense grid of individual tiles rather than one
- * connected block. A single border-top per cell, skipped on the very
- * first row (nothing to divide from above there), is the same pattern
- * most standard data tables (GitHub, Linear, Notion) use. Still set on
- * <td> rather than <tr> - a <tr>-level border doesn't reliably wrap a
- * cell that's wider than its own "shrink-to-fit" column width
- * (dc-pressure-status/dc-pressure-action below are both width: 1%),
- * confirmed on real hardware, 2026-08-13 (a *different* symptom, from
- * before this round, but the same underlying reason this stays on <td>). */
+
 .dc-pressure-table td {
-  /* Tightened twice now, both times direct feedback, both times "still
-     too thick/not table-like enough" (2026-08-15: first 10px 12px -> 7px
-     12px, then this pass, 7px 12px -> 4px 10px) - the read-only row's
-     actual content is now a plain text line (disabled inputs lost their
-     box entirely, see the :disabled rule above) plus a couple of small
-     icon buttons, so the cell padding is what's left doing the "how
-     dense does this look" work; still comfortably tappable on a phone at
-     this size (row height is really set by the icon buttons' own 4px
-     padding below, not this). */
+
   padding: 4px 10px;
   background: var(--dc-surface);
   border-top: 1px solid var(--dc-border-subtle);
@@ -1060,62 +865,29 @@ body {
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
   color: var(--dc-text);
-  /* --dc-radius-xs (6px), not the -sm (9px) every OTHER input in this
-     file uses (.dc-field input, above) - direct, repeated feedback
-     across this whole project (2026-08-15 and again 2026-08-20) that
-     this table specifically still reads as "a form", not "a table" -
-     GitHub/Linear/Notion-style dense tables (already the explicit
-     comparison cited elsewhere in this file) use noticeably tighter
-     corners than a standalone form field does. Deliberately NOT applied
-     to .dc-field above - that's Service/System's own settings-form
-     layout, genuinely IS a form, and keeping it at -sm keeps this a
-     table-specific choice, not a global one that would fight the rest
-     of the app's own visual language. */
+
   border-radius: var(--dc-radius-xs);
-  /* Tightened alongside the radius above, same feedback, same reasoning
-     - was 7px 9px. Vertical padding is what's left doing the "how bulky
-     does this input look" work once font-size can't shrink further (see
-     the iOS note just below) - 5px keeps a comfortable tap target
-     (confirmed against the same 44px-ish minimum every other tappable
-     control in this file already targets, given the 16px line-height
-     this font-size implies) without the extra headroom a plain form
-     field wants. */
+
   padding: 5px 8px;
   font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .dc-field input above */
   min-width: 0;
   transition: background-color 0.1s ease, border-color 0.1s ease, padding 0.1s ease;
 }
 
-/* A scan-discovered row's own device-type picker (2026-08-19, T3-1-2-H
- * flow meter - upsertNewPressureRow() in dashboard.js) - same field
- * treatment as the name input just above it, not full-width (this one
- * only ever holds one of two short words, stretching it edge-to-edge
- * would look like an accident). */
+
 .dc-pressure-type-select {
   margin-top: 6px;
   width: auto;
   background: var(--dc-surface-2);
   border: 1px solid var(--dc-border);
   color: var(--dc-text);
-  /* -xs, not -sm - matches the table's own text/number inputs just
-     above (2026-08-20 density pass, same reasoning). */
+
   border-radius: var(--dc-radius-xs);
   padding: 5px 8px;
   font-size: 13.5px;
 }
 
-/* Name input + Device Type select, one row (2026-08-20, direct feedback:
- * "a komponensek nincsenek függőlegesen középre rendezve... egy sorban
- * kéne elrendezni" - stacked on separate lines before this, because the
- * name input's own width: 100% (.dc-pressure-table input[type="text"]
- * above) forced it to claim the whole cell width, pushing the type
- * select onto a line beneath it and widening the block past the card's
- * edge in the process ("kilóg a dobozból" - same complaint, same root
- * cause, not a separate bug). No flex-wrap - this cell is already the
- * narrowest place in the table on a phone, wrapping would just rebuild
- * the two-line stack under different math; the name input shrinks
- * instead (flex: 1 1 auto + the width: auto override just below), the
- * select and hint keep their own natural width. */
+
 .dc-pressure-name-edit-row {
   display: flex;
   align-items: center;
@@ -1139,16 +911,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* What reading/unit the current Device Type selection will actually add
- * (2026-08-20, direct feedback: "a mértékegységet és a kijelzett
- * entitásokat már tudjuk, miért nem jelenítettük meg?") - same small,
- * muted treatment as .dc-pressure-addr-hint above, and (like that hint)
- * its own line below the name-input/type-select row rather than
- * squeezed inline alongside them - tried inline first, but on a narrow
- * phone width there just isn't room for input + select + this text on
- * one line without either the text truncating mid-word or the row
- * overflowing sideways again, see the JS-side comment where this is
- * appended for the actual reasoning. */
+
 .dc-pressure-type-hint {
   display: block;
   margin-top: 3px;
@@ -1156,19 +919,7 @@ body {
   color: var(--dc-text-faint);
 }
 
-/* A locked (disabled, not currently being edited) row should read as
- * plain table text, not as a form full of bordered input boxes - direct
- * feedback, 2026-08-15: "A táblázat nekem még mindig nem táblázat
- * jellegű, túl vaskos" (still doesn't feel table-like, too bulky/thick),
- * the same GitHub/Linear/Notion-style dense-table comparison already
- * cited above. A disabled input can't be focused at all, so there's no
- * iOS-zoom risk in dropping back to the table's own compact 13.5px font
- * here either (the 16px above only matters for a field that can actually
- * be typed into). Higher specificity than the plain rule above (adds
- * [type=...] and :disabled), wins regardless of source order - and than
- * `.dc-pressure-table input:disabled` below (adds [type=...]), so the
- * opacity dimming that rule applies elsewhere doesn't leak in here and
- * fight this explicit opacity: 1. */
+
 .dc-pressure-table input[type="text"]:disabled,
 .dc-pressure-table input[type="number"]:disabled {
   background: none;
@@ -1180,11 +931,7 @@ body {
   color: var(--dc-text);
 }
 
-/* A scan-discovered/collision row's known address - folded into the Name
- * cell as a small hint above the (draft) name input/note, 2026-08-13,
- * "Devices" table unification (replaces the old dedicated Address
- * column - see upsertNewPressureRow()/upsertCollisionPressureRow() in
- * dashboard.js). */
+
 .dc-pressure-addr-hint {
   display: block;
   /* Monospace (redesign round) - a Modbus address, same instrument-panel
@@ -1218,21 +965,7 @@ body {
   border-color: var(--dc-accent);
 }
 
-/* min-width, not just width: 1% - 2026-08-21, direct feedback: "A
- * status oszlop nem fix széles, így ha idle -> flowing váltás van akkor
- * ugrik a tábla, majd vissza" (the Status column isn't a fixed width,
- * so an Idle -> Flowing transition makes the table jump, then jump
- * back). width: 1% under table-layout: auto (the default - this table
- * never sets table-layout: fixed) is only ever a hint toward "shrink
- * this column as much as the other columns allow", not an actual cap -
- * the column still resizes to fit whichever status text happens to be
- * showing right now ("Idle"/"OK" are short, "Checking…"/"Collision" are
- * the two longest strings this badge ever shows), so a transition
- * between a short and a long status visibly reflowed the whole table.
- * Sized to comfortably fit the longest of the two ("Checking…"/
- * "Collision", both 9 characters) plus the badge's own dot+gap, so the
- * column - and everything to its right - now holds still regardless of
- * which status is currently showing. */
+
 .dc-pressure-table td.dc-pressure-status {
   width: 1%;
   min-width: 90px;
@@ -1259,10 +992,7 @@ body {
 }
 
 .dc-pressure-order-btn {
-  /* Trimmed alongside .dc-pressure-icon-btn's own padding cut above -
-     two of these stack in one cell (Up/Down), so this pair was the
-     actual tallest element setting each row's height; same row-thinning
-     pass, 2026-08-15. */
+
   padding: 1px;
 }
 
@@ -1271,15 +1001,7 @@ body {
   height: 12px;
 }
 
-/* Status indicator - dot + text, deliberately NOT pill/button-shaped
- * (an earlier pill-with-fill version read as a clickable button next to
- * the real Scan Bus button, confirmed on real hardware - a plain colored
- * dot is unambiguous). OK (registered, seen by its own live poll), Lost
- * (registered, NOT seen - the real diagnostic signal, see
- * REQUIREMENTS.md), New (seen, not yet registered - has its own Add
- * button instead of a Delete one), Collision (seen, but the reply was
- * garbled - likely two devices sharing this address, see
- * REQUIREMENTS.md's "Ütközés kimutatása"). */
+
 .dc-pressure-badge {
   display: inline-flex;
   align-items: center;
@@ -1326,42 +1048,12 @@ body {
   color: var(--dc-danger);
 }
 
-/* A device that answered cleanly but declined a specific request - not
- * a real bus collision (see set_scan_mismatch_address()'s own comment,
- * include/rs485_modbus.h) but still a red/danger-tier problem, direct
- * feedback, 2026-08-21: "legyen egy Piros 'Mismatch' hiba" (there
- * should be a red "Mismatch" error) - same color token as Collision on
- * purpose (both are genuine problems, not just "still settling"), a
- * distinct label is what actually tells them apart. */
+
 .dc-pressure-badge-mismatch {
   color: var(--dc-danger);
 }
 
-/* A pulse meter's own status badge (upsertRegisteredPulseMeterRow()/
- * updatePulseMeterStatus() in dashboard.js - "Flowing"/ok while Pulse
- * Rate is nonzero, "Idle"/pending once it isn't, revised 2026-08-15, see
- * that function's own comment; a local GPIO pulse counter still has no
- * "unreachable" concept, so neither state is the alarm-colored Lost)
- * gains this ring, briefly, on top of whichever dot it's currently
- * showing, whenever a real pulse actually lands - see
- * flashPulseMeterActivity() in dashboard.js. Direct feedback, 2026-08-13:
- * "configured" (steady dot) and "a pulse just arrived" (dot + ring) need
- * to read as visibly different states, not the same badge. Grows/fades a
- * ring in currentColor around the dot rather than changing its color -
- * keeps whichever text/color the badge is already showing unambiguous
- * throughout.
- *
- * Deliberately no color-mix() (2026-08-13, revised - the first version
- * used it in the "from" keyframe to start the ring semi-transparent):
- * color-mix() support isn't universal on older WebKit/iOS, and an
- * unrecognized function value in a `box-shadow` declaration makes that
- * whole declaration invalid, silently dropping the entire keyframe (not
- * just falling back to something reasonable) - confirmed the likely
- * cause of "the flash never shows" reported on real hardware. Starting
- * fully opaque at zero spread and fading to `transparent` at full spread
- * is the same well-supported "ping" technique used everywhere else (no
- * alpha-channel math needed at all - browsers already interpolate any
- * color to `transparent` natively) and reads visually the same. */
+
 .dc-pressure-badge.dc-pulse-flash::before {
   animation: dc-pulse-ring 0.6s ease-out;
 }
@@ -1385,12 +1077,7 @@ body {
   background: none;
   border: none;
   color: var(--dc-text-muted);
-  /* Trimmed from 6px alongside the row-thinning pass above (2026-08-15) -
-     these are the tallest thing left in a read-only row now that the
-     disabled name field lost its own box, so they're what actually caps
-     how thin a row can get. Still a full 24px+ tap target with the 16px
-     icon, comfortably above the ~24px minimum most touch-target
-     guidelines call for. */
+
   padding: 4px;
   line-height: 1;
   cursor: pointer;
@@ -1460,13 +1147,7 @@ body {
   display: inline-flex;
 }
 
-/* A scan-discovered "New device" row (upsertNewPressureRow()) and the
- * shared Add row (buildDeviceAddRow()) both reuse the Save(check)/
- * Cancel(close) icon pair for their own Confirm/Dismiss - 2026-08-13,
- * direct feedback, replacing a standalone text "Add" button - but
- * neither carries .dc-pressure-row-editing (that class means something
- * more specific: an existing registered row mid-edit), so they need
- * their own override of the hidden-by-default rule above. */
+
 .dc-pressure-row-new .dc-pressure-save-btn,
 .dc-pressure-row-new .dc-pressure-cancel-btn,
 .dc-device-add-row .dc-pressure-save-btn,
@@ -1474,15 +1155,7 @@ body {
   display: inline-flex;
 }
 
-/* Small per-row icon (gauge = Modbus pressure sensor, water = pulse
- * meter - upsertRegisteredPressureRow()/upsertNewPressureRow()/
- * upsertCollisionPressureRow()/upsertRegisteredPulseMeterRow() in
- * dashboard.js, the same icons already used for each type's Home card
- * header) - added 2026-08-13, direct feedback: with both device types now
- * sharing one table, at-a-glance type recognition needs *something*
- * beyond reading the name, which a renamed device might not hint at at
- * all (e.g. "Garden Tap" gives no clue whether it's a pressure sensor or
- * a pulse meter). */
+
 .dc-device-type-icon {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1490,9 +1163,7 @@ body {
 }
 
 .dc-device-type-icon svg {
-  /* Bumped from 15px (2026-08-15, direct feedback: read as slightly too
-     small next to the name text) - stroke-width stays 1.5, matched to
-     every other icon in this file, rather than thickening along with it. */
+
   width: 17px;
   height: 17px;
   stroke: currentColor;
@@ -1513,12 +1184,7 @@ body {
  * pushing/overlapping it. */
 .dc-pressure-name-row {
   display: flex;
-  /* center, not flex-start (2026-08-15, direct feedback: the icon read as
-     not aligned to the row's middle) - true top-alignment only ever
-     mattered for the two-line New/Collision rows (address hint above the
-     name), and even there centering against the icon reads fine; for the
-     far more common single-line registered row it's the difference
-     between "obviously off" and correct. */
+
   align-items: center;
   gap: 6px;
 }
@@ -1528,13 +1194,7 @@ body {
   min-width: 0;
 }
 
-/* Whether a row is locked or unlocked needs to be obvious at a glance,
- * not just inferable from which two icons happen to be showing - a
- * dimmed, inert-looking Name/Address (disabled, not just readOnly - a
- * disabled input can't even be clicked into, closing off the field
- * entirely until the pencil is actually pressed, confirmed necessary on
- * real hardware, 2026-08-13) plus a highlighted row background together
- * make view vs. edit unambiguous. */
+
 .dc-pressure-table input:disabled {
   opacity: 0.6;
   cursor: default;
@@ -1572,13 +1232,7 @@ body {
   font-style: italic;
 }
 
-/* The shared Add row (buildDeviceAddRow() in dashboard.js) - Name + IO
- * slot picker, all inside a single full-width cell rather than fitting
- * into the table's normal 4-column grid (nothing here maps cleanly onto
- * Name/Status/Action/Order). Pulse-Meter-only (2026-08-13, direct
- * feedback - the earlier Modbus/Pulse Meter dual sub-form is gone, see
- * that function's own comment for why), so this is one flat form now,
- * no per-type sub-form indirection needed. */
+
 .dc-device-add-row td {
   background: var(--dc-accent-dim);
 }
@@ -1667,39 +1321,13 @@ body {
   color: var(--dc-text-muted);
 }
 
-/* This is a live tail, not history - there's no way to fetch log lines
- * from before this connection existed (ESPHome doesn't expose a log
- * backlog over the API), so it's expected to start empty on every page
- * load/reconnect and fill in as new activity happens (CR #13) - the
- * wording says so, instead of just sitting blank looking broken. */
+
 #dc-log:empty::before {
   content: "Waiting for new log output (this is a live view, not history)…";
   opacity: 0.6;
 }
 
-/* --- Mobile: bottom tab bar instead of sidebar ---
- *
- * This used to mirror the desktop layout - #dc-root pinned
- * (position: fixed, its own height, overflow: hidden) with #dc-nav and
- * #dc-main as flex children, #dc-main doing its own internal
- * overflow-y: auto scrolling. On a real device, launched from the home
- * screen, that produced a well-known class of WebKit/WKWebView bug: a
- * position: fixed wrapper whose *own* document never scrolls, with all
- * the actual scrolling happening on a div nested inside it, can leave
- * fixed-positioned descendants (the nav) completely unresponsive to taps
- * until something forces WebKit to resync its internal hit-testing
- * viewport - which a scroll does, which is why the nav "healed" the
- * moment scrolling started, and why an earlier attempt at fixing this
- * with a JS-driven inline height on #dc-root (since reverted) didn't
- * help: the wrapper was still fixed+non-scrolling either way.
- *
- * The standard fix, used here instead: don't fight it. Let the real
- * document/body scroll, nothing pinned except the bottom nav itself
- * (a plain position: fixed bar, not wrapped in a larger fixed shell) and
- * the header (position: sticky - well-supported, and doesn't create the
- * "wrapper that itself never scrolls" situation sticky's cousin, fixed,
- * would).
- */
+
 
 @media (max-width: 720px) {
   #dc-root {
@@ -1746,9 +1374,7 @@ body {
   }
 
   #dc-main {
-    /* Same reasoning as #dc-root above: overflow-x: hidden, not the
-     * `overflow: visible` shorthand this used to be - CR #1 regressed
-     * silently because of exactly this shorthand-clobbering-x mistake. */
+
     overflow-x: hidden;
     overflow-y: visible;
     /* Top: just a small cosmetic gap now - the actual safe-area

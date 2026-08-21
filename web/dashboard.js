@@ -1,40 +1,4 @@
-/* Water Data Collector - custom dark dashboard.
- *
- * Replaces the stock ESPHome web_server v3 app (hidden via dashboard.css)
- * with a small, self-contained UI built around what this device actually
- * does. Talks only to ESPHome's existing, stable REST/SSE API (documented
- * at https://esphome.io/web-api/) - no external requests, no build step.
- *
- * Four fixed pages, not one tab per sorting_group - internal page ids
- * ("service"/"diagnostics", element ids, function names like
- * ensureServiceGroup()/upsertDiagRow()) are unchanged from when these
- * were more literally what they say; only the NAV LABELS were renamed
- * (2026-08-15) once what each page actually shows had drifted from that:
- *   - Home     - the meters' own readings (what the device is *for*)
- *   - Devices  ("service" internally) - now just the unified pressure
- *              sensor + pulse meter table (calibration fields live inside
- *              each row's own expanded edit view, not a separate list
- *              here anymore - see the "Devices table" section below)
- *   - System   ("diagnostics" internally) - everything else about the
- *              unit itself: network/system diagnostics as plain label/
- *              value rows, PLUS the device-level action buttons (Reboot
- *              Device, Forget Wi-Fi) that don't belong to any one row in
- *              the Devices table - see upsertDiagButton() and render()'s
- *              own special-case for those two.
- *   - Log      - live debug output
- *
- * Which page an entity lands on by default is driven by its `domain` and
- * `entity_category` from the YAML (see pageFor()) - adding a new sensor
- * just works here without touching this file, as long as it's tagged the
- * same way (no entity_category for a primary reading, `entity_category:
- * diagnostic` for raw/debug data, `entity_category: config` for
- * calibration/actions). A handful of entities (the Debug Log switch,
- * Reboot Device, Forget Wi-Fi) are matched by name in render() instead,
- * to override that default when it's not where the entity should
- * actually be shown - their entity_category in the YAML is left alone
- * (still correct for Home Assistant's own categorization), this is
- * purely a dashboard-local placement choice.
- */
+
 (function () {
   "use strict";
 
@@ -42,48 +6,13 @@
   const NUMBER_MODE_SLIDER = 2;
   const FALLBACK_GROUP = "Other";
 
-  // Short explanations, shown behind a tap-to-reveal "?" next to a
-  // field/metric's label (CR #7). Keyed by displayName() - the label as
-  // shown on screen, with the group name already stripped - so one entry
-  // covers the entity in every meter's group without repeating it.
-  // Nothing here for an entity that isn't in this map - the "?" just
-  // doesn't render, rather than showing an empty hint.
-  // Update/Reboot Device deliberately have no entry here (CR #3 in the
-  // previous round): the confirm dialog they already show on press
-  // explains the consequence right when it matters - a permanent "?" next
-  // to them was redundant clutter, not help.
   const HELP_TEXT = {
-    // Shared, on purpose, by BOTH a pulse meter's own Total Consumption
-    // AND a Modbus flow meter's own (packages/pressure_sensor.yaml,
-    // added 2026-08-21) - unlike "Flow Rate"/"Instant Flow" earlier,
-    // which genuinely needed separate names for separate meanings, this
-    // one is a deliberate shared meaning: direct feedback, same round,
-    // that the two device types' UI "nem sokban kell eltérjen" (shouldn't
-    // differ much) where the underlying concept really is the same one.
-    // The wording below stays accurate for both ways of arriving at that
-    // number.
     "Total Consumption": "Cumulative water use - read directly from the meter's own accumulated total (Modbus flow meters), or calculated from the pulse count and the last calibration (pulse meters). Either way, not a live meter photograph.",
-    // Renamed from "Flow Rate" to "Calculated Flow Rate" (2026-08-20,
-    // direct feedback) once "Instant Flow" (a Modbus flow meter's own
-    // DIRECTLY-read register) existed alongside it - "Flow Rate" alone no
-    // longer said which of the two kinds of reading it was. This key
-    // must match packages/water_meter.yaml's own entity name exactly
-    // (HELP_TEXT is looked up by the displayName()-stripped label).
     "Calculated Flow Rate": "Instantaneous flow, based on the time between the last two pulses. Drops to 0 automatically after Zero-Flow Timeout with no new pulses.",
     "Reading": "Enter the physical meter's current reading here, then press Update to apply it. Typing here alone changes nothing.",
     "Zero-Flow Timeout": "How long with no pulses before Calculated Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
-    // A Modbus flow-meter slot's own reading (2026-08-19, renamed from
-    // "Instant Flow" to "Flow Rate" 2026-08-20, direct feedback) - safe
-    // now that the pulse meters' own field above is "Calculated Flow
-    // Rate", not plain "Flow Rate" (see packages/pressure_sensor.yaml's
-    // own comment on this entity for the full naming-collision history).
     "Flow Rate": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Calculated Flow Rate is.",
-    // Forget Wi-Fi deliberately has no entry here either, same reasoning as
-    // Update/Reboot Device (CR #3, previous round): its confirm dialog
-    // already explains the consequence when it matters - a permanent "?"
-    // would just be redundant clutter, and (found this round) also threw
-    // off this button's row width relative to Reboot Device's plain one.
   };
 
   // Buttons/fields whose action isn't easily undone get an explicit
@@ -102,16 +31,6 @@
     list: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     terminal: '<path d="M4 5h16v14H4Z"/><path d="M7.5 9.5l3 2.5-3 2.5"/><path d="M13 15.5h4"/>',
     gauge: '<path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1" fill="currentColor" stroke="none"/>',
-    // "Flow" device type (T3-1-2-H ultrasonic flow meter, 2026-08-19) -
-    // three horizontal ripple/wave lines. Briefly swapped for an arrow
-    // glyph (2026-08-20) on a theory that this and "gauge" read as
-    // near-identical smudges at the table's small icon size - reverted
-    // the same day on direct feedback ("az előző ikon jó volt") once the
-    // REAL bug behind "a flow ikonja megegyezik a pressure ikonnal" was
-    // found: the Dashboard page's own Home card icon was stuck showing
-    // "gauge" regardless of Device Type (ensureHomeGroup() only ever set
-    // it once, at card-creation time - see refreshGroupIcon()'s own
-    // comment) - not a legibility problem with this icon's shape at all.
     flow: '<path d="M3 8c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 14c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M3 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>',
     dot: '<circle cx="12" cy="12" r="4"/>',
     // Pressure table row actions (see upsertRegisteredPressureRow() below) -
@@ -136,60 +55,15 @@
     "Network": "wifi",
     "System": "cog",
   };
-  // All 8 Modbus device slots ("Pressure Sensor 1".."8" - see
-  // packages/pressure_sensor.yaml, still literally named that regardless
-  // of a slot's actual configured device type, see that file's own
-  // GENERALIZATION note) share this prefix match instead of 8 literal map
-  // entries, since which slot number is used isn't meaningful by itself.
-  // Icon then depends on that slot's own "Device Type" (added 2026-08-19
-  // alongside the T3-1-2-H flow meter) - "gauge" for Pressure (also the
-  // fallback before that entity's first update reaches the browser, or
-  // for a firmware build from before this existed), "flow" for Flow.
-  // Called from ensureHomeGroup(), which only ever reads this once, at
-  // card-creation time - a slot's Device Type changed AFTER its Home
-  // card already exists won't retroactively update that card's own
-  // header icon (a rare edit, on an already-registered slot, not worth
-  // the extra plumbing this round - the unified Devices table's own row
-  // icon, upsertRegisteredPressureRow(), DOES update live on every
-  // render, unlike this one).
   function groupIcon(name) {
     if (GROUP_ICON_BY_NAME[name]) return GROUP_ICON_BY_NAME[name];
     if (PRESSURE_SLOT_RE.test(name)) {
       const typeEntity = pressureSlotEntity(name, "Device Type");
-      // "dot" (neutral), not "gauge", while Device Type genuinely isn't
-      // known yet - NOT the same thing as "Pressure" (2026-08-21, real
-      // bug confirmed on hardware: "egy felparaméterett flow meter a
-      // dashboardon először bar-t mutat majd a végén vált át flow-ra...
-      // valahogy a kódban kiemelt szerepet kap a pressure" - a
-      // configured flow meter shows bar first, then eventually switches
-      // to flow - can only happen if Pressure gets a privileged role in
-      // the code). It did: `typeEntity.value === "Flow" ? ... : "gauge"`
-      // silently treated "don't know yet" (typeEntity missing, or its
-      // value not arrived over SSE yet - a real, brief window right
-      // after connect) exactly the same as an ACTUAL "Pressure" choice.
-      // Every real "unknown, don't guess" case elsewhere in this file
-      // shows nothing/neutral rather than defaulting to one specific
-      // answer - this one silently didn't, which is exactly the
-      // structural bias being described. Same fix applied to
-      // pressureSlotValueLabels() (Home card value) and
-      // registeredPressureSlots() (Devices table row) below - all three
-      // read this same entity the same slightly-wrong way independently
-      // before this round.
       if (!typeEntity || typeEntity.value === undefined) return "dot";
       return typeEntity.value === "Flow" ? "flow" : "gauge";
     }
     return "dot";
   }
-  // ids stay "home"/"service"/"diagnostics" internally (localStorage key,
-  // #dc-page-* element ids, routing/function names throughout this file) -
-  // only the displayed labels changed: "home" -> "Dashboard" per the "Show
-  // on Dashboard" naming below (so the toggle's own name and the page it
-  // controls visibility on match each other), and "service"/"diagnostics"
-  // -> "Devices"/"System" (2026-08-15, direct feedback: "Service" had
-  // drifted into meaning just the unified Devices table, and once the
-  // device-level action buttons moved onto "Diagnostics" too - see this
-  // file's own header comment - "Diagnostics" undersold what that page
-  // now does, "System" covers both the readouts and the actions).
   const PAGES = [
     { id: "home", label: "Dashboard", icon: "water" },
     { id: "service", label: "Devices", icon: "wrench" },
@@ -228,22 +102,6 @@
   const groupDisplayNames = new Map();
   let currentPage = "home";
 
-  // A pressure slot's raw compile-time id (e.g. "Pressure Sensor 3") is
-  // deliberately meaningless (see pressure_sensor.yaml's own file
-  // header) and must never be shown anywhere in this UI - not even
-  // transiently while its real Display Name hasn't arrived yet. On a
-  // fresh connection/reconnect, entities arrive gradually, not
-  // atomically (ESPHome dumps them in a fixed cross-domain order, not
-  // registration order - see the note further up on the same
-  // phenomenon affecting group labels generally) - a pressure slot's
-  // Modbus Address (number domain) can easily be known before its
-  // Display Name (text domain) is, which used to flash the raw id as
-  // that card's header for a moment. Confirmed on real hardware,
-  // 2026-08-13 - direct feedback was to show nothing at all rather than
-  // the wrong thing. Every other group's raw name (Pulse Meter 1,
-  // Network, ...) is fine to show as a fallback - only pressure slots
-  // need this exception, isPressureGroup() is defined further down but
-  // hoisted (function declaration), so it's callable from here.
   function groupLabel(name) {
     const custom = groupDisplayNames.get(name);
     if (custom) return custom;
@@ -264,50 +122,11 @@
     if (diag) diag.section.querySelector(".dc-section-label").textContent = label;
   }
 
-  // ESPHome dumps every entity's full state right after connecting, but
-  // in a fixed, cross-domain order baked into its own entities_iterator
-  // (confirmed from source: sensor domain is always dumped before switch
-  // and text) - so a meter's Home card/label is unavoidably built from
-  // Flow Rate/Total Consumption *before* its Show on Dashboard/Display
-  // Name catch up, a beat later. Without this, that shows up as a real,
-  // visible flash: the raw group name and a visible-by-default card,
-  // correcting themselves a moment later (CR #5, #6). applyGroupVisibility()/
-  // applyGroupLabel() are the only things that ever touch dc-hidden/
-  // the header text - both are no-ops until this fires
-  // once, then settle the *final* state cleanly in one pass, and apply
-  // immediately (no more waiting) for everything from then on, including
-  // later reconnects.
-  //
-  // How long to wait isn't a fixed number: on a healthy network the whole
-  // burst is over in well under a second, but on a congested one (a
-  // laggy/roaming Wi-Fi - confirmed from real device logs with SCAN_
-  // CONNECTING loops and multi-second ping RTTs) it can take much longer,
-  // and a fixed short delay just moved *when* the flash happened, not
-  // whether it did. So this debounces instead: every full-payload entity
-  // (see scheduleSettle(), called from handleFullPayload()) pushes the
-  // deadline out another SETTLE_QUIET_MS - it only actually settles once
-  // entities stop arriving for that long, i.e. the burst is genuinely
-  // over. SETTLE_MAX_MS is just a backstop in case that quiet moment
-  // never comes, so the UI can't wait forever.
   const SETTLE_QUIET_MS = 800;
   const SETTLE_MAX_MS = 6000;
   let initialSettled = false;
   let settleQuietTimer = null;
 
-  // Narrower than initialSettled, and NOT the same guard: initialSettled
-  // is one-time and permanent, so once it flips true it no longer
-  // distinguishes "this render was triggered by a genuinely new scan"
-  // from "this render just happens to be running after settle, for some
-  // completely unrelated reason (e.g. a routine pressure-sensor poll)".
-  // The latter still reads whatever "Scan Results"/"Scan Collisions"
-  // currently hold - which, if no scan has happened yet THIS session,
-  // is still the stale pre-session value initialSettled was supposed to
-  // hide. Confirmed in the field, 2026-08-15: the "Collision" note
-  // survived a page refresh with no bus check in sight. This flag only
-  // goes true when one of those two entities actually receives an
-  // update while initialSettled is already true, i.e. a real scan this
-  // session - see renderPressureEntity()'s "Scan Results"/"Scan
-  // Collisions" branch, the only place this is set.
   let scanResultsFresh = false;
 
   function scheduleSettle() {
@@ -332,17 +151,6 @@
     refreshGroupLabel(name);
   }
 
-  // Generic group-visibility hook - currently dormant (nothing calls
-  // groupEnabled.set(), so groupEnabled.get(name) is always undefined,
-  // and this always leaves dc-hidden off) since the one thing that used
-  // to drive it, water meters' old "Show on Dashboard" switch, was
-  // unified into the Registered-gated create/remove model instead
-  // (2026-08-13, see renderPulseMeterEntity()'s own comment) - same
-  // reasoning pressure sensor slots already used, see
-  // syncPressureHomeCard()'s own comment. Left in place as generic
-  // infrastructure rather than removed outright, in case some future
-  // group ever wants a plain show/hide toggle without the stronger
-  // create/remove semantics.
   function applyGroupVisibility(name) {
     if (!initialSettled) return;
     const enabled = groupEnabled.get(name) !== false;
@@ -368,21 +176,6 @@
     // generic costs nothing.
     const iconEl = el("span", "dc-meter-card-header-icon", svgIcon(groupIcon(name)));
     const labelEl = el("span", "dc-meter-card-header-label", groupLabel(name));
-    // Top-right status badge (2026-08-21, new feature: "a dashboardon
-    // minden eszköz dobozának jobb felső sarkában tegyük ki a
-    // státuszt színhelyesen (ugyan azt ami a táblában a sátusz
-    // oszlopban megjelenik)" - put the SAME status the Devices table's
-    // own Status column shows, color-correct, in the top-right corner
-    // of every device's Home card box). Reuses .dc-pressure-badge as-is
-    // (same dot+color-by-class treatment the table already uses,
-    // including the new Mismatch state just added above) rather than
-    // inventing a second badge component - pushed to the row's own
-    // right edge via margin-left: auto (dashboard.css) inside the
-    // header's existing flex row, not absolute-positioned - simpler,
-    // and doesn't need to account for the header's own height varying.
-    // Updated live from updateHomeCardStatus() below - see
-    // syncPressureHomeCard()/updatePulseMeterStatus() for the two
-    // call sites (one per device type).
     const statusEl = el("span", "dc-pressure-badge dc-meter-card-status", "");
     header.append(iconEl, labelEl, statusEl);
     const body = el("div", "dc-meter-card-body");
@@ -395,32 +188,11 @@
     return g;
   }
 
-  // Re-applies a group's current icon to its Home card - mirrors
-  // refreshGroupLabel() just below, same reason: groupIcon() itself was
-  // already correct (it reads the slot's live Device Type value), but
-  // ensureHomeGroup() above only ever CALLED it once, at card-creation
-  // time - a slot whose Device Type wasn't known yet (or was still
-  // "Pressure", the default, before the user's own choice arrived) got
-  // stuck showing the pressure "gauge" icon forever after, even once
-  // the correct Device Type/Flow reading was live everywhere else on the
-  // page. Confirmed on real hardware, 2026-08-20: "a dashboardon még
-  // mindig nyomásmérőként látszik a flowmeter" (the flow meter on the
-  // Dashboard page still shows as a pressure sensor), while the unified
-  // Devices table's own row icon (upsertRegisteredPressureRow(), which
-  // already re-evaluates every render) showed correctly. Called from
-  // syncPressureHomeCard() - i.e. on every pressure-slot entity update,
-  // same trigger renderDeviceTableBody() already uses to keep the
-  // Devices table row in sync - so this is now no less live than that.
   function refreshGroupIcon(name) {
     const home = homeGroups.get(name);
     if (home) home.iconEl.innerHTML = svgIcon(groupIcon(name));
   }
 
-  // Shared text+CSS-class mapping for a pressure/flow slot's tri(+)-state
-  // status - the single source of truth both upsertRegisteredPressureRow()
-  // (Devices table Status column) and updateHomeCardStatus() (the new
-  // Home card corner badge, 2026-08-21) read from, so the two can never
-  // silently drift apart on what "Mismatch" etc. actually means.
   const PRESSURE_BADGE_CLASSES = [
     "dc-pressure-badge-ok",
     "dc-pressure-badge-lost",
@@ -435,14 +207,6 @@
     return online ? { text: "OK", cssClass: "dc-pressure-badge-ok" } : { text: "Lost", cssClass: "dc-pressure-badge-lost" };
   }
 
-  // Updates a device's Home card corner badge (new feature, 2026-08-21 -
-  // see ensureHomeGroup()'s own comment on statusEl) - shared by both
-  // device types; each passes in whichever {text, cssClass} its own
-  // status logic already computed (pressureStatusState() above for
-  // pressure/flow slots, or the plain Idle/Flowing pair pulse meters
-  // already had). A no-op if this group has no Home card (yet/anymore) -
-  // same "call it, it either does something or it doesn't" pattern as
-  // refreshGroupIcon() just above.
   function updateHomeCardStatus(groupName, text, cssClass) {
     const home = homeGroups.get(groupName);
     if (!home || !home.statusEl) return;
@@ -457,15 +221,6 @@
     }
   }
 
-  // `forceUnavailable` (used by syncPressureHomeCard() for a collision-
-  // flagged slot) shows "--" regardless of entity.value - a *clean,
-  // CRC-valid* read during an active Modbus address collision still
-  // isn't trustworthy, since there's no way to tell which of the two
-  // colliding devices actually answered that particular poll; showing
-  // whatever number happened to come back (real hardware confirmed this
-  // visibly flickering between "-- bar" and an actual reading,
-  // 2026-08-13) would silently attribute it to the wrong sensor just as
-  // often as the right one.
   function upsertHomeMetric(entity, forceUnavailable) {
     const group = ensureHomeGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
@@ -556,23 +311,6 @@
   // compact-button .dc-diag-actions row above).
   const reorderDiagFields = (group) => reorderServiceFields(group);
 
-  // "Reboot Device"/"Forget Wi-Fi" - device-level action buttons that
-  // render here instead of upsertServiceButton()'s Devices-page list, see
-  // render()'s own special-case for why (2026-08-15, direct feedback: the
-  // Devices page had become just the Devices table in every way but name,
-  // so system-level actions - which aren't about any one device - moved
-  // to sit alongside the rest of the "System" diagnostics they act on).
-  //
-  // Deliberately NOT wrapped in a bordered .dc-field card the way a
-  // Devices-page button is (contrast upsertServiceButton()) - a first
-  // version reused that exact layout and the button ended up stretched
-  // (.dc-btn's own width: 100%) across the FULL page width, since
-  // .dc-diag-group (unlike .dc-service-group) has no max-width - looked
-  // clearly wrong, confirmed 2026-08-15. Rendered instead as a plain,
-  // intrinsically-sized (.dc-btn-compact) button directly in a flex row
-  // (.dc-diag-actions below), same weight class as the toolbar buttons on
-  // the Devices page - neither of these two has HELP_TEXT anyway (see
-  // that map's own comment), so there's no help-icon layout to preserve.
   function upsertDiagButton(entity) {
     const group = ensureDiagGroup(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.btnEl) {
@@ -611,35 +349,8 @@
     }
   }
 
-  // Unlike Home/Diagnostics (which have always done this), Service fields
-  // used to just render in SSE arrival order - not sorting_weight order -
-  // since nothing ever re-sorted group.fields's children. Harmless while
-  // every field's weight happened to already match arrival order, but
-  // moving "Show on Dashboard" to the end (see packages/water_meter.yaml)
-  // exposed it: arrival order (a fixed, per-domain sequence baked into
-  // ESPHome's own entities_iterator - see the note further up) doesn't
-  // actually track sorting_weight across domains. Same pattern as
-  // reorderHomeGroups()/reorderDiagGroups() - read the weight already
-  // stashed on each field by its own upsert*() call, sort, re-append.
   function reorderServiceFields(group) {
     const sorted = [...group.fields.children].sort((a, b) => (+a.dataset.weight) - (+b.dataset.weight));
-    // Skip the move entirely if the order hasn't actually changed - a
-    // real, found-and-fixed bug (2026-08-19, in the now-removed MQTT
-    // group's own username/password fields - see REQUIREMENTS.md's
-    // "MQTT-integráció" section): every upsert*Field() call for a group
-    // ends with reorderServiceFields(group), and appendChild()ing an
-    // element that's already in the right spot still counts as removing +
-    // reinserting it, which silently drops focus from whichever field the
-    // user had just clicked into, in every browser tested, if any OTHER
-    // field in the same group happens to get an SSE-driven update in that
-    // instant. Since sorting_weight is static (it never actually changes
-    // at runtime, only field VALUES do), the order is already correct on
-    // effectively every call - this early-return makes those calls true
-    // no-ops instead of a focus-dropping churn, while still reordering
-    // for real the one time it's ever needed (first render, or an actual
-    // weight change). This is general-purpose protection, not specific to
-    // the group that surfaced it - any Service-page group with more than
-    // one field benefits the same way.
     let alreadyOrdered = true;
     for (let i = 0; i < sorted.length; i++) {
       if (group.fields.children[i] !== sorted[i]) {
@@ -651,59 +362,13 @@
     for (const r of sorted) group.fields.appendChild(r);
   }
 
-  // --- Pressure sensor table (Service + Home pages) ---------------------
-  //
-  // v3 (2026-08-13, see REQUIREMENTS.md "Architekturális megfontolás v3"):
-  // a JOIN, computed here in the browser, between two independent things -
-  // neither of which is itself "the" answer to "what sensors exist":
-  //   - the 8 fixed slots (packages/pressure_sensor.yaml), each persisting
-  //     only a Modbus Address + Display Name - a slot counts as
-  //     *registered* purely by Address != 0, no separate commissioned flag
-  //     (see that file's own header for why one fewer persisted concept).
-  //     Each registered slot also has its own live "Online" binary_sensor,
-  //     fed by that slot's own continuous pressure poll - NOT by the scan
-  //     below; a registered slot is watched continuously, not just when
-  //     someone happens to press Scan Bus.
-  //   - the latest bus-scan result (water-collector.yaml's "Scan Bus"
-  //     button -> "Scan Results" text_sensor, rs485_modbus::scan_bus()) -
-  //     a live, never-persisted CSV of addresses that answered just now,
-  //     used only to find addresses no slot has registered yet.
-  // Registered + Online -> "OK". Registered + NOT Online -> "Lost" (the
-  // real diagnostic signal - see REQUIREMENTS.md's discussion of why this
-  // can't instead be a reliable live electrical collision check). Scanned
-  // but not registered -> its own row with a per-row Add button.
-  // Slot number/order is never shown - see pressure_sensor.yaml's header -
-  // rows are sorted purely by address.
-  //
-  // This whole section (and the umbrella "Pressure Sensors" group's own
-  // entities) is intercepted in render() before it ever reaches
-  // ensureServiceGroup()/ensureHomeGroup() - see isPressureGroup() below.
-  //
-  // Every pressure entity always exists/is always sent to every client
-  // from the first connection onward, same as every other entity in this
-  // file - ESPHome has no supported way to hide one at runtime (confirmed
-  // from the installed package's own esphome/core/entity_base.h,
-  // `set_internal()` is deprecated/undefined behavior - see git history
-  // for that finding). Only whether a *row* gets built from that data is
-  // conditional, which is what avoids a create-then-hide flash.
 
   const PRESSURE_SLOT_RE = /^Pressure Sensor \d+$/;
   const PRESSURE_ADD_GROUP = "Pressure Sensors";
   const PRESSURE_MAX_SLOTS = 8;
-  // What each Device Type actually reads once added (2026-08-19,
-  // upsertNewPressureRow()'s own type-picker preview) - matches
-  // packages/pressure_sensor.yaml's own Pressure/Flow Rate sensor
-  // entities exactly (unit_of_measurement there, name here).
-  // "" (the unselected placeholder option - 2026-08-21, direct feedback:
-  // Device Type has no default anymore, always requires an explicit
-  // choice) has its own neutral entry, same pattern as Pressure/Flow.
   const TYPE_READING_HINT = {
     "": "Choose a device type to see what it'll add",
     Pressure: "→ Pressure, bar",
-    // Both entities, not just Flow Rate (2026-08-21) - a Flow-configured
-    // slot now also gets its own Total Consumption (the flow meter's own
-    // accumulated total, read directly from the device), matching
-    // packages/pressure_sensor.yaml's own two sensor entities for "Flow".
     Flow: "→ Total Consumption, m³ + Flow Rate, m³/h",
   };
   // Real firmware sorting_group name (water-collector.yaml's
@@ -725,28 +390,6 @@
     return null;
   }
 
-  // Every registered slot (Modbus Address != 0), with its own live
-  // Online status (from that slot's continuous pressure poll,
-  // packages/pressure_sensor.yaml - NOT from the shared bus-scan result,
-  // that's a separate, on-demand thing used only to find still-
-  // unregistered addresses, see latestScanAddresses() below). Address is
-  // coerced to a whole number since the number entity's `value` is a
-  // plain float over the API. `online` is `undefined` until this slot's
-  // first poll completes (a few seconds after boot/registration) -
-  // treated the same as "not confirmed online yet" by callers (see
-  // upsertRegisteredPressureRow()'s own "Checking…" state).
-  //
-  // Checking `onlineEntity.value !== undefined`, not just truthiness of
-  // `onlineEntity` itself, is load-bearing: the entity object exists in
-  // `entities` from the moment its *declaration* is known (effectively
-  // from connection), well before its binary_sensor has ever actually
-  // published a state - which for a just-registered slot doesn't happen
-  // until its first poll completes. Without this distinction,
-  // `onlineEntity.value === true` silently evaluated to `false` for that
-  // whole window (comparing `undefined === true`), not `undefined` as
-  // the comment above already claimed - confirmed on real hardware,
-  // 2026-08-13: a freshly-added, perfectly healthy sensor visibly
-  // flashed "Lost" for a moment before its first poll ever ran.
   function registeredPressureSlots() {
     const slots = [];
     for (const e of entities.values()) {
@@ -755,19 +398,6 @@
         if (address > 0) {
           const onlineEntity = pressureSlotEntity(e.groupName, "Online");
           const orderEntity = pressureSlotEntity(e.groupName, "Sort Order");
-          // Which device class this slot actually is (2026-08-19,
-          // T3-1-2-H flow meter generalization - see
-          // packages/pressure_sensor.yaml's own "Device Type" select).
-          // undefined (not a "Pressure" guess) if the entity hasn't been
-          // seen yet (same brief connection-window gap `online` above
-          // already tolerates) - a silent "Pressure" fallback here was a
-          // real, confirmed bug (2026-08-21: "a felparaméterett flow
-          // meter... először bar-t mutat" - see groupIcon()'s own
-          // comment for the full writeup), not a harmless placeholder -
-          // every consumer of this field (upsertRegisteredPressureRow()'s
-          // own row icon, etc.) needs to treat undefined as its own
-          // "not known yet" state, distinct from an actual "Pressure"
-          // reading.
           const typeEntity = pressureSlotEntity(e.groupName, "Device Type");
           slots.push({
             groupName: e.groupName,
@@ -782,11 +412,6 @@
     return slots;
   }
 
-  // Pulse meter counterpart of registeredPressureSlots() - every
-  // currently-Registered meter with its own Sort Order (added
-  // 2026-08-13, "Devices" table unification - see water_meter.yaml's own
-  // copy of that entity). No `address`/`online` here - a local GPIO
-  // pulse counter has neither concept, see upsertRegisteredPulseMeterRow().
   function registeredPulseMeterSlots() {
     const slots = [];
     for (const groupName of pulseMeterGroups()) {
@@ -797,15 +422,6 @@
     return slots;
   }
 
-  // Every registered device, of EITHER type, in one shared display order -
-  // the unified "Devices" table's own join (2026-08-13). Sort Order,
-  // when customized (non-zero), wins first; ties among still-
-  // uncustomized (order === 0)
-  // devices fall back to plain groupName comparison, which happens to
-  // already put "Pressure Sensor" before "Pulse Meter" (alphabetical) -
-  // arbitrary but deterministic and stable across renders, which is all
-  // that's actually needed here (a real tie only ever happens for
-  // devices nobody has ever manually reordered anyway).
   function orderedRegisteredDevices() {
     const list = [
       ...registeredPressureSlots().map((s) => ({ type: "pressure", groupName: s.groupName, order: s.order, address: s.address, online: s.online, deviceType: s.deviceType })),
@@ -837,7 +453,7 @@
     [devices[idx], devices[swapIdx]] = [devices[swapIdx], devices[idx]];
     devices.forEach((d, i) => {
       const e = d.type === "pressure" ? pressureSlotEntity(d.groupName, "Sort Order") : pulseMeterSlotEntity(d.groupName, "Sort Order");
-      if (e) fetch(`${e.namePath}/set?value=${i + 1}`, { method: "POST" });
+      if (e) postRequest(`${e.namePath}/set?value=${i + 1}`).catch((error) => showRequestError(error, "Device reorder failed"));
     });
   }
 
@@ -869,10 +485,6 @@
       .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
   }
 
-  // Mirrors latestCollisionAddresses() above, for "Scan Mismatches"
-  // instead (2026-08-21 - a device that answered cleanly but declined a
-  // specific request, distinct from a collision - see that text_sensor's
-  // own comment in water-collector.yaml for the full reasoning).
   function latestMismatchAddresses() {
     const e = pressureSlotEntity(PRESSURE_ADD_GROUP, "Scan Mismatches");
     if (!e || typeof e.value !== "string" || !e.value.trim()) return [];
@@ -882,11 +494,6 @@
       .filter((n) => Number.isInteger(n) && n > 0 && n <= 247);
   }
 
-  // Cross-slot duplicate check, purely against sensors already registered
-  // in *this* list - not a real electrical bus collision check (that
-  // needs actually talking Modbus over the real hardware, not available
-  // yet - see REQUIREMENTS.md). Returns the Display Name of whichever
-  // other registered slot already holds `address`, or null.
   function findPressureAddressOwner(address, excludeGroup) {
     for (const slot of registeredPressureSlots()) {
       if (slot.groupName === excludeGroup || slot.address !== address) continue;
@@ -900,34 +507,10 @@
   let deviceToolbarEl = null;
   const DEVICE_TABLE_GROUP = "Devices";
 
-  // Registers the unified "Devices" group as a normal serviceGroups entry
-  // (reusing reorderServiceGroups()'s existing weight-based interleaving
-  // with the meter/system sections, for free) but with a bespoke body -
-  // the table itself, with a small toolbar BELOW it (Add Pulse Meter/Add
-  // Modbus Device, then Scan Bus - 2026-08-13, direct feedback: the
-  // toolbar used to sit above the table with Scan Bus first; both moved,
-  // see mountDeviceAddButtons()'s own comment for the ordering) - instead
-  // of the generic .dc-fields list - built once, on first use.
-  //
-  // 2026-08-13, "Devices" table unification: replaces the two previously
-  // separate tables (ensurePressureTable()/ensurePulseMeterTable()) with
-  // one shared table listing every device of either type - Modbus
-  // pressure sensors and local GPIO pulse meters - side by side, sorted
-  // by the same cross-type Sort Order (orderedRegisteredDevices() above).
-  // DEVICE_TABLE_GROUP is a purely client-side bucket key (like
-  // PULSE_METER_ANCHOR_GROUP used to be for its own table), not a real
-  // firmware sorting_group name - positioned using whichever real
-  // group's weight is known (pulse meters' anchor group sits first in
-  // water-collector.yaml's own sorting_groups list, so it's tried first).
   function ensureDeviceTable() {
     let g = serviceGroups.get(DEVICE_TABLE_GROUP);
     if (g) return deviceTableBody;
     const section = el("div", "dc-service-group dc-pressure-group");
-    // No "Devices" section label here (removed 2026-08-15, direct
-    // feedback: it's the ONLY section on this page, right below a page
-    // title that already says "Devices" - a plain duplicate, not a
-    // useful heading). If a second section ever gets added to this page,
-    // this one may need a label back, but that's not the case today.
     const toolbar = el("div", "dc-pressure-toolbar");
     const table = el(
       "table",
@@ -941,12 +524,6 @@
     // comment).
     const tableScroll = el("div", "dc-pressure-table-scroll");
     tableScroll.appendChild(table);
-    // Card wrapper around BOTH the table and the toolbar (2026-08-13,
-    // redesign pass) - one continuous bordered/rounded surface, toolbar
-    // separated from the table only by a hairline (dashboard.css), not a
-    // second freestanding card floating below the first. toolbar AFTER
-    // tableScroll (below the table, not above) - direct feedback,
-    // 2026-08-13.
     const card = el("div", "dc-devices-card");
     card.append(tableScroll, toolbar);
     section.append(card);
@@ -960,39 +537,6 @@
     return deviceTableBody;
   }
 
-  // The client-only "Add Pulse Meter" toggle - unlike Scan Bus (a real
-  // firmware button entity), it has no entity of its own at all: it just
-  // opens the in-table Add row below (buildDeviceAddRow()), which is what
-  // actually talks to the device once its fields are filled in. There
-  // used to be a second, matching "Add Modbus Device" button (2026-08-13)
-  // opening a manual, hand-typed-address sub-form - removed the same day,
-  // direct feedback: it caused more trouble than it solved (see the
-  // duplicate-address hard-block added to the edit-save flow below, and
-  // REQUIREMENTS.md's own writeup) - adding a Modbus device is scan-only
-  // again, exactly like before that button ever existed. Built once,
-  // lazily, from ensureDeviceTable() - always BEFORE Find Modbus Devices
-  // can possibly mount (that only happens once its own entity has
-  // arrived over SSE, strictly later than this synchronous call), so a
-  // plain append here is enough to guarantee the final toolbar order
-  // (Add Pulse Meter, then Find Modbus Devices) without needing an
-  // insertBefore anchor dance the other way.
-  //
-  // REVERTED, 2026-08-20 (same day as the change below): a same-day
-  // attempt eagerly built Find Modbus Devices' own button/status here
-  // too, as a disabled placeholder, meant to fix its own ~1-2s "pop-in"
-  // delay (see mountPressureToolbarButton()'s own comment for that
-  // symptom). Direct feedback confirmed it made things WORSE, not
-  // better - "disabled, majd pár másodperc múlva enabled, de nem
-  // reagál" (disabled, then after a few seconds enabled, but doesn't
-  // respond) - and the exact mechanism was never conclusively pinned
-  // down from code alone before this revert. Rather than layer another
-  // unverified guess on top of one that already made things worse, this
-  // went back to the simpler, previously-reliable lazy-build pattern -
-  // the 1-2s pop-in is a real but minor cosmetic issue; a button that
-  // doesn't work at all is not. If the pop-in delay gets revisited
-  // again, it needs to be diagnosed WITH live evidence (browser
-  // console/network tab from the actual failure) first, not guessed at
-  // blind a second time.
   let addPulseBtn = null;
   function mountDeviceAddButtons() {
     if (addPulseBtn) return;
@@ -1002,28 +546,10 @@
     deviceToolbarEl.append(addPulseBtn);
   }
 
-  // Opens the Add row, or closes it if already open (a second click =
-  // cancel). Also force-cancels whichever row is currently mid-edit, if
-  // any - direct feedback, 2026-08-13: starting a new Add should close
-  // out an in-progress edit, the same "only one interactive thing open
-  // at a time" rule the edit lock (deviceEditingRow) already enforces
-  // between rows - see closeDeviceAddRow() below for the reverse
-  // direction (entering edit closes a currently-open Add).
   function toggleDeviceAdd() {
     if (deviceEditingRow && deviceEditingRow._cancelEdit) deviceEditingRow._cancelEdit();
     deviceAddOpen = !deviceAddOpen;
     renderDeviceTableBody();
-    // Focus the Device name field the moment the row actually opens
-    // (2026-08-21, direct feedback: "amikor add pulse meter-t nyomok
-    // akkor a fókusz a device name mezőre kell menjen" - pressing Add
-    // Pulse Meter should move focus straight to the name field). Only
-    // on the open transition, not every re-render - this same function
-    // isn't re-called on later SSE-driven refreshes, only on the actual
-    // toolbar click, so there's no risk of this yanking focus away
-    // mid-typing later (unlike a focus() call placed inside
-    // renderDeviceTableBody() itself, which reruns continuously).
-    // deviceAddRow is guaranteed to exist by now - renderDeviceTableBody()
-    // above just built/reused and appended it synchronously.
     if (deviceAddOpen && deviceAddRow && deviceAddRow._nameInput) deviceAddRow._nameInput.focus();
   }
 
@@ -1037,33 +563,9 @@
     addPulseBtn.title = freePulseSlots.length === 0 ? "Both pulse meter slots are already registered." : "";
   }
 
-  // The real "Find Modbus Devices" button (water-collector.yaml -
-  // rs485_modbus::scan_bus(); renamed from "Scan Bus" 2026-08-15, direct
-  // feedback: "Scan Bus" didn't read as clearly as what the button
-  // actually does) - a plain button mounted into the toolbar below the
-  // table, same wiring as a generic Service field but without pulling in
-  // ensureServiceGroup()'s .dc-fields layout. Deliberately NOT routed
-  // through the shared pressButton() (its brief ".dc-pressed" flash
-  // doesn't fit a ~6s operation) - disabled + relabeled "Scanning…"
-  // instead, driven by its own live "Scan In Progress" binary_sensor
-  // (see syncScanButtonBusyState() below), NOT the fetch() promise's own
-  // lifetime - tried that first, but confirmed on real hardware,
-  // 2026-08-13, that ESPHome's web_server doesn't hold the HTTP response
-  // open for a button's on_press: to actually finish, so the fetch
-  // resolved almost immediately, well before the real ~6s scan was done.
-  // Feedback here matters beyond cosmetics: with none at all, it wasn't
-  // obvious a scan was running, which invited exactly the kind of
-  // repeated re-clicking that (combined with the try_register bug fixed
-  // the same day) produced duplicate registrations.
   function mountPressureToolbarButton(entity) {
     if (!entity.btnEl) {
       entity.idleLabel = displayName(entity);
-      // The button's own label never changes (previously swapped to
-      // "Scanning…", which - being longer than "Scan Bus" - visibly grew
-      // the button itself mid-scan, confirmed to look wrong on real
-      // hardware, 2026-08-13). "Scanning…" + the spinner instead live in
-      // a separate status element next to the button, so the button's
-      // own size is fixed regardless of state.
       entity.btnEl = el("button", "dc-btn dc-btn-compact", entity.idleLabel);
       entity.btnEl.addEventListener("click", () => {
         if (entity.btnEl.disabled) return;
@@ -1072,7 +574,7 @@
         // - the user explicitly asked to see the bus's current state
         // again, not whatever was previously waved away.
         dismissedScanAddresses.clear();
-        fetch(`${entity.namePath}/press`, { method: "POST" });
+        postRequest(`${entity.namePath}/press`).catch((error) => showRequestError(error, "Device scan failed"));
       });
       entity.statusEl = el("span", "dc-pressure-scan-status", `<span class="dc-spinner"></span><span>Scanning…</span>`);
       entity.statusEl.hidden = true;
@@ -1096,58 +598,10 @@
     scanEntity.statusEl.hidden = !inProgress;
   }
 
-  // Shared across BOTH device types (2026-08-13, "Devices" table
-  // unification) - "reg:"+groupName (either type), "new:"+address or
-  // "collision:"+address (pressure only - see below) -> <tr>. groupNames
-  // never collide across types ("Pressure Sensor N" vs "Pulse Meter N"),
-  // so one shared Map is safe.
   const deviceTableRows = new Map();
   const pressureNewRowDrafts = new Map(); // address -> in-progress typed name, kept across re-renders until Add/rescan
-  // The one registered row (of EITHER type) currently in edit mode (its
-  // own expanded detail row attached below it), or null - see enterEdit()
-  // in each type's own upsertRegistered*Row() for why only one can ever
-  // be open at a time, table-wide. Replaces the pulse-meter-only
-  // pulseMeterEditingRow this used to be - pressure rows now use the same
-  // single-editor lock and expand-row pattern (Modbus Address moved out
-  // of the main row into the expand area, mirroring Reading/Zero-Flow
-  // Timeout), so the lock has to be shared to actually mean "only one
-  // open, whole table" rather than "only one open per type".
   let deviceEditingRow = null;
 
-  // A registered pressure slot's row. Status is normally this slot's own
-  // live Online value (OK/Lost), but a collision seen at this exact
-  // address in the last scan overrides that - a garbled reply is a much
-  // more specific, actionable signal ("something else is answering to
-  // your address too") than a plain Lost, so it takes priority over
-  // whatever the last poll happened to see.
-  //
-  // `online` is a tri-state: true/false once this slot's own poll has
-  // actually reported something, or `undefined` for the brief window
-  // between a fresh Add and that first poll completing (up to this
-  // slot's own ~600-670ms interval) - shown as "Checking…", not "Lost".
-  // Rendering it as Lost was real hardware feedback, 2026-08-13: a
-  // just-added, perfectly healthy sensor still visibly flashed Lost for
-  // a moment, since a fresh row starts with no Online reading yet at all
-  // (indistinguishable, before this, from a genuinely unreachable one) -
-  // Lost should mean "this slot was confirmed and then dropped off", not
-  // "haven't heard from it yet".
-  //
-  // Name is read-only until the row's own pencil button is pressed, then
-  // editable with an explicit Save/Cancel - previously Name+Address wrote
-  // on every blur (a plain HTML `change` event), which made it
-  // dangerously easy to fire a real reprogram (Address really does
-  // rewrite the physical sensor - see pressure_sensor.yaml's Modbus
-  // Address set_action) just by tabbing through the row or clicking
-  // elsewhere mid-edit. Confirmed too easy to trigger by accident on real
-  // use, 2026-08-13.
-  //
-  // Modbus Address itself moved out of the main row (2026-08-13, "Devices"
-  // table unification - the user's own request: a shared Name/Status/
-  // Edit/Delete/Order column set across both device types, with Modbus
-  // Address, of that whole set, only being editable at all) into an
-  // expand row below, only present while editing - the exact same
-  // pattern the pulse meters' own Reading/Zero-Flow Timeout already used
-  // (upsertRegisteredPulseMeterRow() below), now shared table-wide.
   function upsertRegisteredPressureRow(tbody, groupName, online, hasCollision, hasMismatch, isFirst, isLast, deviceType) {
     const key = "reg:" + groupName;
     const nameEntity = pressureSlotEntity(groupName, "Display Name");
@@ -1191,8 +645,6 @@
       actionCell.appendChild(editBtn);
       row._editBtn = editBtn;
 
-      // Trash, not the old bare "✕" - reads more clearly as "delete this
-      // registration" at a glance (per direct feedback, 2026-08-13).
       const delBtn = el("button", "dc-pressure-icon-btn dc-pressure-del-btn", svgIcon("trash"));
       delBtn.type = "button";
       delBtn.title = "Delete";
@@ -1308,17 +760,7 @@
       };
       nameInput.addEventListener("keydown", handleEditKeydown);
       addrInput.addEventListener("keydown", handleEditKeydown);
-      saveBtn.addEventListener("click", () => {
-        // A blank Display Name doesn't just look empty - groupLabel()'s
-        // own fallback (dashboard.js's shared home/section-header logic)
-        // falls straight through to the group's raw compile-time id
-        // (e.g. "Pressure Sensor 3") the moment the stored name is
-        // empty, exactly the internal, deliberately-meaningless string
-        // this whole file goes out of its way to never show elsewhere.
-        // The Add flow already requires a name before it would even fire
-        // (buildDeviceAddRow()); confirmed on real hardware, 2026-08-13,
-        // that editing an existing row back to blank was still wide open
-        // to the same problem - required here too.
+      saveBtn.addEventListener("click", async () => {
         if (!nameInput.value.trim()) {
           alert("Name can't be empty.");
           return; // stay in edit mode so it can be fixed
@@ -1328,14 +770,6 @@
           alert("Address must be a number between 1 and 247.");
           return; // stay in edit mode so the value can be fixed
         }
-        // Hard block, not a dismissable confirm() - this is the path that
-        // actually reprograms a real, already-registered physical sensor
-        // (change_address_and_save(), rs485_modbus.h), so setting it to an
-        // address another registered slot already claims causes a genuine
-        // electrical/protocol bus collision, not just a bookkeeping clash.
-        // Confirmed in the field, 2026-08-15: recovering from that needed
-        // physically disconnecting and reconnecting hardware. A soft,
-        // click-through warning here is not an acceptable safeguard.
         const dupe = findPressureAddressOwner(parsed, groupName);
         if (dupe) {
           alert(
@@ -1348,21 +782,19 @@
         saveBtn.disabled = true;
         cancelBtn.disabled = true;
         const requests = [];
-        if (ne) requests.push(fetch(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" }));
-        if (ae) requests.push(fetch(`${ae.namePath}/set?value=${encodeURIComponent(parsed)}`, { method: "POST" }));
-        Promise.all(requests).finally(() => {
+        if (ne) requests.push(postRequest(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`));
+        if (ae) requests.push(postRequest(`${ae.namePath}/set?value=${encodeURIComponent(parsed)}`));
+        try {
+          await Promise.all(requests);
+          exitEdit();
+        } catch (error) {
+          showRequestError(error, "Device update failed");
+        } finally {
           saveBtn.disabled = false;
           cancelBtn.disabled = false;
-          exitEdit();
-        });
+        }
       });
     }
-    // pressButton() reads entity.btnEl (for the press animation) - unlike
-    // every other button in this file, this one is never routed through
-    // upsertServiceButton() (pressure entities are all intercepted before
-    // they'd get there), so nothing else ever sets it. Without this the
-    // click handler threw (`btnEl` undefined) before the fetch() ever
-    // fired - the X looked completely dead, confirmed on real hardware.
     if (delEntity) delEntity.btnEl = row._delBtn;
     row._delBtn.onclick = () => {
       if (delEntity) pressButton(delEntity);
@@ -1376,16 +808,6 @@
       row._nameInput.value = (nameEntity && nameEntity.value) || "";
       if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
     }
-    // Mismatch (2026-08-21, direct feedback: "itt nem lehet OK, a
-    // logban is jelzed a hibát... legyen egy Piros 'Mismatch' hiba" -
-    // can't be OK here, the log itself flags the error too, there
-    // should be a red "Mismatch" error) - a slot whose device answered
-    // cleanly but declined a specific request (see set_scan_mismatch_
-    // address()'s own comment, include/rs485_modbus.h, for the full
-    // "not a collision, not unreachable" reasoning). pressureStatusState()
-    // (above) is the shared source of truth for the text+class mapping -
-    // also feeds the new Home card corner badge just below, so the two
-    // can never silently drift apart.
     const status = pressureStatusState(online, hasCollision, hasMismatch);
     row._statusEl.textContent = status.text;
     for (const c of PRESSURE_BADGE_CLASSES) row._statusEl.classList.toggle(c, c === status.cssClass);
@@ -1409,31 +831,6 @@
     }
   }
 
-  // A scanned-but-not-yet-registered address's row - Address is read-only
-  // (it's whatever the scan found, shown as a small hint above the name
-  // field - the standalone Address column is gone, 2026-08-13, "Devices"
-  // table unification, folded into the Name cell instead, same as the
-  // collision row below), Name is a local draft (nothing is written to
-  // the device until confirmed), Status is always "New". Confirm sets the
-  // umbrella group's shared Add Name/Add Target Address scratch entities
-  // and presses its shared Add button - see that button's own comment in
-  // water-collector.yaml for why one shared trigger behind 8 per-row
-  // buttons (now also probed server-side first - see that same comment)
-  // is safe and correct.
-  //
-  // Confirm/Dismiss are icon buttons (check/close), not a text "Add" -
-  // 2026-08-13, direct feedback: visually consistent with the rest of the
-  // table's action icons rather than a standalone button that looked like
-  // a second, different kind of control. Dismiss doesn't talk to the
-  // device at all - it only hides this one address from view for the
-  // rest of THIS session (dismissedScanAddresses below), cleared by the
-  // next actual Scan Bus press (mountPressureToolbarButton()'s own click
-  // handler) - explicit feedback, 2026-08-13: a mere scan (and dismissing
-  // one of its results) shouldn't be a persistent action, so a page
-  // reload/reconnect starts clean rather than re-showing what was
-  // dismissed or, for that matter, any stale scan at all - see
-  // renderDeviceTableBody()'s own initialSettled gate for the other half
-  // of that same requirement.
   function upsertNewPressureRow(tbody, address, atCeiling) {
     const key = "new:" + address;
     let row = deviceTableRows.get(key);
@@ -1449,15 +846,6 @@
       const nameCell = row.querySelector(".dc-pressure-name");
       const nameRow = el("div", "dc-pressure-name-row");
       nameCell.appendChild(nameRow);
-      // "dot" (neutral/unset), not "gauge" - matches the type select's
-      // own unselected placeholder just below (2026-08-21, direct
-      // feedback: "a pressure defult device class nem indokolt.
-      // Mindenképpen ki kelljen választani. A két eszköz típus teljesen
-      // egyenrangú" - defaulting to Pressure isn't justified, the type
-      // MUST always be explicitly chosen, the two device types are
-      // completely equal/peer). Defaulting the icon to "gauge" here
-      // (Pressure's own icon) before any real choice was made was the
-      // same implicit bias in miniature.
       const typeIcon = el("span", "dc-device-type-icon", svgIcon("dot"));
       nameRow.appendChild(typeIcon);
       row._typeIconEl = typeIcon;
@@ -1465,12 +853,6 @@
       nameRow.appendChild(nameContent);
       nameContent.appendChild(el("span", "dc-pressure-addr-hint", `Modbus address: ${address}`));
 
-      // Name input + Device Type picker share ONE row (2026-08-19, direct
-      // feedback: stacked underneath each other made the name input
-      // stretch to the box's full width for no reason, and read as two
-      // separate steps instead of one - see .dc-pressure-name-edit-row's
-      // own comment in dashboard.css for the actual CSS mechanism this
-      // needed).
       const editRow = el("div", "dc-pressure-name-edit-row");
       nameContent.appendChild(editRow);
 
@@ -1493,42 +875,12 @@
       editRow.appendChild(nameInput);
       row._nameInput = nameInput;
 
-      // Device type picker (2026-08-19, T3-1-2-H flow meter - see
-      // packages/pressure_sensor.yaml's own "Device Type" select for the
-      // full generalization writeup) - a bare probe can't tell a QDW90A
-      // pressure sensor apart from a T3-1-2-H flow meter (both just
-      // answer "something's here"), so the person adding it has to say
-      // which. No default (2026-08-21, direct feedback: "a pressure
-      // defult device class nem indokolt. Mindenképpen ki kelljen
-      // választani. A két eszköz típus teljesen egyenrangú" - defaulting
-      // to Pressure isn't justified, the choice must always be explicit,
-      // the two types are completely equal/peer) - was "Pressure"
-      // pre-selected, on the reasoning that every device this project
-      // supported before the T3-1-2-H existed was one; now an
-      // unselectable placeholder option instead, forcing an explicit
-      // pick before Confirm unlocks (see its own disabled logic below) -
-      // same treatment as the Name field already got, just for the type
-      // instead of the label.
       const typeSelect = document.createElement("select");
       typeSelect.className = "dc-pressure-type-select";
       typeSelect.innerHTML = `<option value="" selected disabled>Type…</option><option value="Pressure">Pressure</option><option value="Flow">Flow</option>`;
       editRow.appendChild(typeSelect);
       row._typeSelect = typeSelect;
 
-      // What reading/unit this type will actually add - direct feedback,
-      // 2026-08-19 ("a mértékegységet és a kijelzett entitásokat már
-      // tudjuk, miért nem jelenítettük meg?" - we already know the unit
-      // and the entity that'll be shown, why isn't it displayed?). Purely
-      // informational, updates live with the selection, same pattern as
-      // the icon preview right next to it. Its OWN line below editRow,
-      // not squeezed into that row alongside the name input and type
-      // select (2026-08-20: tried inline first, but the row then had
-      // nowhere left to shrink and just overflowed the card sideways
-      // instead - the exact "kilóg a dobozból" complaint this whole
-      // round exists to fix, just moved rather than solved). name input +
-      // type select is the pairing that actually needed to be "one row,
-      // vertically centered" per that feedback; this hint reads fine as
-      // its own compact line, same as .dc-pressure-addr-hint above it.
       const typeHint = el("span", "dc-pressure-type-hint", TYPE_READING_HINT[""]);
       nameContent.appendChild(typeHint);
       const updateTypePreview = () => {
@@ -1541,17 +893,11 @@
 
       const actionCell = row.querySelector(".dc-pressure-action");
 
-      // Disabled with no name typed or no type chosen - a device isn't
-      // necessarily a pressure sensor (more Modbus device types are
-      // planned), so silently falling back to a generic "Pressure Sensor
-      // N" label, or to the Pressure type by default, would be actively
-      // wrong (name: confirmed a problem, 2026-08-13; type: confirmed a
-      // problem, 2026-08-21 - see typeSelect's own comment above).
       const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
       confirmBtn.type = "button";
       confirmBtn.disabled = true;
       actionCell.appendChild(confirmBtn);
-      confirmBtn.addEventListener("click", () => {
+      confirmBtn.addEventListener("click", async () => {
         if (confirmBtn.disabled) return;
         const nameEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Name");
         const addrEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Add Target Address");
@@ -1567,33 +913,20 @@
         // separate Add presses each claim a slot for the same address.
         confirmBtn._busy = true;
         confirmBtn.disabled = true;
-        fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-          // `?option=`, NOT `?value=` - the REAL bug behind "egyáltalán
-          // megjegyzi a device class-t?" (does it even remember the
-          // device class at all?), confirmed 2026-08-20 from ESPHome's
-          // own installed web_server.cpp: handle_select_request() reads
-          // its target option from the "option" query parameter
-          // specifically (parse_cstr_param_(request, "option", ...)),
-          // unlike number/text's own handlers, which both read "value" -
-          // every OTHER /set call in this file targets a number or text
-          // entity, so this mismatch was invisible everywhere else. Sent
-          // as `?value=` here, ESPHome's select handler found no
-          // "option" param, silently left the SelectCall's option unset,
-          // and call.perform() then applied a no-op - the scratch
-          // "Add Device Type" select never actually changed server-side,
-          // no matter what the dropdown showed client-side. That's
-          // exactly why the live preview (icon/hint, pure client-side JS)
-          // always looked right while the slot itself, once actually
-          // registered, was always "Pressure" - the one value that was
-          // never sent at all.
-          .then(() => fetch(`${typeEntity.namePath}/set?option=${encodeURIComponent(deviceType)}`, { method: "POST" }))
-          .then(() => fetch(`${addrEntity.namePath}/set?value=${encodeURIComponent(address)}`, { method: "POST" }))
-          .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-          .finally(() => {
-            confirmBtn._busy = false;
-            confirmBtn.disabled = atCeiling;
-          });
-        pressureNewRowDrafts.delete(address);
+        try {
+          await postRequest(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`);
+          // ESPHome select endpoints use `option`; number/text endpoints
+          // use `value`.
+          await postRequest(`${typeEntity.namePath}/set?option=${encodeURIComponent(deviceType)}`);
+          await postRequest(`${addrEntity.namePath}/set?value=${encodeURIComponent(address)}`);
+          await postRequest(`${addEntity.namePath}/press`);
+          pressureNewRowDrafts.delete(address);
+        } catch (error) {
+          showRequestError(error, "Device add failed");
+        } finally {
+          confirmBtn._busy = false;
+          confirmBtn.disabled = atCeiling;
+        }
       });
       row._confirmBtn = confirmBtn;
 
@@ -1681,12 +1014,6 @@
     }
   }
 
-  // Addresses a scan found but the user explicitly dismissed this session
-  // (upsertNewPressureRow()'s own Dismiss icon) - session-local only, on
-  // purpose (2026-08-13, direct feedback): cleared by the next real Scan
-  // Bus press, and implicitly reset on a page reload too, since this is
-  // never persisted anywhere (a plain in-memory Set, gone the moment this
-  // tab's JS re-runs).
   const dismissedScanAddresses = new Set();
 
   function suppressStaleHover(tbody) {
@@ -1694,26 +1021,6 @@
     document.addEventListener("mousemove", () => tbody.classList.remove("dc-pressure-table-settling"), { once: true });
   }
 
-  // The actual JOIN (see this section's header comment) - rebuilt on
-  // every relevant SSE update, for EITHER device type. Registered rows
-  // are keyed by groupName (unique across both types) and scan-discovered
-  // new-device/collision rows by address, all stable across rebuilds, so
-  // an in-progress edit (name being typed, address being typed) survives
-  // a rebuild triggered by something unrelated - see the activeElement
-  // guards in upsertRegistered*Row()/the draft Maps above.
-  //
-  // 2026-08-13, "Devices" table unification: replaces the two previously
-  // separate renderPressureTableBody()/renderPulseMeterTableBody() - one
-  // shared reconciliation loop, called from both renderPressureEntity()
-  // and renderPulseMeterEntity() (still separate dispatch entry points,
-  // still triggered by their own respective entities' SSE updates - only
-  // what they render into is now shared). Also owns the Add row's own
-  // position (always LAST, whenever it's open, right above the toolbar
-  // that opens it - moved from first to last the same day the toolbar
-  // itself moved below the table, direct feedback, so the row stays
-  // spatially close to the button that opened it) - the two type-specific
-  // render loops didn't need this since neither used to have anything
-  // pinned to a fixed position outside their own tracked rows.
   function renderDeviceTableBody() {
     const tbody = ensureDeviceTable();
     if (!tbody) return;
@@ -1754,15 +1061,6 @@
       if (row && row._editing && row._expandedRow) desiredOrder.push(row._expandedRow);
     });
 
-    // Gated on scanResultsFresh, NOT initialSettled (see scanResultsFresh's
-    // own comment further up) - direct feedback, 2026-08-13: merely
-    // scanning the bus shouldn't be a persistent action, so a stale "Scan
-    // Results"/"Scan Collisions" value already sitting on the device from
-    // before THIS page load (or a previous session entirely) must not
-    // resurrect "New device"/"Collision" rows just because some unrelated
-    // render happens to run later. Only a genuinely fresh update - this
-    // client's own scan press, or another client's, landing after the
-    // initial dump has settled - should ever make these rows appear.
     const newAddresses = scanResultsFresh
       ? [...new Set(scanAddresses)]
           .filter((a) => !registeredAddresses.has(a) && !dismissedScanAddresses.has(a))
@@ -1791,27 +1089,6 @@
       deviceAddRow.remove();
     }
 
-    // upsert*Row() above only appends a row to the DOM the first time
-    // it's created - without this, every row would keep whatever
-    // position it happened to be inserted at forever afterwards, even
-    // once a Sort Order change (or a device getting registered/deleted
-    // elsewhere in the list) says it belongs somewhere else.
-    //
-    // Only actually *moves* a row when it isn't already in the right
-    // spot - unconditionally calling appendChild()/insertBefore() on
-    // every row on every render (an earlier version of this loop) is
-    // wrong even for rows that don't need to move at all: detaching and
-    // reattaching a node blurs whatever input inside it currently has
-    // focus. Since this whole function re-runs on every relevant SSE
-    // update - which, for a registered pressure slot, includes its own
-    // live Online status changing on essentially every poll, roughly
-    // twice a second - that made editing a row's Name/Address effectively
-    // impossible, confirmed on real hardware, 2026-08-13: focus kept
-    // getting kicked out mid-edit by the *next* poll's own re-render, not
-    // by anything about editing itself. This walks the desired order
-    // once and only touches a node when its current position doesn't
-    // already match - for the overwhelmingly common case (nothing was
-    // just reordered) that's zero DOM moves.
     let anchor = tbody.firstElementChild;
     for (const row of desiredOrder) {
       if (!row) continue;
@@ -1831,39 +1108,11 @@
         removedAny = true;
       }
     }
-    // A row disappearing (e.g. Delete) can leave a *different* row's icon
-    // sitting exactly where the mouse cursor already was - the confirm()
-    // dialog that gated the delete is a blocking native prompt, so the
-    // click that led here never involved the mouse actually moving over
-    // whatever's there now. Confirmed on real hardware, 2026-08-13: the
-    // new first row's trash icon showed a stuck hover-red look until the
-    // mouse was moved (or clicked elsewhere). suppressStaleHover() below
-    // clears that until an actual pointer move happens.
     if (removedAny) suppressStaleHover(tbody);
     updateDeviceEmptyState(tbody, seenKeys.size === 0);
     resyncDeviceHomeCardOrder();
   }
 
-  // --- The "Add" row (opened from the "Add Pulse Meter" toolbar button) --
-  //
-  // 2026-08-13, "Devices" table unification, since simplified back down:
-  // there used to be a second flow here (manual "Add Modbus Device", a
-  // hand-typed address, no scan involved) - removed the same day, direct
-  // feedback: it caused more trouble than it solved (no protection at
-  // all against typing an address another registered slot already used -
-  // see the hard block added to the edit-save flow below for the actual
-  // fix that replaced it) and wasn't needed anyway, since Modbus devices
-  // are still addable the original way (a scan-discovered row's own
-  // Confirm icon, upsertNewPressureRow() above). This row is Pulse Meter
-  // -only now. A single in-table row (not a modal), consistent with
-  // everything else in this table already living as rows. Built once,
-  // lazily; its own DOM nodes persist across re-renders (only the slot
-  // dropdown's options get touched on every renderDeviceTableBody() call,
-  // and only when the underlying free-slot set actually changed - see
-  // refreshDeviceAddRow()'s own comment for why that guard matters) so a
-  // typed-but-not-yet-submitted name never gets blown away by an
-  // unrelated background poll, same activeElement-safety reasoning as
-  // every editable row in this file.
   let deviceAddOpen = false;
   let deviceAddRow = null;
 
@@ -1897,16 +1146,6 @@
     const form = el("div", "dc-device-add-form");
     cell.appendChild(form);
 
-    // A slot picker instead of a free-typed address/id: there's no
-    // discovery step at all here, just whichever of the (currently
-    // exactly two) fixed GPIO slots isn't already Registered - see
-    // refreshDeviceAddRow() below for how the option list is kept
-    // current, and water_meter.yaml's own per-meter Add button for what
-    // this actually fires. Labeled "IO 1"/"IO 2" (pulseSlotOptionLabel()
-    // below), not the internal "Pulse Meter 1/2" group name - direct
-    // feedback, 2026-08-13: that read as an odd, meaningless choice at
-    // Add time; "IO N" matches what's actually printed on the board
-    // itself next to the SH1.0 connector.
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.maxLength = 32;
@@ -1916,10 +1155,6 @@
 
     const errorEl = el("span", "dc-device-add-error", "");
 
-    // Confirm/Cancel icon buttons - reuses the row's own Save/Cancel icon
-    // pair (2026-08-13, direct feedback: visually consistent with every
-    // other confirm/cancel action in this table, instead of a standalone
-    // text "Add" button that looked like a different kind of control).
     const confirmBtn = el("button", "dc-pressure-icon-btn dc-pressure-save-btn", svgIcon("check"));
     confirmBtn.type = "button";
     confirmBtn.title = "Add";
@@ -1932,45 +1167,14 @@
     row._nameInput = nameInput;
     row._slotSelect = slotSelect;
     row._errorEl = errorEl;
-    // Whether the person actually touched this dropdown themselves this
-    // session (2026-08-21, direct feedback: register both pulse meters,
-    // delete both, open Add again - the slot defaulted to IO2, not IO1,
-    // "erősen sejteti az unprofessional kódot" - strongly suggests
-    // unprofessional code). It did: refreshDeviceAddRow()'s own "keep
-    // the current selection if it's still valid" logic below is
-    // reasonable WHILE the row is open and the free-slot set changes in
-    // the background, but this <select> is built once and reused across
-    // every open/close cycle for the entire page session (see this
-    // function's own header comment) - so a stale, un-reset .value left
-    // over from a PREVIOUS Add session could get silently "restored"
-    // the next time both slots happened to become free again, purely
-    // depending on which slot was deleted last, with no relation to
-    // anything the user actually chose this time. Reset to false in
-    // closeDeviceAddRow() below (same place the name field's own leftover
-    // draft already gets cleared) so every NEW Add session starts from
-    // the same deterministic default (the first free slot) regardless of
-    // history, while still preserving an in-progress choice against
-    // background changes during the SAME still-open session.
     row._slotSelectTouched = false;
     slotSelect.addEventListener("change", () => {
       row._slotSelectTouched = true;
     });
 
-    // This row (and its inputs) is built once and reused for every open/
-    // close cycle (see the `if (!deviceAddRow)` cache further down) - a
-    // typed name that's never explicitly cleared just sits in the DOM
-    // node and reappears next time the row reopens. Confirmed as a real
-    // bug, 2026-08-15: add "pm1", confirm, reopen for the next slot - the
-    // name field still says "pm1". Both exit paths (successful Add, and
-    // Cancel) reset the form back to blank.
     const resetForm = () => {
       nameInput.value = "";
       errorEl.textContent = "";
-      // See _slotSelectTouched's own comment above - each new Add
-      // session should default to the first free slot, not whatever was
-      // left selected from a previous session (this is the actual path
-      // exercised by the reported bug: Add IO1 -> confirm -> Add IO2 ->
-      // confirm -> delete both -> Add again defaulted to IO2, not IO1).
       row._slotSelectTouched = false;
     };
 
@@ -1981,7 +1185,7 @@
     };
     cancelBtn.addEventListener("click", cancel);
 
-    const confirm = () => {
+    const confirm = async () => {
       errorEl.textContent = "";
       const name = nameInput.value.trim();
       const groupName = slotSelect.value;
@@ -1997,14 +1201,17 @@
       const addEntity = pulseMeterSlotEntity(groupName, "Add");
       if (!nameEntity || !addEntity) return; // not seen yet - shouldn't happen once connected
       confirmBtn.disabled = true;
-      fetch(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`, { method: "POST" })
-        .then(() => fetch(`${addEntity.namePath}/press`, { method: "POST" }))
-        .finally(() => {
-          confirmBtn.disabled = false;
-          deviceAddOpen = false;
-          resetForm();
-          renderDeviceTableBody();
-        });
+      try {
+        await postRequest(`${nameEntity.namePath}/set?value=${encodeURIComponent(name)}`);
+        await postRequest(`${addEntity.namePath}/press`);
+        deviceAddOpen = false;
+        resetForm();
+        renderDeviceTableBody();
+      } catch (error) {
+        showRequestError(error, "Pulse meter add failed");
+      } finally {
+        confirmBtn.disabled = false;
+      }
     };
     confirmBtn.addEventListener("click", confirm);
 
@@ -2034,21 +1241,6 @@
     return m ? `IO ${m[1]}` : groupName;
   }
 
-  // Refreshes the slot dropdown's options to whichever GPIO slots aren't
-  // currently Registered (2026-08-13, direct feedback: offer only
-  // whichever of the two fixed slots remains - not yet a generic "enable
-  // more GPIOs" setup screen, deliberately deferred). Runs on every
-  // render while the Add row is open - but only actually touches the
-  // <select>'s DOM when the underlying free-slot set has changed
-  // (row._slotKey below), not unconditionally. Rebuilding a <select>'s
-  // options while it's open/focused (the previous version did this on
-  // every single call) confirmed a real bug on real hardware, 2026-08-13:
-  // the native dropdown popup got confused about its own content
-  // changing out from under it and wouldn't reliably release focus
-  // afterwards. The free-slot set only ever changes when a meter gets
-  // Registered/Deleted elsewhere - genuinely rare while this row happens
-  // to be open - so skipping the rebuild the rest of the time costs
-  // nothing and fixes the bug outright.
   function refreshDeviceAddRow() {
     const row = deviceAddRow;
     const free = pulseMeterGroups().filter((g) => !isPulseMeterRegistered(g));
@@ -2058,12 +1250,6 @@
       const select = row._slotSelect;
       const prevValue = select.value;
       select.innerHTML = free.map((g) => `<option value="${g}">${pulseSlotOptionLabel(g)}</option>`).join("");
-      // Only preserves the previous selection if the person actually
-      // chose it THIS session (_slotSelectTouched - see
-      // buildDeviceAddRow()'s own comment on that flag for the bug this
-      // fixes) - otherwise always the first free slot, deterministically,
-      // regardless of which slot happened to be freed/claimed last in
-      // whatever unrelated history came before this Add session opened.
       if (row._slotSelectTouched && free.includes(prevValue)) select.value = prevValue;
     }
   }
@@ -2073,23 +1259,6 @@
   // (the actual selection lives in pressureSlotValueLabels()).
   const PRESSURE_METRIC_LABELS = ["Pressure", "Total Consumption", "Flow Rate"];
 
-  // Which sensor entities actually carry this slot's live reading(s) -
-  // a LIST, not a single entity (2026-08-21, direct feedback: "a
-  // felületen nem sokban kell eltérjen" - the UI shouldn't differ much
-  // between the two device types - once the flow meter's own totalizer
-  // existed (Total Consumption, packages/pressure_sensor.yaml), a
-  // Flow-configured slot's Home card should look like a pulse meter's
-  // own (Total Consumption headline + Flow Rate underneath), not the
-  // single-value card a Pressure-configured slot still shows (nothing
-  // else on that side to pair Pressure with). Returns [] (show nothing),
-  // not a "Pressure" guess, while Device Type genuinely isn't known yet
-  // - same fix, same real-hardware-confirmed bug, as groupIcon()'s own
-  // comment above ("egy felparaméterett flow meter... először bar-t
-  // mutat majd a végén vált át flow-ra... a kódban kiemelt szerepet kap
-  // a pressure" - a configured flow meter shows bar first, then
-  // eventually switches to flow - can only happen if Pressure gets a
-  // privileged role in the code. It did, in exactly this function,
-  // exactly like that).
   function pressureSlotValueLabels(groupName) {
     const typeEntity = pressureSlotEntity(groupName, "Device Type");
     if (!typeEntity || typeEntity.value === undefined) return [];
@@ -2108,24 +1277,6 @@
         home.card.remove();
         homeGroups.delete(groupName);
       }
-      // upsertHomeMetric() below caches the value entity's own DOM row on
-      // entity.el and only (re)creates it when that's falsy - removing
-      // the *card* here without also clearing this left a dangling
-      // reference to a now-detached node: a later re-registration found
-      // entity.el already truthy, so it just kept updating that
-      // orphaned, invisible node forever instead of rebuilding and
-      // reattaching a fresh row to the new card. Confirmed the actual
-      // cause of a real symptom - the card's header/icon reappeared
-      // correctly but the value itself never came back, "fixed" only by
-      // a full page reload (which throws away every cached DOM reference
-      // and starts clean) - 2026-08-13. Can be reached even without ever
-      // actually being deleted by the user: e.g. a brief
-      // address-not-yet-settled moment during Add, or anything else that
-      // transiently makes this check true and false again in quick
-      // succession. Clears every possible value entity, not just
-      // whichever Device Type currently says - a slot deleted right
-      // after its type was changed could otherwise leave one of the
-      // OTHER (now-stale) ones' cached DOM reference dangling instead.
       for (const label of PRESSURE_METRIC_LABELS) {
         const e = pressureSlotEntity(groupName, label);
         if (e) e.el = null;
@@ -2133,24 +1284,6 @@
       return;
     }
     const activeLabels = pressureSlotValueLabels(groupName);
-    // Removes every metric row NOT currently selected, if
-    // upsertHomeMetric() ever built one for it (2026-08-21, real bug
-    // confirmed on a real device: a Home card showed BOTH "-- bar /
-    // Pressure" AND the correct "0 m³/h / Flow Rate" stacked together,
-    // after a page refresh). Root cause: Device Type isn't always known
-    // the FIRST time this function runs for a slot (same arrival-order
-    // race this whole file has hit repeatedly elsewhere - the Modbus
-    // Address entity, gating whether this slot even counts as
-    // "registered" at all, can easily arrive before Device Type does) -
-    // pressureSlotValueLabels() used to fall back to "Pressure" for that
-    // brief window (fixed the same round - see its own comment), so
-    // upsertHomeMetric() built a row for the PRESSURE entity first.
-    // Moments later, once Device Type's real "Flow" value lands, this
-    // function reruns, the active labels switch to Total Consumption/
-    // Flow Rate, and upsertHomeMetric() builds rows for those instead -
-    // but nothing ever removed the first, now-stale Pressure row, since
-    // upsertHomeMetric() only ever appends, keyed per-entity, with no
-    // concept of "this entity is mutually exclusive with that one."
     for (const label of PRESSURE_METRIC_LABELS) {
       if (activeLabels.includes(label)) continue;
       const e = pressureSlotEntity(groupName, label);
@@ -2174,23 +1307,6 @@
     }
   }
 
-  // Keeps the Home page's device cards - BOTH types - in the same order
-  // as the unified Devices table's own (orderedRegisteredDevices(),
-  // Sort Order-driven, 2026-08-13). Previously each card's position came
-  // straight from its compile-time slot weight (raw declaration order in
-  // water-collector.yaml), which never reflected the table's own Up/Down
-  // reordering at all - confirmed a real gap, 2026-08-13: reordering on
-  // the Service page had no visible effect on the Dashboard. Rewrites
-  // each currently-existing device card's own cached weight to its rank
-  // in that same order, offset by the block's own base weight (Pulse
-  // Meter 1's original compile-time weight - the lowest of the two types'
-  // - so the whole merged block still sits wherever that used to sit
-  // relative to Network/System, only the order *within* the block
-  // changes, now spanning both device types together, per direct
-  // feedback, 2026-08-13, that Sort Order should keep driving the
-  // Dashboard for pulse meters too). Called once per renderDeviceTableBody()
-  // rather than from each type's own sync function separately, so either
-  // type changing reorders both consistently from one place.
   function resyncDeviceHomeCardOrder() {
     const baseWeight = groupWeights.get(PULSE_METER_ANCHOR_GROUP) ?? groupWeights.get("Pulse Meter 1") ?? 10;
     let changed = false;
@@ -2228,32 +1344,6 @@
     syncPressureHomeCard(entity.groupName);
   }
 
-  // --- Pulse meter table (Service page) ---------------------------------
-  //
-  // Same Add/Delete/edit-lock commissioning pattern as the Modbus pressure
-  // sensors above (REQUIREMENTS.md's "Pulse meter" architectural note,
-  // 2026-08-13) - unified so "nothing shows until commissioned" is one
-  // rule, not two slightly-different ones depending on which kind of
-  // device it is. Deliberately much simpler than the pressure table
-  // though: there is no bus, so no scan/discovery/collision concept
-  // applies at all - each meter's identity (which GPIO it reads) is fixed
-  // at compile time (water_meter.yaml), so a "New device" row always
-  // exists for whichever meter isn't yet Registered, no Scan Bus press
-  // needed to find it. Reuses the pressure table's own CSS classes
-  // (dc-pressure-icon-btn/dc-pressure-row-editing/etc. - and the
-  // dc-pressure-table base class itself, for the shared border/input/
-  // disabled/hover-suppression rules) rather than duplicating them under
-  // a parallel name - purely visual/behavioral, nothing pressure-specific
-  // about them despite the name.
-  //
-  // Once Registered, a meter's other fields (Total Consumption/Flow Rate
-  // on the Home page, Reading+Update/Zero-Flow Timeout on the Service
-  // page, Total Pulses on Diagnostics) render through the *same* generic
-  // upsertHomeMetric()/upsertServiceNumber()/upsertServiceButton()/
-  // upsertDiagRow() this file already uses everywhere else - only
-  // Registered/Delete/Display Name are intercepted here, everything else
-  // just needs a single gate (isPulseMeterRegistered()) before falling
-  // through to those unchanged.
 
   const PULSE_METER_RE = /^Pulse Meter \d+$/;
 
@@ -2283,49 +1373,6 @@
     return !!(e && e.value === true);
   }
 
-  // A registered meter's row, rendered into the SAME shared devices table
-  // as the pressure rows (deviceTableRows/deviceEditingRow, declared
-  // above upsertRegisteredPressureRow()) - Name is read-only until the
-  // pencil button is pressed, then editable with an explicit Save/Cancel
-  // (and Enter/Escape - see the pressure row's own comment for why), same
-  // lock and for the same reason (an accidental blur used to write
-  // immediately). No Add row of its own anymore (2026-08-13, "Devices"
-  // table unification) - a not-yet-registered meter simply has no row at
-  // all now, added instead through the shared Add row's own Pulse Meter
-  // sub-form (buildDeviceAddRow() above), which is what the old
-  // upsertNewPulseMeterRow() used to be.
-  //
-  // Status, revised 2026-08-15 (direct feedback: a pulse meter's badge
-  // was always the single word "Ready" regardless of anything actually
-  // happening - "csak ready (nem látom értelmét)", didn't see the point).
-  // Deliberately still NOT the pressure slot's OK/Lost/Collision/Checking
-  // set - a local GPIO pulse counter genuinely has no "unreachable"
-  // failure mode to report (same reasoning as before, 2026-08-13) - but
-  // now reflects actual flow instead of a constant word, using exactly
-  // the signal the user's own suggestion pointed at ("mutatjuk hogy
-  // aktív mert volt pulse, de amikor lenullázzuk a flow-t akkor
-  // valamiféle várakozást mutatunk"): "Flowing" (status-good green)
-  // while Pulse Rate is nonzero, "Idle" (neutral gray, the same tone as
-  // Modbus's own "Checking…"/"New" - not the alarm-colored Lost, since
-  // no flow is completely normal, not a fault) once the water_meter.yaml
-  // zero-flow watchdog has zeroed it back out - see
-  // updatePulseMeterStatus() below, driven off the "Pulse Rate" entity's
-  // own value on every update. flashPulseMeterActivity() below still
-  // layers its brief per-pulse ring on top of whichever of the two this
-  // is showing - the two mechanisms answer different questions ("is flow
-  // currently happening" vs. "did a pulse just land right now") and
-  // read fine together.
-  //
-  // Reading/Update/Zero-Flow Timeout live in a second, detail <tr> that
-  // only exists in the DOM while this row is being edited - opened by
-  // the same pencil that unlocks Name, closed by the same Save/Cancel.
-  // Direct feedback, 2026-08-13: these fields used to sit permanently in
-  // their own always-visible Service section below the table (6 lines
-  // for 2 real fields), and it wasn't obvious which fields belonged to
-  // which meter; this both compacts the layout (2 lines total, label +
-  // inline input(+button) each) and makes the grouping unambiguous (the
-  // fields are physically inside the row they belong to, only visible
-  // while that row is open).
   function upsertRegisteredPulseMeterRow(tbody, groupName, isFirst, isLast) {
     const key = "reg:" + groupName;
     const nameEntity = pulseMeterSlotEntity(groupName, "Display Name");
@@ -2354,10 +1401,6 @@
       nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
 
-      // Starts "Idle"/pending - the honest default before this meter's
-      // own "Pulse Rate" update has arrived at all (every entity's state
-      // is sent on connect, so in practice this is corrected within the
-      // first SSE batch either way - see updatePulseMeterStatus() below).
       const status = el("span", "dc-pressure-badge dc-pressure-badge-pending", "Idle");
       row.querySelector(".dc-pressure-status").appendChild(status);
       row._statusEl = status;
@@ -2464,38 +1507,6 @@
         row._editing = false;
         if (expandedRow.isConnected) expandedRow.remove();
         if (deviceEditingRow === row) deviceEditingRow = null;
-        // Discard any typed-but-never-committed Reading/Zero-Flow
-        // Timeout edit (2026-08-20, direct feedback: type a value into
-        // Reading, close the row via Cancel or the checkmark WITHOUT
-        // ever blurring the field first - so its own "change" listener,
-        // upsertPulseMeterExpandedField() below, never actually fired -
-        // and the typed text just sat in the input forever after:
-        // nothing else ever resets it, since no new SSE event for this
-        // entity arrives unless something was genuinely sent to the
-        // device. Re-opening the row later showed that leftover typed
-        // text as if it had been saved, when it never was - confirmed a
-        // real regression, this used to reset correctly. Unlike Name/
-        // Modbus Address (committed together, only by Save/checkmark,
-        // see cancelEdit() below and the pressure row's own equivalent),
-        // Reading and Zero-Flow Timeout each commit independently on
-        // their OWN blur - so leaving edit mode by ANY path, not just
-        // Cancel, needs to revert whichever of the two, if either, is
-        // still sitting uncommitted.
-        //
-        // Reading reverts to Total Consumption specifically (2026-08-21,
-        // NOT the "Reading" scratch entity's own value - see
-        // upsertPulseMeterExpandedField()'s own comment on that same
-        // entity for the full reasoning: the scratch field only ever
-        // holds whatever was last typed, forever, with nothing to ever
-        // refresh it from real consumption data, so reverting to IT
-        // would just re-show the same stale typed-and-forgotten number
-        // this whole fix exists to stop happening). Zero-Flow Timeout
-        // has no such live counterpart - it genuinely IS its own
-        // persisted setting - so it still reverts to its own entity's
-        // value, read fresh here rather than a snapshot cached back at
-        // enterEdit() - a value that WAS successfully committed mid-edit
-        // (its own blur already fired) is now the real server value and
-        // must not be reverted past it.
         const totalConsumptionEntity = pulseMeterSlotEntity(groupName, "Total Consumption");
         row._readingInput.value = totalConsumptionEntity ? totalConsumptionEntity.value ?? "" : "";
         const zftEntity = pulseMeterSlotEntity(groupName, "Zero-Flow Timeout");
@@ -2518,7 +1529,7 @@
         }
       };
       nameInput.addEventListener("keydown", handleEditKeydown);
-      saveBtn.addEventListener("click", () => {
+      saveBtn.addEventListener("click", async () => {
         if (!nameInput.value.trim()) {
           alert("Name can't be empty.");
           return; // stay in edit mode so it can be fixed
@@ -2527,11 +1538,15 @@
         if (!ne) return;
         saveBtn.disabled = true;
         cancelBtn.disabled = true;
-        fetch(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`, { method: "POST" }).finally(() => {
+        try {
+          await postRequest(`${ne.namePath}/set?value=${encodeURIComponent(nameInput.value)}`);
+          exitEdit();
+        } catch (error) {
+          showRequestError(error, "Pulse meter update failed");
+        } finally {
           saveBtn.disabled = false;
           cancelBtn.disabled = false;
-          exitEdit();
-        });
+        }
       });
     }
     // Same reasoning as the pressure table's own Delete wiring - this
@@ -2548,25 +1563,6 @@
     row._downBtn.disabled = !!isLast;
   }
 
-  // Creates/removes this meter's Home card and Diagnostics section
-  // (Total Pulses) as a whole, purely from its own Registered state -
-  // the unified counterpart of syncPressureHomeCard(). Reading/Update/
-  // Zero-Flow Timeout no longer have a separate Service-page section to
-  // remove here at all (2026-08-13) - they live inline in the table
-  // row's own expanded detail area instead (upsertRegisteredPulseMeterRow()'s
-  // own comment), which is torn down and rebuilt fresh as part of the
-  // row itself whenever the row goes away, with nothing left here to do
-  // for them specifically.
-  //
-  // Still clears every cached DOM reference this file keeps on an entity
-  // object (.el/.inputEl/.readoutEl/.toggleEl/.btnEl) when un-
-  // registering, for whatever *does* still reach the generic dispatch
-  // (Total Consumption/Flow Rate/Total Pulses) - without this, re-
-  // Registering the same meter later would silently keep updating
-  // detached, invisible nodes from before instead of rebuilding fresh
-  // ones: the exact bug already found and fixed once for the pressure
-  // sensors' own Home card (entity.el going stale across a remove-then-
-  // recreate cycle).
   function syncPulseMeterVisibility(groupName) {
     if (isPulseMeterRegistered(groupName)) return; // still registered - individual entities (re)build lazily via the generic dispatch in renderPulseMeterEntity()
     const home = homeGroups.get(groupName);
@@ -2611,29 +1607,6 @@
       if (entity.min !== undefined) input.min = entity.min;
       if (entity.max !== undefined) input.max = entity.max;
       if (entity.step !== undefined) input.step = entity.step;
-      // Displays/reverts to Total Consumption - the meter's own actual
-      // live reading - NOT this "Reading" entity's own stored value
-      // (2026-08-21, direct feedback: "a reading továbbra is azt jegyzi
-      // meg amit beírtam... még akkor sem amikor volt impulzus és van
-      // fogyasztás adat. A beírt értékkel csak update-elni szabad, sehol
-      // nem szabad megjegyeznie" - Reading keeps remembering whatever
-      // was typed in, even once real consumption data exists; a typed
-      // value must ONLY ever be used to Update, never remembered
-      // anywhere). Root cause: this "Reading" number entity
-      // (${id_prefix}_sync_target in packages/water_meter.yaml) is a
-      // pure write-only staging field by design ("input only, does
-      // nothing by itself" per its own comment there) - its OWN value
-      // literally IS whatever was last typed and committed via blur,
-      // forever, until typed into again; nothing ever republishes fresh
-      // consumption data into it. Reading it back for the input's own
-      // display (the previous code) meant the field could only ever
-      // show a stale, one-time-typed number, never the actual meter
-      // state - exactly the reported bug. The live Total Consumption
-      // sensor is what actually tracks real accumulated usage; showing
-      // THAT here (except while a typed-but-uncommitted edit is still
-      // focused) is what makes this field read as "the current reading,
-      // which you can type over to correct" rather than "a scratchpad
-      // that remembers whatever you last typed forever."
       const liveEntity = () => pulseMeterSlotEntity(entity.groupName, "Total Consumption");
       if (!row._readingWired) {
         input.addEventListener("change", () => {
@@ -2645,12 +1618,6 @@
             input.value = live ? live.value ?? "" : "";
             return;
           }
-          // Still POSTs to the scratch entity's own namePath, not
-          // Total Consumption's - Update's own press handler
-          // (packages/water_meter.yaml) is what actually reads this
-          // staged value and applies it; nothing changes about that
-          // mechanism, only what the input DISPLAYS when not focused.
-          fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
         });
         // Enter = Update (with its own confirm dialog, same as a mouse
         // click there - see that button's own handler just below), NOT
@@ -2680,11 +1647,31 @@
       }
     } else if (label === "Update") {
       if (!row._updateWired) {
-        row._updateBtn.addEventListener("click", () => {
-          const value = row._readingInput.value;
-          const uom = entity.uom ? ` ${entity.uom}` : "";
+        row._updateBtn.addEventListener("click", async () => {
+          const readingEntity = pulseMeterSlotEntity(entity.groupName, "Reading");
+          if (!readingEntity) return;
+          const value = parseFloat(row._readingInput.value);
+          const invalid =
+            Number.isNaN(value) ||
+            (readingEntity.min !== undefined && value < readingEntity.min) ||
+            (readingEntity.max !== undefined && value > readingEntity.max);
+          if (invalid) {
+            alert("Reading must be a valid value within the allowed range.");
+            return;
+          }
+          const uom = readingEntity.uom ? ` ${readingEntity.uom}` : "";
           if (!confirm(`Set ${entity.groupName} Reading to ${value}${uom}? This overwrites the accumulated total and cannot be undone.`)) return;
-          fetch(`${entity.namePath}/press`, { method: "POST" });
+          row._updateBtn.disabled = true;
+          try {
+            // The button reads the device-side Reading entity. Await the
+            // value write so it can never apply an older staged value.
+            await postRequest(`${readingEntity.namePath}/set?value=${encodeURIComponent(value)}`);
+            await postRequest(`${entity.namePath}/press`);
+          } catch (error) {
+            showRequestError(error, "Reading update failed");
+          } finally {
+            row._updateBtn.disabled = false;
+          }
         });
         row._updateWired = true;
       }
@@ -2702,18 +1689,10 @@
             input.value = entity.value ?? "";
             return;
           }
-          fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+          postRequest(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`).catch((error) =>
+            showRequestError(error, "Zero-flow timeout update failed")
+          );
         });
-        // Enter/Esc (2026-08-21, direct feedback: "zero flow timeout
-        // mezőben nem működik az enter / esc" - neither worked here,
-        // confirmed a real gap: every other editable field in this
-        // table's edit rows had this wired already, this one was simply
-        // missed). Enter commits (blurring first, so the "change"
-        // listener just above actually fires - unlike Reading, this
-        // field has no separate Update-style confirm gate, it's a
-        // plain, directly-adjustable setting, so Enter committing it
-        // outright is consistent with how it already behaves on blur).
-        // Escape is the same whole-row Cancel every other field uses.
         input.addEventListener("keydown", (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -2745,40 +1724,25 @@
   // pulse so a burst of fast pulses keeps the ring lit continuously
   // instead of flickering off between them.
   const pulseFlashTimers = new Map();
-  // Last "Total Pulses" value actually seen per meter, checked by
-  // flashPulseMeterActivity()'s own caller below - see that call site's
-  // comment for why this is needed, direct feedback, 2026-08-16.
   const lastSeenTotalPulses = new Map();
 
-  // The "pulse just landed" ring on top of the steady status badge (see
-  // upsertRegisteredPulseMeterRow()'s own comment - direct feedback,
-  // 2026-08-13: distinguish "configured" from "a pulse is actually
-  // arriving right now"). Driven off "Total Pulses" - the diagnostic,
-  // always-sent readout of the persisted pulse_count (water_meter.yaml)
-  // - which only ever INCREMENTS on a genuine accumulated pulse, not on a
-  // timer. One caveat, accepted for now (see REQUIREMENTS.md): the very
-  // first "Total Pulses" update right after Add/boot (seeding from the
-  // persisted checkpoint, not a fresh pulse) also flashes once - harmless,
-  // and self-corrects on the next real one.
   function flashPulseMeterActivity(groupName) {
     const row = deviceTableRows.get("reg:" + groupName);
-    if (!row || !row._statusEl) return;
-    const badge = row._statusEl;
-    // Force-restart the CSS animation even if a pulse arrives while the
-    // previous one is still mid-flash (real flow can easily be faster
-    // than the ~0.6s animation) - re-adding a class that's already
-    // present is a no-op in the DOM, so classList.add() alone wouldn't
-    // retrigger anything. Removing the class, forcing a synchronous
-    // layout read (the classic reflow trick - the read itself is what
-    // matters, the discarded value is not used for anything else), then
-    // re-adding it is what actually restarts a CSS animation on demand.
-    badge.classList.remove("dc-pulse-flash");
-    void badge.offsetWidth;
-    badge.classList.add("dc-pulse-flash");
+    const home = homeGroups.get(groupName);
+    const badges = [row && row._statusEl, home && home.statusEl].filter(Boolean);
+    if (!badges.length) return;
+
+    // Removing the class and forcing layout restarts the animation when
+    // pulses arrive faster than its 600 ms duration.
+    for (const badge of badges) badge.classList.remove("dc-pulse-flash");
+    void badges[0].offsetWidth;
+    for (const badge of badges) badge.classList.add("dc-pulse-flash");
     clearTimeout(pulseFlashTimers.get(groupName));
     pulseFlashTimers.set(
       groupName,
-      setTimeout(() => badge.classList.remove("dc-pulse-flash"), 600)
+      setTimeout(() => {
+        for (const badge of badges) badge.classList.remove("dc-pulse-flash");
+      }, 600)
     );
   }
 
@@ -2799,40 +1763,14 @@
     row._statusEl.textContent = text;
     row._statusEl.classList.toggle("dc-pressure-badge-ok", flowing);
     row._statusEl.classList.toggle("dc-pressure-badge-pending", !flowing);
-    // Home card corner badge (2026-08-21, new feature - see
-    // ensureHomeGroup()'s own comment on statusEl) - same text/color
-    // this row's own badge just above got.
     updateHomeCardStatus(groupName, text, flowing ? "dc-pressure-badge-ok" : "dc-pressure-badge-pending");
   }
 
-  // Pulse Rate/Total Pulses/Sort Order never get a System-page row -
-  // direct feedback, 2026-08-15: raw/uncalibrated diagnostic clutter, one
-  // per registered meter, with no counterpart for pressure sensors (which
-  // never reach the System page at all - see renderPressureEntity() above)
-  // to make the asymmetry worse. Each one's actual information already
-  // shows up somewhere better: Pulse Rate/Total Pulses are the raw,
-  // uncalibrated versions of Flow Rate/Total Consumption (Home/Devices
-  // page); Sort Order's only real effect (row position) is already
-  // visible in the Devices table itself, the raw counter behind it isn't
-  // meaningful on its own. Still perfectly normal, disabled_by_default
-  // entities for Home Assistant - this is purely a dashboard-local
-  // suppression, same pattern as HIDDEN_FROM_DIAG-style filters
-  // elsewhere in this file (e.g. isHiddenFromUi()).
   const HIDDEN_FROM_PULSE_DIAG = new Set(["Pulse Rate", "Total Pulses", "Sort Order"]);
 
   function renderPulseMeterCalibrationEntity(entity) {
     if (!isPulseMeterRegistered(entity.groupName)) return;
     const label = displayName(entity);
-    // Bug, direct feedback, 2026-08-16: the status badge flashed even on
-    // an Up/Down reorder (a "Sort Order" change), and sometimes on its
-    // own at unpredictable moments - both traced to the SAME cause:
-    // renderPulseMeterEntity() below re-runs every entity in this group
-    // through this function on ANY of them changing (Sort Order, a
-    // reorder; Pulse Rate, the zero-flow watchdog zeroing it out; etc),
-    // not just when "Total Pulses" itself has a fresh value - so this
-    // used to fire the flash on every one of those re-visits too, even
-    // though Total Pulses hadn't actually moved. Fixed by only flashing
-    // when the value genuinely differs from the last one actually seen.
     if (label === "Total Pulses" && lastSeenTotalPulses.get(entity.groupName) !== entity.value) {
       lastSeenTotalPulses.set(entity.groupName, entity.value);
       flashPulseMeterActivity(entity.groupName);
@@ -2852,37 +1790,13 @@
     const groupName = entity.groupName;
     const label = displayName(entity);
     if (label === "Display Name") {
-      // Mirrors what upsertServiceText() does for every other renamed
-      // group (water meters used to reach it directly for this same
-      // entity, before Display Name was intercepted here) - this
-      // group's Home card header has no other way to learn a renamed
-      // Display Name, since it never reaches that generic path anymore.
       groupDisplayNames.set(groupName, (entity.value || "").trim());
       applyGroupLabel(groupName);
     }
-    // Sort Order added to this gate 2026-08-13 ("Devices" table
-    // unification) - a Up/Down press (moveDeviceRow()) needs to actually
-    // trigger a re-render for the visual reorder to show up at all.
     if (label === "Registered" || label === "Delete" || label === "Display Name" || label === "Sort Order") {
       renderDeviceTableBody();
       syncPulseMeterVisibility(groupName);
     }
-    // Unconditionally re-run *every* known entity in this group through
-    // the calibration dispatch on *every* update, not just when
-    // Registered/Delete/Display Name themselves change - mirrors
-    // syncPressureHomeCard()'s own always-resync approach exactly, for
-    // the same reason: ESPHome dumps entities in a fixed cross-domain
-    // order, not registration order, so "Registered" (switch domain)
-    // isn't guaranteed to arrive before e.g. "Total Consumption" (sensor
-    // domain) - an entity whose own update arrived first used to be
-    // silently skipped by the gate in renderPulseMeterCalibrationEntity()
-    // and never revisited, confirmed on real hardware, 2026-08-13: newly
-    // -added meters' Reading/Zero-Flow Timeout fields sometimes only
-    // appeared after a full page reload. Redundant on most calls (the
-    // underlying upsert*() functions are all cheap no-ops when nothing
-    // actually changed) but removes any dependency on exact arrival
-    // order entirely, rather than only patching the specific ordering
-    // that happened to be observed.
     if (isPulseMeterRegistered(groupName)) {
       for (const e of entities.values()) {
         if (e.groupName === groupName) renderPulseMeterCalibrationEntity(e);
@@ -2929,16 +1843,6 @@
         row.appendChild(readout);
       }
       input.addEventListener("change", () => {
-        // Nothing stopped an empty box, or a single pasted garbage
-        // character, from reaching /set before this - the ESP-side
-        // number component does reject unparseable/out-of-range values
-        // (safely, logged as "No operation" / a min/max warning, not
-        // itself a crash as far as could be confirmed), but firing a
-        // request that can never do anything useful is still worth not
-        // doing, and it muddies any future crash investigation to have
-        // it in the log right before something else goes wrong. Revert
-        // and skip the request entirely for anything that isn't an
-        // actual in-range number.
         const parsed = parseFloat(input.value);
         const outOfRange =
           Number.isNaN(parsed) ||
@@ -2958,7 +1862,9 @@
             return;
           }
         }
-        fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        postRequest(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`).catch((error) =>
+          showRequestError(error, `${displayName(entity)} update failed`)
+        );
       });
       if (input.type === "range") {
         input.addEventListener("input", () => {
@@ -3008,7 +1914,9 @@
       input.type = "text";
       row.appendChild(input);
       input.addEventListener("change", () => {
-        fetch(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`, { method: "POST" });
+        postRequest(`${entity.namePath}/set?value=${encodeURIComponent(input.value)}`).catch((error) =>
+          showRequestError(error, `${displayName(entity)} update failed`)
+        );
       });
       entity.inputEl = input;
       group.fields.appendChild(entity.el);
@@ -3025,12 +1933,6 @@
     reorderServiceFields(group);
   }
 
-  // Generic switch field - a pill toggle. Water meters' own "Registered"
-  // switch (which used to reach this, as "Show on Dashboard", CR #9) is
-  // intercepted before it ever gets here now - see
-  // renderPulseMeterEntity()'s own comment for why - so in practice
-  // nothing currently reaches this path, but it's kept as the generic
-  // fallback for any future plain switch-domain field.
   function upsertServiceSwitch(entity, ensureGroupFn = ensureServiceGroup) {
     const group = ensureGroupFn(entity.groupName ?? FALLBACK_GROUP);
     if (!entity.el) {
@@ -3043,7 +1945,7 @@
       toggle.type = "button";
       toggle.setAttribute("role", "switch");
       toggle.addEventListener("click", () => {
-        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+        postRequest(`${entity.namePath}/toggle`).catch((error) => showRequestError(error, `${displayName(entity)} update failed`));
       });
       entity.el.querySelector(".dc-field-row").appendChild(toggle);
       entity.toggleEl = toggle;
@@ -3084,14 +1986,18 @@
     }
   }
 
-  function pressButton(entity) {
+  async function pressButton(entity) {
     const label = displayName(entity);
     if (CONFIRM_ON_PRESS.has(label) && !confirm(confirmMessageForPress(entity, label))) return;
     const btn = entity.btnEl;
     btn.classList.add("dc-pressed");
-    fetch(`${entity.namePath}/press`, { method: "POST" }).finally(() => {
+    try {
+      await postRequest(`${entity.namePath}/press`);
+    } catch (error) {
+      showRequestError(error, `${label} failed`);
+    } finally {
       setTimeout(() => btn.classList.remove("dc-pressed"), 400);
-    });
+    }
   }
 
   // Update's confirmation names the actual value about to be applied
@@ -3109,14 +2015,6 @@
       return `Set ${entity.groupName} Reading to ${value}${unit}? This overwrites the accumulated total and cannot be undone.`;
     }
     if (label === "Delete" && isPressureGroup(entity.groupName)) {
-      // entity.groupName here is a pressure slot's internal, deliberately
-      // meaningless compile-time id (e.g. "Pressure Sensor 3" - which
-      // physical slot a sensor happens to occupy is never supposed to be
-      // shown anywhere, see pressure_sensor.yaml's own file header) - the
-      // confirm dialog showing it directly was a real leak of that
-      // internal detail, confirmed confusing on real hardware,
-      // 2026-08-13. Show the sensor's own Display Name instead (falling
-      // back to its Modbus Address if the name was left blank).
       const nameEntity = pressureSlotEntity(entity.groupName, "Display Name");
       const addrEntity = pressureSlotEntity(entity.groupName, "Modbus Address");
       const shownName =
@@ -3199,7 +2097,7 @@
       toggle.type = "button";
       toggle.setAttribute("role", "switch");
       toggle.addEventListener("click", () => {
-        fetch(`${entity.namePath}/toggle`, { method: "POST" });
+        postRequest(`${entity.namePath}/toggle`).catch((error) => showRequestError(error, "Modbus debug toggle failed"));
       });
       wrap.appendChild(toggle);
       toolbar.insertBefore(wrap, document.getElementById("dc-log-clear"));
@@ -3211,6 +2109,17 @@
   }
 
   // --- Shared helpers ------------------------------------------------
+
+  async function postRequest(path) {
+    const response = await fetch(path, { method: "POST" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`);
+    return response;
+  }
+
+  function showRequestError(error, context = "Request failed") {
+    console.error(context, error);
+    alert(`${context}. ${error && error.message ? error.message : "Check the device connection and try again."}`);
+  }
 
   // Entity names repeat their sorting_group's name as a prefix (e.g.
   // "Main Meter Reading" in the "Main Meter" group) so the raw HA/API
@@ -3302,16 +2211,6 @@
       mountLogDebugToggle(entity);
       return;
     }
-    // "Reboot Device"/"Forget Wi-Fi" - device-level action buttons, moved
-    // from the Devices page to the "System" (Diagnostics) page, 2026-08-
-    // 15: neither is about any one row in the Devices table, and once the
-    // Devices page stopped having anything else on it, keeping them there
-    // just because entity_category: config says "not read-only" no longer
-    // made sense. Left as entity_category: config in water-collector.yaml
-    // (still correct for Home Assistant's own categorization - these
-    // really are actions, not diagnostic data) - this is purely a
-    // dashboard-local placement override, same pattern as the Debug Log
-    // switch just above.
     if (entity.domain === "button" && (entity.name === "Reboot Device" || entity.name === "Forget Wi-Fi")) {
       upsertDiagButton(entity);
       return;
@@ -3327,13 +2226,6 @@
     }
   }
 
-  // `name_id` looks like "sensor/Wi-Fi Signal" - {domain}/{literal entity
-  // name}. This is the only URL form still supported for REST calls: the
-  // older /{domain}/{object_id} form (e.g. /sensor/wi-fi_signal) was
-  // removed as of ESPHome 2026.7.0 (confirmed against a real device on
-  // 2026.7.3 - those URLs now 404). Each segment needs its own
-  // encodeURIComponent since the name can contain spaces/slashes-worth of
-  // punctuation.
   function pathFromNameId(nameId) {
     return "/" + nameId.split("/").map(encodeURIComponent).join("/");
   }
@@ -3389,12 +2281,6 @@
     return raw;
   }
 
-  // Updates a sorting_group's own weight (used to order Home cards /
-  // Diagnostics sections / Service sections against each other) wherever
-  // that group already has a container built - a group's "sorting_group"
-  // SSE event can in principle arrive after some of its entities' first
-  // "state" events, so this re-checks/reorders on every call rather than
-  // assuming a one-time setup order.
   function setGroupWeight(name, weight) {
     groupWeights.set(name, weight);
     for (const [registry, reorder] of [
@@ -3526,7 +2412,9 @@
       if (value === entity.value) continue; // already in sync, nothing to push
       entity.inputEl.value = value;
       entity.value = value;
-      fetch(`${entity.namePath}/set?value=${encodeURIComponent(value)}`, { method: "POST" });
+      postRequest(`${entity.namePath}/set?value=${encodeURIComponent(value)}`).catch((error) =>
+        console.error("Reading prefill failed", error)
+      );
     }
   }
 
@@ -3614,27 +2502,6 @@
     document.title = "Water Data Collector";
   }
 
-  // On an abrupt device reboot (crash, power cycle, Reboot Device button -
-  // any path that isn't a clean TCP close) the browser's existing socket gets
-  // no FIN/RST at all, just silence - nothing tells the EventSource
-  // anything is wrong, so it never fires onerror and never auto-
-  // reconnects, and #dc-status is left stuck showing "Connected" forever.
-  // Confirmed reported behavior: reconnecting only ever happened after a
-  // manual full page reload.
-  //
-  // The fix is a client-side activity watchdog, since the browser's own
-  // error detection can't be relied on here: the server sends a "ping"
-  // event every 10s to every connected client regardless of any other
-  // traffic (confirmed from source, web_server.cpp's set_interval(10000,
-  // ...) call) purely so a client can tell a live-but-quiet connection
-  // apart from a dead one. lastActivityMs is touched on *any* inbound SSE
-  // event (not just ping - state/log/sorting_group all count too, so a
-  // burst of real activity doesn't need a ping in between to stay counted
-  // as alive); if nothing arrives for ACTIVITY_TIMEOUT_MS (well over 2x
-  // the ping interval, generous for normal network jitter), the
-  // connection is declared dead unilaterally: close it and open a fresh
-  // one, rather than waiting on onerror or the server's own `retry: 30000`
-  // hint (too slow for something that might not fire at all).
   const ACTIVITY_TIMEOUT_MS = 25000;
   const WATCHDOG_INTERVAL_MS = 5000;
   const RECONNECT_DELAY_MS = 2000;
