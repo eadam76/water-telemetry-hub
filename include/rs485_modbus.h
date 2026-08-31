@@ -234,7 +234,7 @@ struct ScanResult {
 };
 
 inline ScanResult scan_bus(UARTComponent *bus, uint8_t min_address, uint8_t max_address,
-                            uint32_t per_address_timeout_ms = 25) {
+                            uint32_t per_address_timeout_ms = 50) {
   ESP_LOGD(TAG, "scan_bus: sweeping addresses %d-%d (~%.1fs total)...", min_address, max_address,
            (max_address - min_address + 1) * per_address_timeout_ms / 1000.0f);
   ScanResult result;
