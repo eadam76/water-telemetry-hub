@@ -116,3 +116,7 @@ esphome config water-telemetry-hub.yaml   # validate the full firmware config
 ```
 
 See `project-docs/REQUIREMENTS.md` for the full functional/non-functional requirements, and `project-docs/docs/hardware/` for wiring and Modbus register references.
+
+## License
+
+[MIT](LICENSE)
