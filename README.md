@@ -6,6 +6,8 @@ ESPHome firmware + a built-in web dashboard for monitoring a water supply: pulse
 
 ![status](https://img.shields.io/badge/status-active-brightgreen)
 
+<img src="project-docs/docs/screenshots/dashboard.png" width="380" alt="Dashboard page showing pulse meter and Modbus sensor cards">
+
 ## Features
 
 - **2 pulse water meter inputs** — live flow rate (L/min) and total consumption (m³), manual calibration sync.
@@ -48,6 +50,8 @@ Any pulse-output water meter or QDW90A/T3-1-2-H-compatible Modbus device works t
 
 Wire every Modbus device's `A`/`B` (or equivalent) pair onto this same bus (directly, or via an RS485 hub for a star layout), plus its own power per its datasheet. Pin assignments live in `water-telemetry-hub.yaml`'s `substitutions:` block if you're using a different board.
 
+<img src="project-docs/docs/hardware/wiring-diagram.svg" width="720" alt="Wiring diagram: ESP32 to pulse meters and RS485 bus devices">
+
 ## Install
 
 1. Install [ESPHome](https://esphome.io/) (`pip install esphome`, or use the ESPHome add-on in Home Assistant).
@@ -64,6 +68,8 @@ Wire every Modbus device's `A`/`B` (or equivalent) pair onto this same bus (dire
 - **Pulse meters**: on the Devices page, press **Add Pulse Meter**, pick which GPIO input it's wired to, give it a name, and press Add.
 - **Modbus sensors**: press **Find Modbus Devices** to sweep the RS485 bus for connected devices. Found devices show up with their detected type (Pressure/Flow) pre-filled — name them and press Add. Address conflicts and wiring issues are flagged directly in the table (Collision / Mismatch / Lost), no external Modbus tooling required.
 - Everything — display names, addresses, calibration — is editable later from the same table.
+
+<img src="project-docs/docs/screenshots/devices.png" width="380" alt="Devices page with a row expanded, showing address, reading and status">
 
 ## Home Assistant
 
