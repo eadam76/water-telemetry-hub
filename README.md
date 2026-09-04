@@ -50,7 +50,40 @@ Any pulse-output water meter or QDW90A/T3-1-2-H-compatible Modbus device works t
 
 Wire every Modbus device's `A`/`B` (or equivalent) pair onto this same bus (directly, or via an RS485 hub for a star layout), plus its own power per its datasheet. Pin assignments live in `water-telemetry-hub.yaml`'s `substitutions:` block if you're using a different board.
 
-<img src="project-docs/docs/hardware/wiring-diagram.svg" width="720" alt="Wiring diagram: ESP32 to pulse meters and RS485 bus devices">
+```mermaid
+flowchart LR
+    ESP["ESP32-S3-RS485-CAN<br/>Waveshare · main controller"]
+
+    subgraph pulseGroup["Pulse meters"]
+        PM1["IZAR PULSE i<br/>Pulse Meter 1"]
+        PM2["IZAR PULSE i<br/>Pulse Meter 2"]
+    end
+
+    subgraph busGroup["RS485 bus · 9600 8N1 (daisy-chain)"]
+        PRESS["QDW90A<br/>Pressure Sensor · addr 5"]
+        FLOW["T3-1-2-H<br/>Flow Meter · addr 3"]
+        MORE(("+ up to 2 more<br/>Modbus devices"))
+    end
+
+    PWR1["24V DC"]
+    PWR2["8–36V DC"]
+
+    ESP -- "GPIO1 (pulse) + GND" --> PM1
+    ESP -- "GPIO2 (pulse) + GND" --> PM2
+    ESP == "A / B" ==> PRESS
+    PRESS === FLOW
+    FLOW -.-> MORE
+    PWR1 -.-> PRESS
+    PWR2 -.-> FLOW
+
+    linkStyle 0 stroke:#e8a33d,color:#e8a33d
+    linkStyle 1 stroke:#e8a33d,color:#e8a33d
+    linkStyle 2 stroke:#4d94e8,color:#4d94e8
+    linkStyle 3 stroke:#4d94e8,color:#4d94e8
+    linkStyle 4 stroke:#94a3b8,color:#94a3b8
+    linkStyle 5 stroke:#d64550,color:#d64550
+    linkStyle 6 stroke:#d64550,color:#d64550
+```
 
 ## Install
 
