@@ -579,8 +579,8 @@ inline bool read_holding_registers(UARTComponent *bus, uint8_t address, uint16_t
 // plus the H:15/H:16 command registers are actually writable on the
 // QDW90A; everything else replies with an exception (surfaced here
 // simply as `false`, same as any other failure - see
-// docs/hardver/qdw90a-modbus-referencia.md's register table for which is
-// which).
+// project-docs/docs/hardware/qdw90a-modbus-reference.md's register table
+// for which is which).
 inline bool write_single_register(UARTComponent *bus, uint8_t address, uint16_t reg, uint16_t value,
                                    uint32_t timeout_ms = 200) {
   const uint8_t pdu[6] = {address,
@@ -651,7 +651,7 @@ static constexpr float FLOW_SELFTEST_VALUE = 361.0f;
 // count - four fixed configuration registers in one block, of which two
 // are checkable against something known (the address we just asked, and
 // the bar unit code 3 this project's sensors are fixed at). See
-// docs/hardver/qdw90a-modbus-referencia.md.
+// project-docs/docs/hardware/qdw90a-modbus-reference.md.
 static constexpr uint16_t PRESSURE_IDENTITY_REG = 0;
 static constexpr uint16_t PRESSURE_UNIT_CODE_BAR = 3;
 

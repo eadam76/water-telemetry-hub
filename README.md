@@ -18,7 +18,7 @@ ESPHome firmware + a built-in web dashboard for monitoring a water supply: pulse
 
 | Part | Used for | Notes |
 |---|---|---|
-| [Waveshare ESP32-S3-RS485-CAN](project-docs/docs/hardver/esp32-s3-rs485-can-board.md) | Main controller | Isolated RS485/CAN, DIN-rail mountable |
+| [Waveshare ESP32-S3-RS485-CAN](project-docs/docs/hardware/esp32-s3-rs485-can-board.md) | Main controller | Isolated RS485/CAN, DIN-rail mountable |
 | IZAR PULSE i (Diehl Metering) | Pulse water meter sensor | Open-collector output, battery-powered (no wiring for power) |
 | QDW90A (RS485/Modbus variant) | Pressure sensor | 0–10 bar, 24V DC |
 | T3-1-2-H ultrasonic flow meter | Flow sensor | DN20, RS485/Modbus, 12–30V DC |
@@ -74,4 +74,4 @@ Add the device from **Settings → Devices & Services → ESPHome** in Home Assi
 esphome config water-telemetry-hub.yaml   # validate the full firmware config
 ```
 
-See `project-docs/REQUIREMENTS.md` for the detailed hardware reference and design notes.
+See `project-docs/REQUIREMENTS.md` for the full functional/non-functional requirements, and `project-docs/docs/hardware/` for wiring and Modbus register references.

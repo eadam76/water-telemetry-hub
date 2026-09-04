@@ -1751,8 +1751,8 @@
   }
 
   // "Pulse Meter N" -> "IO N" - the label actually printed on the board
-  // next to the SH1.0 pulse connector (docs/hardver/esp32-s3-rs485-can-
-  // board.md), not the internal group name.
+  // next to the SH1.0 pulse connector (project-docs/docs/hardware/
+  // esp32-s3-rs485-can-board.md), not the internal group name.
   function pulseSlotOptionLabel(groupName) {
     const m = /^Pulse Meter (\d+)$/.exec(groupName);
     return m ? `IO ${m[1]}` : groupName;
