@@ -1,0 +1,1276 @@
+
+globals:
+  # Flow-type Total Consumption calibration offset, in whole MILLILITRES.
+  # Same purpose as water_meter.yaml's own ${id_prefix}_offset_ml (see
+  # that file's comment for the full reasoning), needed here because the
+  # T3-1-2-H has no known Modbus register to directly overwrite its own
+  # accumulated total the way a pulse meter's count can be corrected -
+  # only the physical keypad (M2A, password-gated) can zero it. This lets
+  # the "Reading"/"Update" fields below give Flow-type slots the same
+  # correction UX pulse meters already have, applied in software on our
+  # side instead.
+  #
+  # int64_t millilitres, NOT a float of m3: this offset is the difference
+  # between two readings that can each be tens of thousands of m3, and a
+  # float32 at that magnitude cannot even hold whole litres, let alone
+  # the millilitre this instrument actually reports. Stored, corrected
+  # and persisted as an exact integer end to end; the float only ever
+  # appears in the published HA-facing sensor state (see
+  # volume::publish_volume()).
+  #
+  # NOT restore_value: true, same reasoning as the pulse meter's own
+  # offset - saved/loaded explicitly via its own ESPPreferenceObject (see
+  # the "Update" entity and on_boot below).
+  - id: ${id_prefix}_flow_offset_ml
+    type: int64_t
+    restore_value: false
+    initial_value: "0"
+
+  # Latest successfully-polled RAW (pre-offset) total, in millilitres -
+  # needed by the "Update" entity below to compute offset_ml = target -
+  # raw, without re-querying the device at press time. Deliberately NOT
+  # touched on a failed poll (keeps the last known-good raw value rather
+  # than going undefined on a transient miss) - the freshness guard is
+  # the separate timestamp below, not a zeroed value.
+  - id: ${id_prefix}_flow_raw_ml
+    type: int64_t
+    restore_value: false
+    initial_value: "0"
+
+  # millis() of the last successful raw read, and whether there has ever
+  # been one this boot. Update refuses to compute a correction without
+  # both: previously flow_raw_m3 simply started at 0, so an Update
+  # pressed before the very first successful poll (or while the device
+  # was unreachable) silently computed its offset against a raw reading
+  # of zero and "succeeded" with a correction that was wrong by the
+  # meter's entire accumulated total.
+  - id: ${id_prefix}_flow_raw_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: ${id_prefix}_flow_raw_valid
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # When this slot is next due for a poll, and how many consecutive
+  # failures it has had. The scheduler (water-telemetry-hub.yaml) only starts
+  # a transaction for a slot that is due; the streak is what backs an
+  # unreachable device off from the normal rate to a slow retry, so it
+  # can't hold the bus for its full timeout several times a second and
+  # drag every other slot down with it.
+  - id: ${id_prefix}_next_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: ${id_prefix}_fail_streak
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  # Set when a Modbus address reprogram fails and the optimistic local
+  # address has to be put back (see the Modbus Address set_action below).
+  # -1 = nothing to revert.
+  - id: ${id_prefix}_address_revert_to
+    type: int
+    restore_value: false
+    initial_value: "-1"
+
+  - id: ${id_prefix}_address_reverting
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # When this slot next asks the device at its address what it actually
+  # is - see the identity check in _poll_finish. Not persistent: after a
+  # restart the right answer is "check on the first good poll", which is
+  # what 0 means here.
+  - id: ${id_prefix}_next_identity_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # Set by that same identity check when the device at this address
+  # answers as two different instruments at once. Sticky rather than
+  # re-derived per poll: the ordinary poll in between has no way to see
+  # this fault at all, so without somewhere to remember it the Collision
+  # badge would light for one poll and clear on the next. Only a
+  # collision-aware check clears it again.
+  - id: ${id_prefix}_identity_conflict
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Same check, other verdict: the device answers cleanly but says it is
+  # the other instrument. Sticky for the same reason - the polls in
+  # between decode a plausible value and would otherwise recompute "no
+  # mismatch" and clear the badge within a third of a second of it being
+  # raised (see rs485_modbus::poll_mismatch).
+  - id: ${id_prefix}_identity_mismatch
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+esphome:
+  on_boot:
+    then:
+      # Load flow_offset_ml from its own preference slot, BEFORE anything
+      # uses it - same preference key as the "Update" entity's save.
+      # Mirrors water_meter.yaml's own on_boot offset load exactly.
+      #
+      # Migration: firmware before this stored the offset as a float of
+      # m3 under a different key. An OTA update must not silently drop a
+      # calibration someone applied by hand, so when the millilitre key
+      # is absent the old float key is read once, converted, and saved
+      # forward. The conversion is exact for any offset a float32 could
+      # represent in the first place, which is all the old format ever
+      # held.
+      - lambda: |-
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_flow_offset_ml"));
+          int64_t loaded = 0;
+          if (pref.load(&loaded)) {
+            id(${id_prefix}_flow_offset_ml) = loaded;
+          } else {
+            static auto legacy = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_flow_offset_m3"));
+            float legacy_m3 = 0;
+            if (legacy.load(&legacy_m3) && std::isfinite(legacy_m3)) {
+              id(${id_prefix}_flow_offset_ml) = (int64_t) std::llround((double) legacy_m3 * 1000000.0);
+              pref.save(&id(${id_prefix}_flow_offset_ml));
+              ESP_LOGI("pressure", "${friendly_name}: migrated calibration offset %f m3 -> %lld ml", legacy_m3,
+                       (long long) id(${id_prefix}_flow_offset_ml));
+            }
+          }
+          // Publish the saved correction from boot, so a previously-applied
+          // correction is visible on the dashboard immediately rather than
+          // only after the next Update/Reset press. Total Consumption itself
+          // stays unpublished until the first successful poll - there is no
+          // raw reading to add the offset to yet, and inventing one would be
+          // exactly the "false reading" this rework removes elsewhere.
+          id(${id_prefix}_flow_offset).publish_state((float) ((double) id(${id_prefix}_flow_offset_ml) / 1000000.0));
+
+sensor:
+  # Every sensor in this file is push-only - no update_interval/lambda of
+  # its own. All Modbus polling goes through the ${id_prefix}_poll_start /
+  # ${id_prefix}_poll_finish pair below, which the single central
+  # scheduler in water-telemetry-hub.yaml drives round-robin across the slots,
+  # one non-blocking transaction at a time. Before this, each slot ran its
+  # own independent update_interval per sensor, so nothing coordinated the
+  # bus at all: with several Flow slots registered the transactions
+  # overlapped, and a slow reply pushed the next slot's poll into a
+  # timeout, which made the bus busier still - a cycle that reinforces
+  # itself once it starts.
+  - platform: template
+    id: ${id_prefix}_pressure
+    name: "${friendly_name} Pressure"
+    icon: "mdi:gauge"
+    unit_of_measurement: "bar"
+    device_class: pressure
+    state_class: measurement
+    accuracy_decimals: 2
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 10
+
+  - platform: template
+    id: ${id_prefix}_flow_rate
+    name: "${friendly_name} Flow Rate"
+    icon: "mdi:pulse"
+    unit_of_measurement: "m³/h"
+    device_class: volume_flow_rate
+    state_class: measurement
+    # 6, not 3. A lower value cuts real data off the end of a
+    # measurement: the meter can report 0.12345 m³/h and show only
+    # 0.123. The T3-1-2-H sends this as a plain IEEE754
+    # float with no documented quantum of its own, so there is no
+    # resolution to round to - unlike the pulse meter's total, where one
+    # litre per pulse genuinely is the finest thing that exists and
+    # printing more would be inventing digits. Here the digits are the
+    # device's own.
+    #
+    # The honest limit is float32 itself: past about 8 m³/h its spacing
+    # exceeds a millionth, so the last decimal stops carrying
+    # information. That is a property of the value the meter sends, not
+    # something this project can improve by displaying less of it - and
+    # household flow lives far below that.
+    accuracy_decimals: 6
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 11
+
+  # The same measurement in the other unit customarily used for water.
+  # Both are published so nothing downstream has to convert: this
+  # dashboard shows both, and Home Assistant takes whichever its own
+  # cards and statistics want.
+  #
+  # 5 decimals, not 6: one litre per minute is 1/16.67 of a cubic metre
+  # per hour, so this number is ~16.7x larger than the one it is derived
+  # from and needs one fewer decimal to carry the same resolution. Five
+  # is comfortably inside that (1e-5 L/min is 6e-7 m³/h, finer than the
+  # source's own last digit) - it neither loses what the meter reported
+  # nor invents a digit beyond it.
+  - platform: template
+    id: ${id_prefix}_flow_rate_lpm
+    # U+2044 FRACTION SLASH, not a plain "/", and that is deliberate.
+    # ESPHome builds its REST/SSE paths out of entity names, so a "/"
+    # inside one is reserved - it rewrites the name to exactly this
+    # character and warns, and from ESPHome 2027.7.0 it refuses the
+    # config outright. Writing the character ESPHome would have
+    # produced makes the resulting entity name byte-identical (so
+    # nothing downstream shifts - not the REST paths, not the SSE ids,
+    # not a Home Assistant entity_id) while removing both the warning
+    # and the future error. The unit_of_measurement below keeps its
+    # ordinary slash: only NAMES are path-forming. web/dashboard.js
+    # normalises this character back to "/" centrally (displayName())
+    # so labels still read as "L/min".
+    name: "${friendly_name} Flow Rate (L⁄min)"
+    icon: "mdi:pulse"
+    unit_of_measurement: "L/min"
+    device_class: volume_flow_rate
+    state_class: measurement
+    accuracy_decimals: 5
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 12
+
+  - platform: template
+    id: ${id_prefix}_flow_total
+    name: "${friendly_name} Total Consumption"
+    icon: "mdi:water"
+    unit_of_measurement: "m³"
+    device_class: water
+    # total, NOT total_increasing. The physical meter is the authority
+    # here: its reading is read off by hand from time to time and the
+    # Reading/Update field corrects this total to match, in whichever
+    # direction it has drifted. Both directions are real - upward closes a
+    # gap of water that flowed without being counted, downward removes
+    # volume that was counted without flowing - so both belong in the
+    # statistics as the differences they are.
+    #
+    # total_increasing cannot express that. It treats any decrease as the
+    # meter having been replaced or reset, and continues the sum from the
+    # new value - so a single downward correction after a hand reading
+    # would book the meter's ENTIRE total as consumption in one step. That
+    # is not a rounding error in a statistic, it is a fabricated year of
+    # water. total computes the sum from successive differences and
+    # handles a decrease as what it is: a negative one.
+    #
+    # The same choice also makes the checkpoint rollback after a power cut
+    # honest (up to a minute of pulses, see the pulse_count global) instead
+    # of a spike.
+    state_class: total
+    # The T3-1-2-H really does report to the millilitre (see
+    # read_flow_block()'s Nf register, include/rs485_modbus.h), so this is
+    # 6 - these are measuring instruments, never truncated or rounded.
+    #
+    # This float state is what Home Assistant and the ESPHome API see. It
+    # is NOT what the dashboard displays: a float32 cannot carry 6
+    # honest decimals past ~8 m3, so the dashboard reads the exact
+    # integer-millilitre channel below instead. Keeping this one as a
+    # normal float sensor is deliberate - HA statistics want a number,
+    # not a string, and a millilitre either way is far below anything
+    # long-term statistics resolve.
+    accuracy_decimals: 6
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      # Same weight as Pressure (10), not a new, higher one - the two
+      # are mutually exclusive per slot (a slot is never BOTH Pressure
+      # and Flow at once), so they never actually appear in the same
+      # Home card together; sharing the "headline" weight is what makes
+      # THIS one the headline figure on a Flow-type card, exactly the
+      # role Pressure already plays on a Pressure-type one (see
+      # upsertHomeMetric()'s own "lowest weight = headline" comment,
+      # web/dashboard.js).
+      sorting_weight: 10
+
+  # Read-only display of ${id_prefix}_flow_offset_ml (the "Reading"/
+  # "Update"/"Reset Correction" trio's own software-side correction) -
+  # the dashboard shows this next to the Reading field so it's visible
+  # that a correction is currently applied, and by how much, rather than
+  # a silent adjustment nobody can see after the fact. Push-only, same as
+  # everything else here; published together with Total Consumption by
+  # volume::publish_volume() so the two can never disagree.
+  - platform: template
+    id: ${id_prefix}_flow_offset
+    name: "${friendly_name} Correction Offset"
+    icon: "mdi:delta"
+    unit_of_measurement: "m³"
+    accuracy_decimals: 6
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 27
+
+  # Device info (Battery Voltage, Flow-type only) - shown in the Devices
+  # table's own expanded row (web/dashboard.js), not the Home page: this
+  # is a diagnostic about the sensor itself, not something for the
+  # day-to-day dashboard.
+  #
+  # Push-only, and deliberately not on the scheduler either - even a
+  # slowed-down periodic poll (30s) would still cost a Modbus transaction
+  # for a value nobody can see most of the time (the Devices row has to
+  # be open for editing to show
+  # it at all). Read on demand instead, from the "Refresh Device Info"
+  # button below, fired once by the dashboard's own JS right as a row
+  # opens for editing (see enterEdit() in web/dashboard.js). A battery
+  # drains over months, so "as of the last time this row was opened" is
+  # plenty fresh.
+  #
+  # Field selection intentionally trimmed to what's actually useful. A
+  # Range Low/High pair was tried and dropped: a fixed, factory-
+  # calibrated spec of the sensor itself, not a live reading, isn't
+  # worth the row. An Error Code pair was tried and dropped too: a raw,
+  # non-decoded fault code with no bit-to-meaning table in this
+  # project's own docs to make sense of it. The identity registers
+  # (software version/manufacturer ID/serial number) were excluded from
+  # the start - found consistently unreadable/nonsensical on this unit,
+  # unrelated to the word-order/scaling issues fixed elsewhere in this
+  # file.
+  - platform: template
+    id: ${id_prefix}_flow_battery_voltage
+    name: "${friendly_name} Battery Voltage"
+    icon: "mdi:battery"
+    unit_of_measurement: "V"
+    device_class: voltage
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 30
+
+text_sensor:
+  # The exact, float-free volume channel: "<total_ml>|<offset_ml>", both
+  # plain integer millilitres, published by volume::publish_volume()
+  # alongside the float sensors above. This is what web/dashboard.js
+  # actually renders for this slot's reading and correction - see that
+  # function's own comment for why the float sensors can't be the source
+  # of truth for a display that claims 6 decimals.
+  #
+  # Never rendered as a row of its own anywhere in the dashboard (it's a
+  # transport format, not something to show a person) - pressure-group
+  # entities the dashboard doesn't recognize by name are simply never
+  # drawn, so nothing extra is needed to hide it.
+  - platform: template
+    id: ${id_prefix}_flow_exact
+    name: "${friendly_name} Exact Millilitres"
+    internal: true
+    icon: "mdi:numeric"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 28
+
+binary_sensor:
+  # Live/ephemeral only - never persisted - purely this slot's own last
+  # poll result, published from ${id_prefix}_poll below (see
+  # rs485_modbus::publish_poll_result(), include/rs485_modbus.h).
+  # entity_category: diagnostic + disabled_by_default: meant mainly for
+  # the dashboard's own join (web/dashboard.js reads this as the device
+  # table's OK/Lost badge for a registered row), but still a perfectly
+  # normal HA entity if ever wanted there too.
+  - platform: template
+    id: ${id_prefix}_online
+    name: "${friendly_name} Online"
+    icon: "mdi:lan-connect"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 15
+
+select:
+  - platform: template
+    id: ${id_prefix}_device_type
+    name: "${friendly_name} Device Type"
+    internal: true
+    icon: "mdi:chip"
+    options:
+      - "Pressure"
+      - "Flow"
+    optimistic: true
+    restore_value: true
+    initial_option: "Pressure"
+    on_value:
+      - lambda: |-
+          // A Mismatch verdict was reached against the OLD type; the new
+          // one is judged afresh by the next poll and its identity check
+          // (asked for right away, not in ten seconds - this is the
+          // change someone makes to FIX a mismatch, and they are watching
+          // the badge). Both directions: this used to clear only when
+          // switching away from Flow, a leftover from when only Flow
+          // slots could raise the flag at all.
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address != 0) {
+            rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), address, false);
+          }
+          id(${id_prefix}_identity_mismatch) = false;
+          id(${id_prefix}_next_identity_ms) = 0;
+          // A raw reading belongs to the device type it was taken from -
+          // switching type invalidates it, so Update can't compute a
+          // correction against a total this slot no longer even polls.
+          id(${id_prefix}_flow_raw_valid) = false;
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 5
+
+number:
+  - platform: template
+    id: ${id_prefix}_modbus_address
+    name: "${friendly_name} Modbus Address"
+    internal: true
+    icon: "mdi:identifier"
+    mode: box
+    min_value: 0
+    max_value: 247
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          // Re-entry from ${id_prefix}_revert_address below - the value
+          // being set here is the OLD address being put back, there is
+          // nothing to reprogram, just let the optimistic publish happen.
+          if (id(${id_prefix}_address_reverting)) {
+            id(${id_prefix}_address_reverting) = false;
+            return;
+          }
+          uint8_t old_address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          uint8_t new_address = (uint8_t) x;
+          if (old_address != new_address) {
+            // A reading taken from the old address says nothing about the
+            // device now at the new one.
+            id(${id_prefix}_flow_raw_valid) = false;
+            // Nor does anything else this slot learned there: a Collision
+            // or Mismatch verdict is about an ADDRESS, and would otherwise
+            // follow the slot to the new one for up to a whole identity
+            // period. The backoff too - a slot moved off a dead address
+            // should poll the new one at the normal rate, not three
+            // seconds from now. The identity check runs on the first
+            // good poll at the new address.
+            id(${id_prefix}_identity_conflict) = false;
+            id(${id_prefix}_identity_mismatch) = false;
+            rs485_modbus::slot_link("${id_prefix}") = rs485_modbus::SlotLinkState{};
+            id(${id_prefix}_next_identity_ms) = 0;
+            id(${id_prefix}_fail_streak) = 0;
+            id(${id_prefix}_next_poll_ms) = 0;
+          }
+          if (old_address != 0 && old_address != new_address) {
+            rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), old_address, false);
+          }
+          if (old_address != 0 && new_address != 0 && old_address != new_address) {
+            // Consume the one-shot authorization BEFORE any blocking bus
+            // work. A duplicate/delayed Number POST, a restored value, or
+            // any other programmatic set can never replay a physical write
+            // onto a newly-connected device. See the dedicated Address
+            // Change Request entity below.
+            bool authorized = rs485_modbus::address_change_authorization("${id_prefix}")
+                                  .consume(old_address, new_address, millis());
+            if (!authorized) {
+              ESP_LOGW("pressure", "${friendly_name}: refusing unarmed address change %d -> %d; no Modbus write sent",
+                       old_address, new_address);
+              id(${id_prefix}_address_revert_to) = old_address;
+              id(${id_prefix}_revert_address).execute();
+              volume::publish_update_result(id(device_update_result), "${friendly_name}", "unauthorized",
+                                            std::to_string((int) new_address));
+              return;
+            }
+            // Two genuinely different procedures per Device Type - not a shared one with a
+            // flag. QDW90A: change_address_and_save() (H:0 then H:15=0 "commit" register).
+            // T3-1-2-H: change_flow_address() (document register 0062, single write, no
+            // separate commit step). Reusing the QDW90A procedure on a Flow slot wrote
+            // garbage into that device's own live flow-rate/accumulator registers instead
+            // of its address (see rs485_modbus.h's own comment on both functions).
+            bool is_flow = id(${id_prefix}_device_type).current_option() == "Flow";
+            const char *status = "ok";
+
+            // Two read-only checks before anything is written, because a
+            // Modbus write is not addressed to a device - it is addressed
+            // to an ADDRESS, and every device sitting on that address
+            // receives it.
+            //
+            // Writing to a contended address is the dangerous one. All of
+            // these follow from the same fact and any of them can happen:
+            // the wrong device applies the change; both apply it and the
+            // clash simply moves to the new address, where nothing can
+            // see it (two devices answering identically superimpose into
+            // a valid frame); or, when the two are different models, the
+            // register numbers mean something else entirely on the other
+            // one. That last is not hypothetical here - this project has
+            // already recorded a QDW90A-style H:0/H:15 pair landing in a
+            // T3-1-2-H's own live flow-rate and accumulator registers
+            // (see rs485_modbus.h's note on change_flow_address).
+            //
+            // There is no way to move just one of two devices that share
+            // an address, over the bus or otherwise - the bus cannot
+            // address them separately. Disconnecting one is the only
+            // remedy, which is what the dashboard says.
+            //
+            // Both checks below go through inspect_address_blocking() -
+            // the SAME evidence machine the bus scan uses (rs485_modbus.h),
+            // not the single probe()+identify() pair this used to run.
+            // A probe/identify pair alone has no retry and no
+            // confirmation reads, so exactly the two-identical-devices
+            // and damaged-first-reply cases the scan is hardened against
+            // could slip a write through a weaker check. A write is the
+            // higher-consequence action of the two -
+            // it changes what is on the wire, permanently, for a device
+            // that may not even be the one asked - so it must never be
+            // the weaker check.
+            //
+            // Stricter than before in one more way, deliberately: SILENCE
+            // at the current address no longer counts as "not contended".
+            // A write is addressed to an ADDRESS, and an address nothing
+            // currently answers on is not proof of a single device - it
+            // is proof of nothing at all, which is not something this
+            // action may act on any more confidently than a proven
+            // collision. "Address write only with a proven single current
+            // device and a proven-silent target" - if the address is
+            // genuinely silent, the write would go unanswered anyway, so
+            // nothing real is lost.
+            auto old_inspection = rs485_modbus::inspect_address_blocking(id(rs485_uart), old_address, ${poll_timeout_ms});
+            bool contended = old_inspection.verdict() != rs485_modbus::AddressObservation::VALID_RESPONSE;
+            // ...and moving onto an address something already answers on
+            // (or gives ambiguous evidence for) would create the same
+            // fault deliberately. The dashboard blocks addresses
+            // belonging to another registered slot, but it cannot know
+            // about a device nobody has registered.
+            bool target_taken =
+                !contended && rs485_modbus::inspect_address_blocking(id(rs485_uart), new_address, ${poll_timeout_ms})
+                                    .verdict() != rs485_modbus::AddressObservation::SILENCE;
+            bool reprogrammed = false;
+            if (contended || target_taken) {
+              status = contended ? "contended" : "occupied";
+              ESP_LOGW("pressure", "${friendly_name}: refusing to reprogram %d -> %d (%s)", old_address, new_address,
+                       contended ? "more than one device answers on the current address"
+                                 : "something already answers on the target address");
+              id(${id_prefix}_address_revert_to) = old_address;
+              id(${id_prefix}_revert_address).execute();
+            } else {
+              reprogrammed = is_flow
+                  ? rs485_modbus::change_flow_address(id(rs485_uart), old_address, new_address)
+                  : rs485_modbus::change_address_and_save(id(rs485_uart), old_address, new_address);
+            }
+            if (contended || target_taken) {
+              // already handled above - fall through to the report
+            } else if (reprogrammed) {
+              ESP_LOGI("pressure", "${friendly_name}: reprogrammed sensor address %d -> %d", old_address, new_address);
+              // Keep the scan snapshot consistent with the physical address.
+              rs485_modbus::update_scan_result_address(id(pressure_scan_results), old_address, new_address);
+            } else if (rs485_modbus::inspect_address_blocking(id(rs485_uart), old_address, 200).verdict() !=
+                       rs485_modbus::AddressObservation::VALID_RESPONSE) {
+              // Not confirmed at the new address, and nothing answers at
+              // the old one either. Putting the old address back here
+              // would turn a working sensor into an unreachable one if
+              // the device had moved exactly as asked and only the
+              // confirmation didn't come through - reverting would leave
+              // the firmware polling an address nothing is on. Silence
+              // at the old address is the one case where
+              // the change most likely DID take, so the new address
+              // stays and the dashboard says to run a bus scan. A wrong
+              // guess is recoverable by scanning; an address the device
+              // has demonstrably left is not a better guess than one it
+              // was just told to move to. Deliberately no scan-results
+              // update - we don't know where it is, and claiming to
+              // would be worse than saying nothing.
+              ESP_LOGW("pressure", "${friendly_name}: address %d -> %d unconfirmed and nothing answers on %d either - keeping %d, run a bus scan", old_address, new_address, old_address, new_address);
+              status = "unverified";
+            } else {
+              // The device did NOT switch - so this slot must not keep
+              // claiming it did. Previously the optimistic local value was
+              // left at the new address regardless, leaving the dashboard
+              // showing an address nothing answers on and the poll quietly
+              // failing forever. Put the old address back (deferred, so the
+              // optimistic publish of the new value that follows this
+              // set_action doesn't immediately overwrite the revert).
+              // The device is still answering on its old address, so it
+              // genuinely did not switch - this is the honest failure,
+              // and reverting is safe precisely because we just proved
+              // the device is still there.
+              ESP_LOGW("pressure", "${friendly_name}: FAILED to reprogram sensor address %d -> %d - still answering on %d, keeping it", old_address, new_address, old_address);
+              status = "no_reply";
+              id(${id_prefix}_address_revert_to) = old_address;
+              id(${id_prefix}_revert_address).execute();
+            }
+            // Say so out loud, on the same channel the Reading Update
+            // uses. A reprogram that fails reverts the address silently:
+            // the POST still returns 200 (it only means the device
+            // received the request), the row leaves edit mode, and the
+            // old address reappears with no explanation anywhere except
+            // the log - which is exactly what "nem veszi be" looks like
+            // from the outside. The dashboard waits for this and tells
+            // whoever asked. See volume::publish_update_result().
+            volume::publish_update_result(id(device_update_result), "${friendly_name}", status,
+                                          std::to_string((int) new_address));
+          }
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 20
+
+  # The Reading field's contract, not an action: min/max/step/unit are
+  # what web/dashboard.js validates a typed reading against (its `step`
+  # is this instrument's own resolution - see readingStepViolation()
+  # there), and its state is the staged value. Applying is a separate,
+  # single, atomic write to the "Update" text entity below; setting this
+  # number on its own deliberately does nothing, exactly as before.
+  - platform: template
+    id: ${id_prefix}_flow_reading
+    name: "${friendly_name} Reading"
+    internal: true
+    icon: "mdi:counter"
+    unit_of_measurement: "m³"
+    mode: box
+    min_value: 0
+    # 1000000 m3, not a lower, arbitrary round number - a lower ceiling
+    # would trap the field it belongs to: once the meter's own total
+    # climbs past it, the Reading field can no longer even express the
+    # value the dashboard is already showing, so there is no way left to
+    # correct the meter at all - only downwards, to a value that is
+    # wrong.
+    #
+    # Six integer digits covers any water meter dial that exists (the
+    # T3-1-2-H's own accumulator is a uint32 litre counter, so the device
+    # itself cannot report past 4294967 m3), and no household meter will
+    # approach it. It is a sanity bound, not a measurement limit.
+    max_value: 1000000
+    # 0.000001 - the T3-1-2-H reports its accumulated total to the
+    # millilitre (read_flow_block()'s Nf register), so a millilitre is
+    # genuinely the finest reading this device can be corrected to, and
+    # the field has to accept exactly that much and no more.
+    step: 0.000001
+    optimistic: true
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 26
+
+  - platform: template
+    id: ${id_prefix}_sort_order
+    name: "${friendly_name} Sort Order"
+    internal: true
+    icon: "mdi:sort"
+    mode: box
+    min_value: 0
+    max_value: 65535
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 25
+
+text:
+  # One-shot safety interlock for a physical address write. Format is
+  # "old,new,nonce" and is generated by the dashboard, never typed by a
+  # person. It arms only the exact transition currently shown by this
+  # slot, for five seconds, and a consumed nonce cannot be replayed.
+  - platform: template
+    id: ${id_prefix}_address_change_request
+    name: "${friendly_name} Address Change Request"
+    internal: true
+    icon: "mdi:shield-key-outline"
+    mode: text
+    optimistic: false
+    min_length: 0
+    max_length: 40
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          unsigned old_value = 0;
+          unsigned new_value = 0;
+          unsigned long nonce_value = 0;
+          char trailing = 0;
+          bool parsed = std::sscanf(x.c_str(), "%u,%u,%lu%c", &old_value, &new_value, &nonce_value, &trailing) == 3;
+          uint8_t current = (uint8_t) id(${id_prefix}_modbus_address).state;
+          bool valid = parsed && old_value >= 1 && old_value <= 247 && new_value >= 1 && new_value <= 247 &&
+                       old_value != new_value && current == old_value &&
+                       rs485_modbus::address_change_authorization("${id_prefix}").arm(
+                           (uint8_t) old_value, (uint8_t) new_value, (uint32_t) nonce_value, millis());
+          if (!valid) {
+            ESP_LOGW("pressure", "${friendly_name}: rejected invalid or replayed address-change request");
+            return;
+          }
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 19
+
+  - platform: template
+    id: ${id_prefix}_display_name
+    name: "${friendly_name} Display Name"
+    internal: true
+    icon: "mdi:rename-box"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "${friendly_name}"
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 30
+
+  # Applying a Reading is ONE write, carrying the value with it.
+  #
+  # It used to be two independent requests - set the Reading number, then
+  # press an Update button that read whatever that number happened to
+  # hold. Between those two requests anything could change it: a second
+  # browser tab, a Home Assistant call, a retry of the first request - and
+  # the button would then apply a value nobody asked for, to a meter's
+  # accumulated total, irreversibly. There is no lock that fixes that
+  # shape; the fix is for the value and the command to be the same
+  # request, which is what this is.
+  #
+  # A `text` entity rather than a `number` for the same "don't quietly
+  # change a measurement" reason the display side got: ESPHome parses a
+  # number entity's value into a float32, and a float32 cannot hold
+  # "12345.001" exactly. The typed digits arrive here as the string they
+  # were typed as and are
+  # parsed straight to exact integer millilitres (parse_m3_to_ml(),
+  # include/rs485_modbus.h), so what is applied is exactly what was
+  # entered.
+  #
+  # Every refusal reason is reported on the shared "Device Update Result"
+  # channel (water-telemetry-hub.yaml), because an HTTP 200 from a POST can
+  # only mean "received", never "applied".
+  - platform: template
+    id: ${id_prefix}_flow_update
+    name: "${friendly_name} Update"
+    internal: true
+    icon: "mdi:sync"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 24
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          const char *status = "ok";
+          int64_t target_ml = 0;
+          if (!volume::parse_m3_to_ml(x, target_ml)) {
+            status = "invalid";
+          } else if (target_ml < 0 || target_ml > 1000000000000LL) {
+            // Matches the Reading field's own 0..1000000 m3 range.
+            status = "range";
+          } else if (id(${id_prefix}_device_type).current_option() != "Flow") {
+            status = "wrong_type";
+          } else if (!id(${id_prefix}_flow_raw_valid)) {
+            // No successful poll since boot / since the address or type
+            // last changed: there is no raw reading to correct against,
+            // and guessing one would silently produce a wrong offset.
+            status = "no_reading";
+          } else if ((uint32_t) (millis() - id(${id_prefix}_flow_raw_ms)) > 15000) {
+            // The scheduler polls every slot about once a second, so 15s
+            // without a successful read means the device is unreachable
+            // right now - the last raw value may already be far behind
+            // whatever the meter has actually counted since.
+            status = "stale";
+          }
+          if (strcmp(status, "ok") == 0) {
+            // Stored exactly as computed, in exact integer millilitres -
+            // deliberately NOT snapped to zero below some epsilon.
+            // Snapping anything under 1e-5 m3 to 0, to avoid a cosmetic
+            // "-0.000000" display, would silently destroy a genuine
+            // small correction and snap the reading straight back.
+            id(${id_prefix}_flow_offset_ml) = target_ml - id(${id_prefix}_flow_raw_ml);
+            static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_flow_offset_ml"));
+            pref.save(&id(${id_prefix}_flow_offset_ml));
+            global_preferences->sync();
+            volume::publish_volume(id(${id_prefix}_flow_total), id(${id_prefix}_flow_offset),
+                                          id(${id_prefix}_flow_exact), target_ml, id(${id_prefix}_flow_offset_ml));
+          } else {
+            ESP_LOGW("pressure", "${friendly_name}: Reading update refused (%s) for input '%s'", status, x.c_str());
+          }
+          volume::publish_update_result(id(device_update_result), "${friendly_name}", status, x);
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 90
+
+button:
+  - platform: template
+    id: ${id_prefix}_delete
+    name: "${friendly_name} Delete"
+    internal: true
+    icon: "mdi:delete-outline"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 100
+    on_press:
+      - lambda: |-
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address != 0) {
+            rs485_modbus::remove_scan_result_address(id(pressure_scan_results), address);
+            if (rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false)) {
+              id(pressure_live_collision_generation).publish_state(++id(modbus_live_collision_generation));
+            }
+            rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), address, false);
+          }
+          // The number.set below is caught by the address set_action's
+          // own reset (old != new), but not when the slot was already at
+          // 0 - so reset here too rather than rely on that path. A slot
+          // re-registered later starts from nothing: no remembered
+          // verdicts, no backoff, identity check on its first good poll.
+          id(${id_prefix}_identity_conflict) = false;
+          id(${id_prefix}_identity_mismatch) = false;
+          rs485_modbus::slot_link("${id_prefix}") = rs485_modbus::SlotLinkState{};
+          id(${id_prefix}_next_identity_ms) = 0;
+          id(${id_prefix}_fail_streak) = 0;
+          id(${id_prefix}_next_poll_ms) = 0;
+      - number.set:
+          id: ${id_prefix}_modbus_address
+          value: 0
+      - number.set:
+          id: ${id_prefix}_sort_order
+          value: 0
+      - text.set:
+          id: ${id_prefix}_display_name
+          value: "${friendly_name}"
+      - select.set:
+          id: ${id_prefix}_device_type
+          option: "Pressure"
+      - lambda: |-
+          // publish_state(), not number.set - the Reading field is a plain
+          // staging value with no action attached, and going through
+          // number.set here would be pointless indirection.
+          id(${id_prefix}_flow_reading).publish_state(0);
+          id(${id_prefix}_pressure).publish_state(NAN);
+          id(${id_prefix}_flow_rate).publish_state(NAN);
+          id(${id_prefix}_flow_rate_lpm).publish_state(NAN);
+          id(${id_prefix}_flow_total).publish_state(NAN);
+          id(${id_prefix}_online).publish_state(false);
+          id(${id_prefix}_flow_offset_ml) = 0;
+          id(${id_prefix}_flow_raw_ml) = 0;
+          id(${id_prefix}_flow_raw_ms) = 0;
+          id(${id_prefix}_flow_raw_valid) = false;
+          id(${id_prefix}_flow_offset).publish_state(0.0f);
+          id(${id_prefix}_flow_exact).publish_state("0|0");
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_flow_offset_ml"));
+          pref.save(&id(${id_prefix}_flow_offset_ml));
+
+  # Zeroes flow_offset_ml back out - Total Consumption reverts to exactly
+  # the meter's own raw reading, same as a freshly-added slot that's never
+  # had a correction applied. Distinct from Delete: this only clears the
+  # correction, it doesn't touch the slot's address/name/registration at
+  # all.
+  - platform: template
+    id: ${id_prefix}_flow_reset_correction
+    name: "${friendly_name} Reset Correction"
+    internal: true
+    icon: "mdi:restore"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 91
+    on_press:
+      - lambda: |-
+          id(${id_prefix}_flow_offset_ml) = 0;
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_flow_offset_ml"));
+          pref.save(&id(${id_prefix}_flow_offset_ml));
+          global_preferences->sync();
+          // Only republish a total if there is a real raw reading to
+          // republish. Without a poll behind it, flow_raw_ml is still its
+          // 0 initial value, and publishing that would announce a total of
+          // zero for a meter that simply hasn't been read yet - the same
+          // "made-up reading" the Update path refuses for the same reason.
+          // The next successful poll (a second away at most) publishes the
+          // real, now-uncorrected total either way.
+          if (id(${id_prefix}_flow_raw_valid)) {
+            volume::publish_volume(id(${id_prefix}_flow_total), id(${id_prefix}_flow_offset),
+                                          id(${id_prefix}_flow_exact), id(${id_prefix}_flow_raw_ml), 0);
+            id(${id_prefix}_flow_reading).publish_state((float) ((double) id(${id_prefix}_flow_raw_ml) / 1000000.0));
+          } else {
+            id(${id_prefix}_flow_offset).publish_state(0.0f);
+          }
+
+  # On-demand read for Battery Voltage above (Flow-type only - Pressure-
+  # type has no device-info field left, see that sensor's own comment) -
+  # not on any periodic schedule of its own. Pressed exactly once by the
+  # dashboard's own JS right as a Devices row opens for editing (see
+  # enterEdit() in web/dashboard.js), never on a timer - has no visible
+  # UI of its own.
+  - platform: template
+    id: ${id_prefix}_refresh_device_info
+    name: "${friendly_name} Refresh Device Info"
+    internal: true
+    icon: "mdi:refresh"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 92
+    on_press:
+      - lambda: |-
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address == 0) return;
+          if (id(${id_prefix}_device_type).current_option() == "Flow") {
+            float voltage;
+            if (rs485_modbus::read_flow_battery_voltage(id(rs485_uart), address, voltage, ${poll_timeout_ms})) {
+              id(${id_prefix}_flow_battery_voltage).publish_state(voltage);
+            } else {
+              // Worth a line: this read used to fail every first time a row
+              // was opened, because it collided with the background poll
+              // (fixed by rs485_modbus::drain_poll_transaction()), and the
+              // only symptom was a battery reading that stayed "--" with
+              // nothing anywhere saying why.
+              ESP_LOGW("pressure", "${friendly_name}: battery voltage read failed");
+            }
+          }
+
+script:
+  # This slot's Modbus interaction, split across the two halves of one
+  # non-blocking transaction. The central scheduler (water-telemetry-hub.yaml)
+  # calls _poll_start when the bus is free and this slot is due, then
+  # _poll_finish once the reply (or the timeout) has come in - see
+  # rs485_modbus::Transaction for why nothing here waits.
+  #
+  # mode: single throughout: these are plain synchronous lambdas, so
+  # re-entrancy can't happen, but the scheduler owning the bus means a
+  # missed turn simply comes around again.
+  - id: ${id_prefix}_identity_finish
+    mode: single
+    then:
+      - lambda: |-
+          auto &inspector = rs485_modbus::identity_inspector("${id_prefix}");
+          uint8_t inspected_address = inspector.address();
+          auto identity = inspector.take_result();
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          // The row may have been deleted or re-addressed while this
+          // read-only check was in flight. Its old result owns neither
+          // the new address nor the empty slot.
+          if (address == 0 || address != inspected_address) return;
+
+          bool is_flow = id(${id_prefix}_device_type).current_option() == "Flow";
+          id(${id_prefix}_identity_conflict) = identity.conflicting;
+          bool may_clear = rs485_modbus::identity_may_clear_collision(
+              rs485_modbus::slot_link("${id_prefix}"), identity.conflicting,
+              identity.kind != rs485_modbus::DeviceKind::UNKNOWN, millis(), ${identity_check_period_ms});
+          if (identity.conflicting) {
+            id(${id_prefix}_identity_mismatch) = false;
+            rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), address, false);
+            if (rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, true)) {
+              id(pressure_live_collision_generation).publish_state(++id(modbus_live_collision_generation));
+            }
+            return;
+          }
+          if (may_clear) {
+            if (rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false)) {
+              id(pressure_live_collision_generation).publish_state(++id(modbus_live_collision_generation));
+            }
+          }
+          if (identity.kind == rs485_modbus::DeviceKind::UNKNOWN) return;
+
+          bool matches = (identity.kind == rs485_modbus::DeviceKind::FLOW) == is_flow;
+          if (!matches) {
+            ESP_LOGW("modbus", "address %d: configured as %s but the device identifies as %s", address,
+                     is_flow ? "Flow" : "Pressure", rs485_modbus::device_kind_name(identity.kind));
+          }
+          id(${id_prefix}_identity_mismatch) = !matches;
+          rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), address, !matches);
+
+  - id: ${id_prefix}_poll_start
+    mode: single
+    then:
+      - lambda: |-
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address == 0) return;  // unregistered slot - nothing to talk to
+          // Due yet? Signed difference so this stays correct across the
+          // millis() wrap, unlike a plain `millis() > next`.
+          if ((int32_t) (millis() - id(${id_prefix}_next_poll_ms)) < 0) return;
+          auto &tx = rs485_modbus::poll_transaction();
+          bool started;
+          if (id(${id_prefix}_device_type).current_option() == "Flow") {
+            started = tx.start_read(id(rs485_uart), address, rs485_modbus::FLOW_BLOCK_START_REG,
+                                    rs485_modbus::FLOW_BLOCK_REGISTERS, ${poll_timeout_ms});
+          } else {
+            started = tx.start_read(id(rs485_uart), address, rs485_modbus::PRESSURE_BLOCK_START_REG,
+                                    rs485_modbus::PRESSURE_BLOCK_REGISTERS, ${poll_timeout_ms});
+          }
+          if (!started) return;
+          // Scheduled from the START of the request, not its completion:
+          // that makes the period a genuine "at most this often" cap
+          // rather than something that stretches by however long each
+          // reply happens to take.
+          id(${id_prefix}_next_poll_ms) = millis() + ${poll_period_ms};
+
+  - id: ${id_prefix}_poll_finish
+    mode: single
+    then:
+      - lambda: |-
+          auto &tx = rs485_modbus::poll_transaction();
+          uint16_t regs[rs485_modbus::FLOW_BLOCK_REGISTERS];
+          size_t received = 0;
+          auto result = tx.take(regs, rs485_modbus::FLOW_BLOCK_REGISTERS, &received);
+          uint8_t address = (uint8_t) id(${id_prefix}_modbus_address).state;
+          if (address == 0) return;  // deleted mid-transaction - nothing to report
+
+          // Our own reply coming back damaged is the "possible collision"
+          // signal - two devices answering over each other. Deliberately
+          // NOT every corrupt frame: BAD_FRAME also covers noise and bad
+          // wiring, and counting those here would make a disconnected
+          // RS485 conductor report "Collision?" instead of "Lost". See
+          // TxResult in include/rs485_modbus.h.
+          // A clean Modbus exception is the opposite of both - proof the
+          // device is there, just refusing this register block.
+          // Two sources, and the second one is not visible in this poll's
+          // own bytes at all: the periodic identity check below can find
+          // two devices sharing this address even when every frame comes
+          // back flawless (see rs485_modbus::identify). Its verdict stays
+          // in force between checks.
+          // Silence refutes a collision (see rs485_modbus::SlotLinkState):
+          // an address that has answered with nothing at all for three
+          // polls has no devices on it, however it looked before. Without
+          // this, a flow meter unplugged from a live bus could keep its
+          // Collision badge for ever - its very last frame, sent as it
+          // was pulled, could arrive damaged, and nothing that runs on a
+          // silent address would ever clear that.
+          if (rs485_modbus::note_poll(rs485_modbus::slot_link("${id_prefix}"), result, millis())) {
+            if (id(${id_prefix}_identity_conflict) || id(${id_prefix}_identity_mismatch)) {
+              ESP_LOGD("modbus", "address %d: silent for %d polls - no device here, earlier verdict withdrawn", address,
+                       (int) rs485_modbus::SILENT_POLLS_TO_CLEAR);
+            }
+            id(${id_prefix}_identity_conflict) = false;
+            id(${id_prefix}_identity_mismatch) = false;
+            rs485_modbus::slot_link("${id_prefix}").collision_seen = false;
+            rs485_modbus::slot_link("${id_prefix}").clean_identity_checks = 0;
+            id(${id_prefix}_next_identity_ms) = 0;  // ask again the moment something answers
+            if (rs485_modbus::set_scan_collision_address(id(pressure_scan_collisions), address, false)) {
+              id(pressure_live_collision_generation).publish_state(++id(modbus_live_collision_generation));
+            }
+            rs485_modbus::set_scan_mismatch_address(id(pressure_scan_mismatches), address, false);
+          }
+          bool collision = (result == rs485_modbus::TxResult::COLLISION) || id(${id_prefix}_identity_conflict);
+          bool device_responded =
+              (result == rs485_modbus::TxResult::OK || result == rs485_modbus::TxResult::EXCEPTION);
+          bool is_flow = id(${id_prefix}_device_type).current_option() == "Flow";
+          // The reply has to match the request that was actually sent -
+          // if the slot's Device Type changed while this transaction was
+          // in flight, these registers mean something else entirely.
+          bool framed = (result == rs485_modbus::TxResult::OK) &&
+                        received == (is_flow ? rs485_modbus::FLOW_BLOCK_REGISTERS
+                                             : rs485_modbus::PRESSURE_BLOCK_REGISTERS);
+
+          // Decode BEFORE deciding the poll succeeded, not after. "ok"
+          // used to mean only that a correctly framed reply of the right
+          // length arrived, and the decode ran afterwards with no way to
+          // change that verdict - so a device answering with a well-
+          // formed frame full of values that mean nothing for the
+          // configured type still counted as a healthy poll: Online, fail
+          // streak reset, no Mismatch, and the last real measurement left
+          // standing indefinitely. A frame surviving the wire and a frame
+          // meaning what we asked for are two different claims.
+          float pressure_bar = 0;
+          float instant = 0;
+          int64_t total_ml = 0;
+          bool decoded = false;
+          if (framed) {
+            decoded = is_flow ? rs485_modbus::decode_flow_block(regs, instant, total_ml)
+                              : rs485_modbus::decode_pressure_bar(regs, pressure_bar);
+          }
+          bool ok = decoded;
+
+          // How many consecutive failures before this slot is treated as
+          // gone rather than as having missed a reply - used both for the
+          // Online badge and for withdrawing the reading below, so the
+          // two cannot disagree about whether a device is still there.
+          const uint8_t BLANK_AFTER_FAILURES = 3;
+
+          // Back off a device that isn't answering: at the normal rate an
+          // unreachable slot would hold the bus for its full timeout
+          // several times a second, for nothing, and slow every other
+          // slot down with it.
+          if (ok) {
+            id(${id_prefix}_fail_streak) = 0;
+          } else if (id(${id_prefix}_fail_streak) < 255) {
+            id(${id_prefix}_fail_streak)++;
+            if (id(${id_prefix}_fail_streak) >= 5) {
+              id(${id_prefix}_next_poll_ms) = millis() + ${poll_offline_period_ms};
+            }
+          }
+
+          // DEBUG, not VV: a registered slot's own poll failing is exactly
+          // the "Lost"/"Collision?" diagnostic signal (see the Online
+          // binary_sensor above) - worth seeing without turning on the
+          // full wire-level trace. Successful polls stay silent; at three
+          // a second per device they would drown everything else out, and
+          // the value is already visible as the sensor's own state.
+          if (!ok) {
+            ESP_LOGD("modbus", "address %d: poll failed%s", address,
+                     collision ? " (possible collision)" : (device_responded ? " (device refused the register block)" : ""));
+          }
+          // A plain timeout (not ok, not a collision) is inconclusive
+          // either way - publish_poll_result() leaves the Collision flag
+          // untouched for it: it doesn't push the cooldown out further (a
+          // stray timeout partway through recovery shouldn't delay
+          // clearing) and doesn't set the flag either (no evidence either
+          // way this poll).
+          // A device that answers but whose registers don't decode as the
+          // configured type is the whole point of the Mismatch flag, and
+          // that can happen in either direction - a Pressure slot with a
+          // flow meter on it, or the reverse. This used to pass `is_flow`
+          // as "should I touch the Mismatch flag", so only Flow-configured
+          // slots ever set it and a Pressure slot could sit on the wrong
+          // instrument for ever without a word.
+          // Reachable, not "this one poll worked". A single timeout
+          // flipping the badge straight to Lost would let the blocking
+          // bus scan - which holds the bus long enough for every other
+          // slot to miss its turn - make healthy sensors blink Lost and
+          // back. The reading itself already waits for the same streak
+          // before it is withdrawn; the badge agrees with it.
+          bool reachable = ok || device_responded || id(${id_prefix}_fail_streak) < BLANK_AFTER_FAILURES;
+          // The identity check's Mismatch verdict rides along the same
+          // way its Collision verdict does above: remembered, so a poll
+          // that decodes fine cannot take it back down (it did - the
+          // badge lit once per identity period and cleared on the very
+          // next poll; see rs485_modbus::poll_mismatch).
+          if (rs485_modbus::publish_poll_result(id(${id_prefix}_online), id(pressure_scan_collisions),
+                                                id(pressure_scan_mismatches), address, ok, collision, reachable,
+                                                device_responded, id(${id_prefix}_identity_mismatch))) {
+            id(pressure_live_collision_generation).publish_state(++id(modbus_live_collision_generation));
+          }
+
+          // Decoding is necessary but not sufficient: a flow meter's
+          // registers can decode to a perfectly plausible pressure (a
+          // swapped device can read as a healthy 0.00 bar), so
+          // periodically ask the device what it actually is. Read-only,
+          // and rare - one extra transaction a minute per
+          // slot against three polls a second, so the bus cost is under
+          // one part in five hundred. Only ever from a poll that came
+          // back cleanly: if the slot is already failing there is nothing
+          // to second-guess, and an identity read would just add another
+          // timeout to a bus that is already waiting.
+          //
+          // Arm the shared scheduler's non-blocking two-fingerprint
+          // inspection. Do not publish this poll's decoded measurement
+          // first: on a swapped device those bytes can look plausible,
+          // and the old blocking check deliberately prevented that one
+          // unverified sample from leaking through. The next normal poll
+          // follows immediately after a matching identity result.
+          if (ok && (int32_t) (millis() - id(${id_prefix}_next_identity_ms)) >= 0) {
+            auto &identity = rs485_modbus::identity_inspector("${id_prefix}");
+            if (identity.start(address, ${poll_timeout_ms})) {
+              id(${id_prefix}_next_identity_ms) = millis() + ${identity_check_period_ms};
+              return;
+            }
+          }
+
+          // A single missed reply is not the same thing as a meter that
+          // has gone away, and blanking the reading on the first one made
+          // values flicker to "--" on the dashboard (and to unavailable in
+          // Home Assistant) during perfectly ordinary operation. The
+          // reading is only withdrawn once the slot has actually stopped
+          // answering - the same streak the backoff uses, about a second
+          // of silence at the normal rate. Until then the last real
+          // measurement stands, and the Online badge is what says the link
+          // is in trouble.
+          bool withdraw = !ok && id(${id_prefix}_fail_streak) >= BLANK_AFTER_FAILURES;
+
+          if (!is_flow) {
+            if (decoded) {
+              volume::publish_if_changed(id(${id_prefix}_pressure), pressure_bar);
+            } else if (withdraw) {
+              volume::publish_if_changed(id(${id_prefix}_pressure), NAN);
+            }
+            return;
+          }
+
+          if (!decoded) {
+            if (withdraw) {
+              volume::publish_if_changed(id(${id_prefix}_flow_rate), NAN);
+              volume::publish_if_changed(id(${id_prefix}_flow_rate_lpm), NAN);
+              volume::publish_if_changed(id(${id_prefix}_flow_total), NAN);
+            }
+            return;
+          }
+          id(${id_prefix}_flow_raw_ml) = total_ml;
+          id(${id_prefix}_flow_raw_ms) = millis();
+          id(${id_prefix}_flow_raw_valid) = true;
+          volume::publish_if_changed(id(${id_prefix}_flow_rate), instant);
+          // 1 m³/h = 1000 litres over 60 minutes.
+          volume::publish_if_changed(id(${id_prefix}_flow_rate_lpm), instant * (1000.0f / 60.0f));
+          volume::publish_volume(id(${id_prefix}_flow_total), id(${id_prefix}_flow_offset),
+                                        id(${id_prefix}_flow_exact), total_ml + id(${id_prefix}_flow_offset_ml),
+                                        id(${id_prefix}_flow_offset_ml));
+
+  # Puts the Modbus Address back after a failed reprogram (see that
+  # number's own set_action). Deferred rather than done inline because a
+  # template number publishes its new, optimistic value AFTER set_action
+  # returns - reverting inside set_action would just be overwritten a
+  # moment later. Going back through make_call()/perform() (rather than a
+  # bare publish_state) is what also rewrites the persisted value, so the
+  # revert survives a reboot; the _address_reverting flag stops that
+  # re-entry from trying to reprogram anything again.
+  - id: ${id_prefix}_revert_address
+    mode: restart
+    then:
+      - delay: 50ms
+      - lambda: |-
+          int revert_to = id(${id_prefix}_address_revert_to);
+          if (revert_to < 0) return;
+          id(${id_prefix}_address_revert_to) = -1;
+          id(${id_prefix}_address_reverting) = true;
+          auto call = id(${id_prefix}_modbus_address).make_call();
+          call.set_value((float) revert_to);
+          call.perform();
+
+  - id: ${id_prefix}_try_register
+    mode: single
+    parameters:
+      name: string
+      address: int
+      device_type: string
+    then:
+      - if:
+          condition:
+            lambda: 'return id(${id_prefix}_modbus_address).state == 0 && !id(modbus_add_claimed) && !name.empty();'
+          then:
+            - text.set:
+                id: ${id_prefix}_display_name
+                value: !lambda 'return name;'
+            - select.set:
+                id: ${id_prefix}_device_type
+                option: !lambda 'return device_type;'
+            - number.set:
+                id: ${id_prefix}_modbus_address
+                value: !lambda 'return address;'
+            # Claims the current counter value for this slot's own Sort
+            # Order, then bumps it - see that number entity's own
+            # comment for why (a fresh Add always sorts after every
+            # already-registered row, not by address among however many
+            # slots are still uncustomized).
+            - number.set:
+                id: ${id_prefix}_sort_order
+                value: !lambda 'return id(next_device_sort_order);'
+            - globals.set:
+                id: next_device_sort_order
+                value: !lambda 'return id(next_device_sort_order) + 1;'
+            - lambda: 'id(${id_prefix}_online).publish_state(true);'
+            - globals.set:
+                id: modbus_add_claimed
+                value: "true"

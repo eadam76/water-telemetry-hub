@@ -1,0 +1,738 @@
+
+globals:
+  # Checkpoint-persistent, monotonic (during normal runtime) pulse count.
+  # Only written by the total: on_value handler and the boot-seed step;
+  # the periodic flash checkpoint is governed by preferences:
+  # flash_write_interval (see water-telemetry-hub.yaml).
+  #
+  # That periodic checkpoint is fine while the count is only growing - a
+  # power cut loses at most the last minute of pulses - but NOT for the
+  # three operations that change the offset and the count together
+  # (Update, Delete, and the counter rebase). Those force this value out
+  # to flash in the same commit as the offset; see the Delete button's
+  # own note for what happens without that.
+  - id: ${id_prefix}_pulse_count
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  # Calibration offset in whole MILLILITRES, changes only on manual sync.
+  #
+  # int64_t millilitres, NOT a float of m3: a household meter's reading
+  # is routinely in the thousands of m3, and a float32 there cannot even
+  # hold whole litres exactly. One pulse is
+  # ${liters_per_pulse} litre, an exact integer number of millilitres, so
+  # in this unit every value this meter can ever hold is exact - no
+  # accumulated drift, no reading that changes just by being stored. See
+  # include/volume.h for the rule this follows across both meter types.
+  #
+  # NOT restore_value: true - that mechanism only saves via the globals
+  # component's own 1s polling (memcmp in its update()), so an immediate
+  # global_preferences->sync() call right after assignment would see
+  # nothing queued yet: the sync would only persist on a SECOND
+  # application, one polling cycle later. Handled instead with our own
+  # ESPPreferenceObject, saved explicitly and immediately (see the
+  # "Update" entity and the boot-load lambdas below) - keyed on
+  # fnv1a_hash("${id_prefix}_offset_ml"), so changing an *existing*
+  # meter's id_prefix loses its saved calibration (the new key just
+  # won't find the old flash entry) - a one-time re-sync after reflashing
+  # is the only consequence, not a functional problem, but worth knowing
+  # before renaming one.
+  - id: ${id_prefix}_offset_ml
+    type: int64_t
+    restore_value: false
+    initial_value: "0"
+
+  # millis() timestamp of the last valid pulse - for the zero-flow
+  # watchdog. Deliberately NOT persistent: after every restart, "we just
+  # booted, we don't yet know when the last pulse was" is the correct
+  # starting state, not a stale value from a previous session.
+  - id: ${id_prefix}_last_pulse_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+sensor:
+  # Pulse Rate (diagnostic, raw, uncalibrated signal) + the built-in
+  # `total` sub-sensor, which is the pulse_meter component's own "since
+  # boot" raw pulse total - source for the persistent pulse_count, and
+  # otherwise redundant with Total Pulses below (a checkpoint-persistent
+  # version of the same count, so it survives a restart this raw one
+  # does not).
+  #
+  # internal: true keeps it out of the native API (Home Assistant), same
+  # as every other entity in this file - it does NOT also hide it from
+  # THIS custom dashboard, which reads via web_server's own local REST/
+  # SSE API with include_internal: true (see water-telemetry-hub.yaml's
+  # own comment on that flag). Every other internal: true entity in this
+  # codebase still carries a name: and a web_server: sorting_group_id,
+  # exactly so it renders as a normal, correctly-grouped row here. This
+  # sub-sensor used to be the one exception - no name:, no web_server: -
+  # so it had nothing to group it under its own meter and fell into the
+  # dashboard's generic "Other" fallback card instead, labeled with its
+  # raw id ("meter1_pulse_total"), appearing even before the meter itself
+  # had been registered through the UI (this sensor exists and starts
+  # publishing from boot, independent of that app-level flag entirely).
+  #
+  # Debounce (internal_filter) is a compile-time, not runtime-configurable
+  # parameter here - see REQUIREMENTS.md "Kalibráció". 10 ms: well below
+  # the IZAR PULSE's minimum pulse width (50 ms), so it won't filter out a
+  # real pulse, while still rejecting noise spikes.
+  - platform: pulse_meter
+    id: ${id_prefix}_pulse_rate
+    name: "${friendly_name} Pulse Rate"
+    icon: "mdi:pulse"
+    pin:
+      number: ${pulse_pin}
+      mode: INPUT_PULLUP
+    internal_filter: 10ms
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    # disabled_by_default throughout this file (except Flow Rate/Total
+    # Consumption below - the device's actual job) - see the longer note
+    # next to the first sensor: in water-telemetry-hub.yaml for why. Doesn't
+    # affect this custom dashboard at all, which never goes through HA's
+    # entity registry either way.
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 40
+    total:
+      id: ${id_prefix}_pulse_total
+      name: "${friendly_name} Raw Pulse Total"
+      internal: true
+      icon: "mdi:counter"
+      accuracy_decimals: 0
+      state_class: ""
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: ${sorting_group_id}
+        sorting_weight: 41
+      on_value:
+        then:
+          - lambda: |-
+              // The pulse_meter total already reflects the absolute pulse
+              // count since the boot-seed (see on_boot) - this is
+              // pulse_count's only write site during normal operation.
+              //
+              // llroundf, not a (uint32_t) truncation: this sensor's state
+              // is a float, and a float that is meant to be N can arrive a
+              // hair below it - truncating would then lose a whole pulse,
+              // permanently, since this value is the counter itself and not
+              // a delta. The counter is kept below 8 million by the rebase
+              // in the interval: block below, well inside the range where a
+              // float32 represents every integer exactly, so this rounding
+              // is recovering the intended integer, not guessing at one.
+              uint32_t new_count = (uint32_t) std::llroundf(x);
+              // One pulse in exact millilitres. ${liters_per_pulse} is a
+              // build-time substitution, so this is a constant - written
+              // out in each lambda that needs it rather than kept in a
+              // global, so the unit conversion is visible right where the
+              // arithmetic happens.
+              const int64_t ML_PER_PULSE = (int64_t) std::llround((double) ${liters_per_pulse} * 1000.0);
+              id(${id_prefix}_pulse_count) = new_count;
+              id(${id_prefix}_last_pulse_ms) = millis();
+              id(${id_prefix}_total_pulses).publish_state(new_count);
+              int64_t total_ml = id(${id_prefix}_offset_ml) + (int64_t) new_count * ML_PER_PULSE;
+              volume::publish_volume(id(${id_prefix}_total_consumption), nullptr, id(${id_prefix}_exact), total_ml,
+                                     id(${id_prefix}_offset_ml));
+    on_value:
+      then:
+        - lambda: |-
+            // Flow Rate is derived from the same period-based measurement
+            // as Pulse Rate - the two stay consistent with each other.
+            float litres_per_minute = x * (float) ${liters_per_pulse};
+            id(${id_prefix}_flow_rate).publish_state(litres_per_minute);
+            // 1 L/min = 60 litres an hour = 0.06 m³/h.
+            id(${id_prefix}_flow_rate_m3h).publish_state(litres_per_minute * 0.06f);
+
+  # Flow Rate - calibrated (liters_per_pulse-scaled) value, updated only
+  # from Pulse Rate's on_value, no update schedule of its own.
+  #
+  # sorting_weight 20, after Total Consumption's 10: the dashboard's Home
+  # page shows the lowest-weight entity of a meter's group as the big
+  # "headline" number (see web/dashboard.js), and Total Consumption -
+  # what's actually being billed - is the one that belongs there, not the
+  # instantaneous rate.
+  - platform: template
+    id: ${id_prefix}_flow_rate
+    name: "${friendly_name} Calculated Flow Rate"
+    disabled_by_default: true
+    icon: "mdi:water-pump"
+    unit_of_measurement: "L/min"
+    device_class: volume_flow_rate
+    accuracy_decimals: 3
+    state_class: measurement
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 20
+
+  # The same measurement in the other unit customarily used for water.
+  # Both are published so nothing downstream has to convert: this
+  # dashboard shows both, and Home Assistant takes whichever its own
+  # cards and statistics want.
+  #
+  # 5 decimals, not 3: one cubic metre per hour is 16.67 litres per
+  # minute, so this number is ~16.7x smaller than the one it is derived
+  # from and needs more decimals, not fewer, to carry the same
+  # resolution. 0.001 L/min is 6e-5 m³/h, so five decimals keeps all of
+  # it without reaching past what the source actually resolves.
+  - platform: template
+    id: ${id_prefix}_flow_rate_m3h
+    # U+2044 FRACTION SLASH - see the same note on the Flow slot's
+    # own second-unit sensor in packages/pressure_sensor.yaml.
+    name: "${friendly_name} Calculated Flow Rate (m³⁄h)"
+    disabled_by_default: true
+    icon: "mdi:water-pump"
+    unit_of_measurement: "m³/h"
+    device_class: volume_flow_rate
+    accuracy_decimals: 5
+    state_class: measurement
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 21
+
+  # Total Consumption - the primary source for HA long-term statistics.
+  # (offset_ml + pulse_count * millilitres-per-pulse) / 1e6.
+  - platform: template
+    id: ${id_prefix}_total_consumption
+    name: "${friendly_name} Total Consumption"
+    disabled_by_default: true
+    icon: "mdi:water"
+    unit_of_measurement: "m³"
+    device_class: water
+    # total, NOT total_increasing. The physical meter is the authority
+    # here: its reading is read off by hand from time to time and the
+    # Reading/Update field corrects this total to match, in whichever
+    # direction it has drifted. Both directions are real - upward closes a
+    # gap of water that flowed without being counted, downward removes
+    # volume that was counted without flowing - so both belong in the
+    # statistics as the differences they are.
+    #
+    # total_increasing cannot express that. It treats any decrease as the
+    # meter having been replaced or reset, and continues the sum from the
+    # new value - so a single downward correction after a hand reading
+    # would book the meter's ENTIRE total as consumption in one step. That
+    # is not a rounding error in a statistic, it is a fabricated year of
+    # water. total computes the sum from successive differences and
+    # handles a decrease as what it is: a negative one.
+    #
+    # The same choice also makes the checkpoint rollback after a power cut
+    # honest (up to a minute of pulses, see the pulse_count global) instead
+    # of a spike.
+    state_class: total
+    # 3, matching this meter's own physical resolution: one pulse is
+    # ${liters_per_pulse} liter(s), so pulse_count * lpp / 1000 always
+    # lands on a 0.001 m3 grid and there is no finer measurement to
+    # report. Printing more digits than that would only surface a
+    # float32's own quantization (12345.001 stored as 12345.000977) as
+    # what looks like a bug in the reading itself - a physical meter's
+    # resolution is not a value a person can type finer than, so it's
+    # enforced on the way IN instead (the Reading field's own step below,
+    # which web/dashboard.js validates against), and nothing beyond it is
+    # ever stored or displayed. Not truncation: there is genuinely
+    # nothing past the third decimal to truncate.
+    #
+    # If liters_per_pulse is ever changed, change this and the Reading
+    # step below to match: decimals = -log10(lpp / 1000).
+    accuracy_decimals: 3
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 10
+
+  # Total Pulses - diagnostic, raw readout of the persistent pulse_count.
+  # Deliberately NO state_class: no need for HA long-term statistics on it
+  # (that's what Total Consumption is for), and being checkpoint-based it
+  # could jump backwards on power loss just like pulse_count itself.
+  - platform: template
+    id: ${id_prefix}_total_pulses
+    name: "${friendly_name} Total Pulses"
+    icon: "mdi:counter"
+    unit_of_measurement: "pulses"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 50
+
+text_sensor:
+  # The exact, float-free volume channel: "<total_ml>|<offset_ml>", both
+  # plain integer millilitres, published by volume::publish_volume()
+  # alongside the Total Consumption sensor above. This is what
+  # web/dashboard.js actually renders for this meter's reading - see that
+  # function's own comment (include/volume.h) for why a float sensor
+  # can't be the source of truth for a displayed measurement.
+  #
+  # Never shown as a row of its own anywhere in the dashboard (it's a
+  # transport format, not something to show a person) - see
+  # HIDDEN_FROM_PULSE_DIAG in web/dashboard.js.
+  - platform: template
+    id: ${id_prefix}_exact
+    name: "${friendly_name} Exact Millilitres"
+    internal: true
+    icon: "mdi:numeric"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 55
+
+switch:
+  - platform: template
+    id: ${id_prefix}_enabled
+    name: "${friendly_name} Registered"
+    internal: true
+    icon: "mdi:check-decagram-outline"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    disabled_by_default: true
+    on_state:
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 90
+
+text:
+  # Purely cosmetic label - shown on the dashboard's Home card and
+  # Service section header instead of the fixed "${friendly_name}", so a
+  # meter can be renamed per-installation (e.g. "Main Meter"/"Garden
+  # Meter", or anything else) without touching the YAML. Starts out equal
+  # to friendly_name (itself deliberately generic - "Pulse Meter 1/2",
+  # not "Main"/"Garden") until renamed. The id_prefix/entity names/
+  # sorting_group stay fixed at compile time either way - only what's
+  # *displayed* changes.
+  - platform: template
+    id: ${id_prefix}_display_name
+    name: "${friendly_name} Display Name"
+    internal: true
+    icon: "mdi:rename-box"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "${friendly_name}"
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    # Same immediate-flush reasoning as the Show on Dashboard switch above - but
+    # TemplateText::control() saves to the preference *after* firing
+    # set_action (unlike the switch base class), so sync()ing straight
+    # from set_action would flush too early and miss this exact change.
+    # A trivial delay is enough: control() is a single synchronous call,
+    # so by the time this resumes (a full scheduler tick later) the save
+    # has long since happened.
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 6
+
+  # Set by the dashboard (not typed by hand in normal use) immediately
+  # before pressing the Add button below - same pattern as the pressure
+  # sensors' shared "Modbus Devices Add Name" (water-telemetry-hub.yaml),
+  # just one of these per meter instead of one shared field, since the
+  # unified Devices table (web/dashboard.js) already knows exactly which
+  # meter/GPIO slot it's adding (no discovery/claim-race to resolve, see
+  # the Add button's own comment). Not persisted: transient, cleared back
+  # to empty right after Add fires.
+  - platform: template
+    id: ${id_prefix}_add_name
+    name: "${friendly_name} Add Name"
+    internal: true
+    icon: "mdi:form-textbox"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 93
+
+  # Applying a Reading is ONE write, carrying the value with it:
+  # recompute offset_ml so Total Consumption reads exactly the given
+  # value, without disturbing pulse_count (the diagnostic pulse counter).
+  # Saves immediately, independent of the checkpoint schedule.
+  #
+  # It used to be two independent requests - set the Reading number, then
+  # press an Update button that read whatever that number happened to
+  # hold. Between those two requests anything could change it: a second
+  # browser tab, a Home Assistant call, a retry of the first request - and
+  # the button would then apply a value nobody asked for, to a meter's
+  # accumulated total, irreversibly. There is no lock that fixes that
+  # shape; the fix is for the value and the command to be the same
+  # request, which is what this is. Identical in every respect to
+  # pressure_sensor.yaml's own "Update" - see the longer note there.
+  #
+  # A `text` entity rather than a `number` because ESPHome parses a
+  # number entity's value into a float32, which cannot hold "12345.001"
+  # exactly. The typed digits arrive here as the string they were typed
+  # as and are parsed straight to exact integer millilitres.
+  - platform: template
+    id: ${id_prefix}_sync_apply
+    name: "${friendly_name} Update"
+    internal: true
+    icon: "mdi:sync"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 24
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 80
+    set_action:
+      - lambda: |-
+          const int64_t ML_PER_PULSE = (int64_t) std::llround((double) ${liters_per_pulse} * 1000.0);
+          const char *status = "ok";
+          int64_t target_ml = 0;
+          if (!volume::parse_m3_to_ml(x, target_ml)) {
+            status = "invalid";
+          } else if (target_ml < 0 || target_ml > 1000000000000LL) {
+            // Matches the Reading field's own 0..1000000 m3 range.
+            status = "range";
+          } else if (ML_PER_PULSE > 0 && target_ml % ML_PER_PULSE != 0) {
+            // This meter counts whole pulses of ${liters_per_pulse} litre;
+            // a reading between two pulses is not something it can be set
+            // to. The dashboard refuses this earlier, against the Reading
+            // field's own step - this is the same rule enforced where it
+            // actually binds, so an API call or a second client can't get
+            // past it either. Refused, never rounded: rounding a
+            // sub-resolution reading down would silently look like lost
+            // data.
+            status = "resolution";
+          }
+          if (strcmp(status, "ok") == 0) {
+            // Stored exactly as computed - deliberately NOT snapped to
+            // zero below some epsilon (see pressure_sensor.yaml's own
+            // identical note): a snap-to-zero would silently destroy a
+            // deliberate small correction. Never round a measurement to
+            // tidy up a display.
+            id(${id_prefix}_offset_ml) = target_ml - (int64_t) id(${id_prefix}_pulse_count) * ML_PER_PULSE;
+            // The preference handle must remain static because it is
+            // non-owning and its backend allocation is intended for reuse.
+            static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_offset_ml"));
+            pref.save(&id(${id_prefix}_offset_ml));
+            // The offset is computed FROM the pulse count, so the two are
+            // only meaningful together: persisting one without the other
+            // would restore a reading that is off by however many pulses
+            // the checkpoint was behind. Same single-commit reasoning as
+            // the Delete button - see its own note.
+            ${id_prefix}_pulse_count->update();
+            global_preferences->sync();
+            volume::publish_volume(id(${id_prefix}_total_consumption), nullptr, id(${id_prefix}_exact), target_ml,
+                                   id(${id_prefix}_offset_ml));
+          } else {
+            ESP_LOGW("meter", "${friendly_name}: Reading update refused (%s) for input '%s'", status, x.c_str());
+          }
+          volume::publish_update_result(id(device_update_result), "${friendly_name}", status, x);
+
+number:
+  - platform: template
+    id: ${id_prefix}_sort_order
+    name: "${friendly_name} Sort Order"
+    internal: true
+    icon: "mdi:sort"
+    mode: box
+    min_value: 0
+    max_value: 65535
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 91
+
+  # The Reading field's contract, not an action: min/max/step/unit are
+  # what web/dashboard.js validates a typed reading against (its `step`
+  # is this meter's own resolution - see readingStepViolation() there),
+  # and its state is the staged value. Applying is a separate, single,
+  # atomic write to the "Update" text entity below; setting this number
+  # on its own deliberately does nothing.
+  - platform: template
+    id: ${id_prefix}_sync_target
+    name: "${friendly_name} Reading"
+    internal: true
+    icon: "mdi:counter"
+    unit_of_measurement: "m³"
+    mode: box
+    min_value: 0
+    # 1000000 m3 - a sanity bound, not a measurement limit. See the
+    # identical note on pressure_sensor.yaml's own Reading field for the
+    # trap the old 100000 created: a total that climbed past the ceiling
+    # left this field unable to express the very value it exists to
+    # correct.
+    max_value: 1000000
+    # This meter's own resolution: one pulse is ${liters_per_pulse}
+    # liter(s) = 0.001 m3, so a reading finer than that isn't something
+    # this meter can measure or represent. web/dashboard.js reads this
+    # step straight off the entity and rejects any typed value with more
+    # decimals than it allows, with a message naming the resolution -
+    # rather than accepting it and quietly rounding, which is what
+    # produced the confusing 12345.000001 -> 12345.000000 result on real
+    # hardware. Keep in sync with Total Consumption's own
+    # accuracy_decimals above if liters_per_pulse ever changes.
+    step: 0.001
+    optimistic: true
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 60
+
+  # Zero-flow timeout - runtime-adjustable, low-level parameter (see
+  # REQUIREMENTS.md "Pillanatnyi átfolyás számítása"). restore_value: true
+  # -> survives a restart too - and, same reasoning as Display Name above
+  # (TemplateNumber::control() also saves *after* firing set_action), a
+  # short delay before sync() forces that write to flash immediately
+  # instead of leaving it queued for up to flash_write_interval.
+  - platform: template
+    id: ${id_prefix}_zero_flow_timeout
+    name: "${friendly_name} Zero-Flow Timeout"
+    internal: true
+    icon: "mdi:timer-cog-outline"
+    unit_of_measurement: "s"
+    mode: box
+    min_value: 10
+    max_value: 600
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: ${zero_flow_timeout_default}
+    entity_category: config
+    disabled_by_default: true
+    set_action:
+      - delay: 10ms
+      - lambda: global_preferences->sync();
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 70
+
+button:
+  # Registers this meter - counterpart of the pressure sensors' shared
+  # "Modbus Devices Add" (water-telemetry-hub.yaml), but simpler: the
+  # unified Devices table's Add flow (web/dashboard.js) already knows
+  # exactly which meter/GPIO slot it's adding (the user picks a specific
+  # still-free "Pulse Meter N" slot, there's no scan/discovery step at
+  # all - see the file header) so there's no cross-slot claim race to
+  # guard against here, unlike the pressure sensors' 8-slot "first free
+  # one wins" scramble. One button per meter instead of one shared
+  # trigger for the same reason. No-ops (silently) if already registered
+  # or the name is empty - the dashboard's own Add control already
+  # prevents both, this is just the same belt-and-braces guard the
+  # pressure sensors' try_register script has.
+  - platform: template
+    id: ${id_prefix}_add
+    name: "${friendly_name} Add"
+    internal: true
+    icon: "mdi:plus"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 94
+    on_press:
+      - if:
+          condition:
+            lambda: 'return !id(${id_prefix}_enabled).state && !id(${id_prefix}_add_name).state.empty();'
+          then:
+            - text.set:
+                id: ${id_prefix}_display_name
+                value: !lambda 'return id(${id_prefix}_add_name).state;'
+            # Claims the current counter value for this meter's own Sort
+            # Order, then bumps it - see that number entity's own
+            # comment (shared next_device_sort_order counter, same
+            # scheme a pressure slot's try_register uses).
+            - number.set:
+                id: ${id_prefix}_sort_order
+                value: !lambda 'return id(next_device_sort_order);'
+            - globals.set:
+                id: next_device_sort_order
+                value: !lambda 'return id(next_device_sort_order) + 1;'
+            - switch.turn_on: ${id_prefix}_enabled
+      - text.set:
+          id: ${id_prefix}_add_name
+          value: ""
+
+  - platform: template
+    id: ${id_prefix}_delete
+    name: "${friendly_name} Delete"
+    internal: true
+    icon: "mdi:delete-outline"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: ${sorting_group_id}
+      sorting_weight: 95
+    on_press:
+      - switch.turn_off: ${id_prefix}_enabled
+      - number.set:
+          id: ${id_prefix}_sort_order
+          value: 0
+      - text.set:
+          id: ${id_prefix}_display_name
+          value: "${friendly_name}"
+      # Deliberate: Delete really does zero this meter's accumulated
+      # consumption - offset and pulse count both - so re-adding the
+      # slot starts from nothing rather than
+      # silently resurrecting an old total. The dashboard's own Delete
+      # confirmation says exactly this; see confirmMessageForPress() in
+      # web/dashboard.js, which used to promise the opposite.
+      - lambda: |-
+          id(${id_prefix}_offset_ml) = 0;
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_offset_ml"));
+          pref.save(&id(${id_prefix}_offset_ml));
+      # Zeroes pulse_count (through the total: on_value chain) BEFORE the
+      # single sync() below, so both halves of the reset are committed
+      # together - see that lambda for why that ordering is the whole
+      # point.
+      - pulse_meter.set_total_pulses:
+          id: ${id_prefix}_pulse_rate
+          value: 0
+      - lambda: |-
+          id(${id_prefix}_last_pulse_ms) = 0;
+          id(${id_prefix}_pulse_rate).publish_state(0);
+          id(${id_prefix}_flow_rate).publish_state(0);
+          id(${id_prefix}_flow_rate_m3h).publish_state(0);
+          id(${id_prefix}_sync_target).publish_state(0);
+          // Commit the offset and the pulse count in ONE flash write.
+          //
+          // The offset has its own preference and was saved immediately
+          // above; the pulse count belongs to the globals component,
+          // which only writes it out from its own 1 s update() and then
+          // waits for the 60 s flash checkpoint. Committing them
+          // separately would leave a reset durable in one half and
+          // volatile in the other: a power cut within that minute would
+          // bring the old pulse count back against a zeroed offset, and
+          // the deleted meter's consumption would reappear.
+          //
+          // update() is that component's own public "store the value if
+          // it changed" entry point (globals_component.h), so calling it
+          // here queues the new count alongside the offset; the single
+          // sync() that follows commits both in one NVS transaction.
+          // Crash before it: neither is written, and the meter is exactly
+          // as it was. Crash after: both are. There is no in-between.
+          ${id_prefix}_pulse_count->update();
+          global_preferences->sync();
+
+interval:
+  # Zero-flow watchdog: if no new pulse has arrived for `timeout` seconds,
+  # Flow Rate (and, via the on_value chain, nothing else, since Pulse Rate
+  # is the source) is explicitly set to 0. Only publishes when not already
+  # 0, to avoid generating redundant, repeated states.
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(${id_prefix}_pulse_rate).state != 0) {
+            uint32_t timeout_ms = (uint32_t) (id(${id_prefix}_zero_flow_timeout).state * 1000);
+            uint32_t elapsed_ms = millis() - id(${id_prefix}_last_pulse_ms);
+            if (elapsed_ms > timeout_ms) {
+              id(${id_prefix}_pulse_rate).publish_state(0);
+            }
+          }
+
+      # Pulse-counter rebase - removes the one remaining place a float
+      # could still cost this meter a real measurement.
+      #
+      # The pulse_meter component's own `total:` sub-sensor is a float
+      # sensor, so the absolute pulse count travels through a float32 on
+      # its way into pulse_count. A float32 represents every integer
+      # exactly only up to 16,777,216; past that the count would start
+      # skipping values, and at ${liters_per_pulse} litre per pulse that
+      # ceiling is reached by a perfectly ordinary meter given enough
+      # years. Folding the accumulated pulses into offset_ml (which is an
+      # exact integer and has no such ceiling) and restarting the counter
+      # keeps it permanently in the range where the float is exact, with
+      # no effect on the reported total at all - the same volume is simply
+      # carried in the offset instead of the counter.
+      #
+      # Done here, from the interval, rather than inside the total:
+      # on_value handler: set_total_pulses() publishes that same sensor
+      # synchronously, so folding from inside its own handler would
+      # re-enter it mid-update.
+      - lambda: |-
+          const int64_t ML_PER_PULSE = (int64_t) std::llround((double) ${liters_per_pulse} * 1000.0);
+          const uint32_t REBASE_ABOVE_PULSES = 8000000;  // half the float32 exact-integer ceiling
+          if (id(${id_prefix}_pulse_count) < REBASE_ABOVE_PULSES) return;
+          uint32_t folded = id(${id_prefix}_pulse_count);
+          id(${id_prefix}_offset_ml) += (int64_t) folded * ML_PER_PULSE;
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_offset_ml"));
+          pref.save(&id(${id_prefix}_offset_ml));
+          // Publishes the total: sub-sensor, whose on_value handler then
+          // recomputes pulse_count/Total Consumption from the new offset -
+          // the reported volume is unchanged across this.
+          id(${id_prefix}_pulse_rate).set_total_pulses(0);
+          // Both halves in one commit, and the order matters even more
+          // here than at Delete: the offset now CONTAINS the folded
+          // pulses, so a power cut that persisted the offset but restored
+          // the old pulse count would count that volume twice. Saving the
+          // offset without syncing, zeroing the count, then syncing once
+          // makes the fold all-or-nothing. See the Delete button's own
+          // note for what update() is doing.
+          ${id_prefix}_pulse_count->update();
+          global_preferences->sync();
+          // (unsigned) cast, not a bare uint32_t: on xtensa uint32_t is
+          // `long unsigned int`, which %u doesn't match and warns.
+          ESP_LOGI("meter", "${friendly_name}: folded %u pulses into the offset to keep the counter exact",
+                   (unsigned) folded);
+
+esphome:
+  on_boot:
+    # Default priority: every component's setup() (including restore_value
+    # globals being restored) has already run by this point.
+    then:
+      # Load offset_m3 from its own preference slot, BEFORE anything uses
+      # it - same preference key as the "Update" button's save. If there
+      # was never a manual sync, load() returns false and it stays at its
+      # 0 initial_value.
+      #
+      # on_boot only runs once, so the leak explained next to the Update
+      # button's own make_preference() call isn't really live here - but
+      # `static` costs nothing and keeps both call sites consistent.
+      #
+      # Migration: firmware before this stored the offset as a float of
+      # m3 under a different key. An OTA update must not silently drop a
+      # calibration someone applied by hand, so when the millilitre key is
+      # absent the old float key is read once, converted, and saved
+      # forward. The conversion is exact for any offset a float32 could
+      # represent in the first place, which is all the old format held.
+      - lambda: |-
+          static auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash("${id_prefix}_offset_ml"));
+          int64_t loaded = 0;
+          if (pref.load(&loaded)) {
+            id(${id_prefix}_offset_ml) = loaded;
+          } else {
+            static auto legacy = global_preferences->make_preference<float>(fnv1a_hash("${id_prefix}_offset_m3"));
+            float legacy_m3 = 0;
+            if (legacy.load(&legacy_m3) && std::isfinite(legacy_m3)) {
+              id(${id_prefix}_offset_ml) = (int64_t) std::llround((double) legacy_m3 * 1000000.0);
+              pref.save(&id(${id_prefix}_offset_ml));
+              ESP_LOGI("meter", "${friendly_name}: migrated calibration offset %f m3 -> %lld ml", legacy_m3,
+                       (long long) id(${id_prefix}_offset_ml));
+            }
+          }
+      # Seed the pulse_meter's own "since boot" total with the persisted
+      # pulse_count, so from now on the total: on_value gives the
+      # absolute (not just "since boot") pulse count.
+      - pulse_meter.set_total_pulses:
+          id: ${id_prefix}_pulse_rate
+          value: !lambda 'return id(${id_prefix}_pulse_count);'
+      # The set_total_pulses call above also publishes the `total:`
+      # sub-sensor, which synchronously runs the on_value chain further up
+      # - Total Pulses, Total Consumption and last_pulse_ms are already
+      # updated there (pulse_count onto itself, a no-op). All that's left
+      # here is explicitly zeroing Pulse Rate at startup, which cascades
+      # to Flow Rate via its own on_value - so there's no duplicated logic
+      # anywhere.
+      - lambda: |-
+          id(${id_prefix}_pulse_rate).publish_state(0);

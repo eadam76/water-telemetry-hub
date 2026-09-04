@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, dependency-light checks that don't need the ESP toolchain: the
+  # firmware headers that carry the actual logic (compiled and executed on
+  # the host against stubbed ESPHome APIs - see tests/stubs) and the
+  # dashboard, run unmodified in a real browser against a mocked device.
+  # Deliberately a separate job from the firmware build below: these are
+  # the checks that catch the bugs that have actually happened here, and
+  # they finish in under a minute, so they should report on their own
+  # rather than queueing behind a full ESP-IDF compile.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Firmware unit tests
+        run: ./tests/run.sh cpp
+
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Dashboard end-to-end tests
+        run: ./tests/run.sh js
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned to the version the device is actually flashed with - CI
+      # sitting a minor version behind is how a removed SSE field
+      # (`name_id`, gone in 2026.8) once passed green here while breaking
+      # the live dashboard.
+      - name: Install ESPHome
+        run: python -m pip install --disable-pip-version-check esphome==2026.8.2
+
+      - name: Create non-production build secrets
+        run: |
+          printf '%s\n' \
+            'api_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="' \
+            'ota_password: "ci-placeholder"' \
+            > secrets.yaml
+
+      - name: Validate ESPHome configuration
+        run: esphome config water-telemetry-hub.yaml >/dev/null
+
+      # The numbers that decide whether a measurement reaches the screen
+      # intact - decimals shown, precision accepted, ceilings - checked
+      # against the real substituted config. See tests/check_config.py.
+      - name: Check the meter entities' numeric contracts
+        run: ./tests/run.sh config
+
+      - name: Compile firmware
+        run: esphome compile water-telemetry-hub.yaml

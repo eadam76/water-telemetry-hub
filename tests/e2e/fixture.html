@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head><link rel=icon href=data:>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<script>
+  // Test harness for web/dashboard.js. Replaces the two things the real
+  // dashboard talks to the device through - the SSE stream and fetch() -
+  // with drivable stand-ins, so a test can push exactly the state events
+  // a real device would send and then assert on exactly the requests the
+  // dashboard made back. Nothing in dashboard.js is modified or
+  // instrumented for this; it runs unaltered.
+  window.__posts = [];
+  window.__alerts = [];
+  window.__confirms = [];
+  window.__confirmAnswer = true;
+
+  window.fetch = function (path, options) {
+    window.__posts.push({ path: String(path), method: (options && options.method) || "GET" });
+    return Promise.resolve({ ok: true, status: 200, statusText: "OK" });
+  };
+
+  window.alert = function (message) {
+    window.__alerts.push(String(message));
+  };
+  window.confirm = function (message) {
+    window.__confirms.push(String(message));
+    return window.__confirmAnswer;
+  };
+
+  class MockEventSource extends EventTarget {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.readyState = 1;
+      window.__es = this;
+      setTimeout(() => {
+        if (this.onopen) this.onopen();
+      }, 0);
+    }
+    close() {}
+  }
+  window.EventSource = MockEventSource;
+
+  // Pushes one SSE event into the dashboard, exactly as the device would.
+  window.__emit = function (type, obj) {
+    window.__es.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(obj) }));
+  };
+</script>
+<script src="dashboard.js"></script>
+</body>
+</html>

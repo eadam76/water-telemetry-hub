@@ -1,0 +1,1527 @@
+/* Water Telemetry Hub - custom dark dashboard.
+ * Hides the stock ESPHome web_server v3 app (<esp-app>, Shadow DOM, no
+ * meaningful CSS theming hooks) and styles our own overlay UI, injected by
+ * dashboard.js. Self-contained, no external fonts/icons/CDN - everything
+ * here has to work with zero network access.
+ *
+ * Structure (see dashboard.js for the "why"): four fixed pages - Home
+ * (meter readings, the device's actual job), Service (calibration +
+ * device actions), Diagnostics (everything else, as plain label/value
+ * rows) and Log (live debug output) - not one page per sorting_group.
+ */
+
+esp-app {
+  display: none !important;
+}
+
+/* Belt-and-suspenders for the standalone-webapp bottom white strip: if
+ * #hub-root's computed height (100dvh) ever falls even a pixel short of
+ * the true bottom edge in standalone mode - see dashboard.js, near
+ * nudgeViewportSync(), for the still-unsolved #hub-nav gap this is related
+ * to - this is what would otherwise show through underneath it, the
+ * page's own default (white) background, not ours. Set on html/body
+ * directly so there's no gap left to show anything else, regardless of the exact
+ * pixel cause. margin: 0 also rules out the default <body> margin as a
+ * source of the same kind of gap. */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* var(--hub-bg) works here even though :root is declared further down -
+   * custom property resolution isn't parse-order-dependent. */
+  background: var(--hub-bg);
+  /* Belt-and-suspenders alongside #hub-main's own overflow-x: hidden below:
+   * on mobile, body/html (not #hub-main) is the element that actually
+   * scrolls (see the @media block's comment for why) - if anything ever
+   * overflows horizontally, this is the level that would otherwise let the
+   * whole page pan sideways. */
+  overflow-x: hidden;
+}
+
+
+:root {
+  --hub-bg: #0d0d0d;
+  --hub-surface: #1a1a19;
+  --hub-surface-2: #232322;
+  --hub-border: rgba(255, 255, 255, 0.14);
+  --hub-border-subtle: rgba(255, 255, 255, 0.09);
+  --hub-text: #ffffff;
+  --hub-text-muted: #c3c2b7;
+  --hub-text-faint: #898781;
+
+  --hub-accent: #38bdf8;
+  --hub-accent-strong: #7dd3fc;
+  --hub-accent-dim: #1e3138;
+
+  --hub-status-good: #0ca30c;
+  --hub-status-good-dim: #182d17;
+
+  --hub-danger: #d03b3b;
+  --hub-danger-dim: #371f1e;
+  --hub-warning: #fab219;
+  --hub-warning-dim: #392f19;
+
+  --hub-radius: 14px;
+  --hub-radius-sm: 9px;
+  --hub-radius-xs: 6px;
+}
+
+#hub-root,
+#hub-root * {
+  box-sizing: border-box;
+}
+
+#hub-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* iOS Safari's address bar/toolbar slides in over fixed-position content
+   * instead of resizing the layout viewport - a plain `inset: 0`/100%
+   * height stays sized for when the chrome is hidden, so the bottom nav
+   * ends up covered the moment it reappears. 100vh first as a
+   * fallback for engines without dvh; 100dvh (the *current*, shrinkable
+   * viewport height) overrides it wherever supported and tracks the
+   * chrome live. */
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  background: var(--hub-bg);
+  color: var(--hub-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  z-index: 999999;
+  overflow: hidden;
+}
+
+/* --- Sidebar (desktop) / bottom tab bar (mobile) --- */
+
+#hub-nav {
+  flex: 0 0 84px;
+  background: var(--hub-surface);
+  border-right: 1px solid var(--hub-border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 14px 8px;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.hub-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: var(--hub-radius-sm);
+  cursor: pointer;
+  color: var(--hub-text-muted);
+  border: 1px solid transparent;
+  background: none;
+  font: inherit;
+}
+
+.hub-nav-item svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.hub-nav-item span {
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-align: center;
+  max-width: 68px;
+}
+
+.hub-nav-item.active {
+  color: var(--hub-accent);
+  background: var(--hub-accent-dim);
+  border-color: var(--hub-accent);
+}
+
+.hub-nav-item:hover:not(.active) {
+  background: var(--hub-surface-2);
+  color: var(--hub-text);
+}
+
+/* --- Main content --- */
+
+#hub-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Launched from the home screen (apple-mobile-web-app-capable), there's
+   * no Safari chrome anymore to hold the header below the system status
+   * bar (clock/battery) - it draws directly over the page, on top of our
+   * own header, unless we reserve the same space it does (CR "webapp
+   * nézetben felkúszik"). env(safe-area-inset-top) is 0 in an ordinary
+   * browser tab, so this is a no-op there. */
+  padding: calc(24px + env(safe-area-inset-top)) 28px 80px;
+}
+
+#hub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+#hub-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Groups the signal widget and the connection dot into one flex item, so
+ * #hub-header's justify-content: space-between (title vs. this) still only
+ * ever splits into two slots regardless of how many things live on the
+ * right - without this they'd space themselves apart from each other too,
+ * which falls apart fast on a narrow phone screen. */
+#hub-header-right {
+  display: flex;
+  align-items: center;
+}
+
+#hub-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--hub-text-muted);
+}
+
+#hub-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hub-danger);
+}
+
+#hub-status.connected .dot {
+  /* Status color, not the accent - "connected" is a health reading,
+     same category as the pressure table's own OK badge, not an
+     interactive/brand element. */
+  background: var(--hub-status-good);
+}
+
+
+#hub-wifi-signal {
+  display: flex;
+  align-items: center;
+  margin-right: 10px;
+}
+
+#hub-wifi-signal svg {
+  width: 19px;
+  height: 17px;
+  fill: none;
+}
+
+#hub-wifi-signal .arc {
+  stroke: var(--hub-border);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  fill: none;
+  transition: stroke 0.2s;
+}
+
+#hub-wifi-signal .dot {
+  fill: var(--hub-border);
+  stroke: none;
+  transition: fill 0.2s;
+}
+
+/* Tier 1 (weak): red - just the dot. */
+#hub-wifi-signal[data-tier="1"] .dot {
+  fill: var(--hub-danger);
+}
+
+/* Tier 2 (fair): amber - dot + arc-1. */
+#hub-wifi-signal[data-tier="2"] .dot {
+  fill: var(--hub-warning);
+}
+#hub-wifi-signal[data-tier="2"] .arc-1 {
+  stroke: var(--hub-warning);
+}
+
+/* Tier 3-4 (good/excellent): blue - dot + arc-1 (+ arc-2, + arc-3 at
+ * tier 4 - the only actual difference between the two tiers). */
+#hub-wifi-signal[data-tier="3"] .dot,
+#hub-wifi-signal[data-tier="4"] .dot {
+  fill: var(--hub-accent);
+}
+#hub-wifi-signal[data-tier="3"] .arc-1,
+#hub-wifi-signal[data-tier="3"] .arc-2,
+#hub-wifi-signal[data-tier="4"] .arc-1,
+#hub-wifi-signal[data-tier="4"] .arc-2,
+#hub-wifi-signal[data-tier="4"] .arc-3 {
+  stroke: var(--hub-accent);
+}
+
+.hub-page {
+  display: none;
+}
+
+.hub-page.active {
+  display: block;
+}
+
+.hub-section-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hub-text-muted);
+  margin: 0 0 10px;
+}
+
+/* --- Home page: one card per meter (Main/Garden, later Pressure) --- */
+
+.hub-meter-card {
+  background: var(--hub-surface);
+  border: 1px solid var(--hub-border);
+  border-radius: var(--hub-radius);
+  /* Tightened: a single-metric card (a Pressure-type slot, just
+     "Pressure") left visibly more empty space above the header and below
+     the value/label than a two-metric one - this padding, plus the
+     headline metric's own padding above, was why. */
+  padding: 12px 18px;
+  margin-bottom: 14px;
+}
+
+.hub-meter-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.hub-meter-card-header svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  /* Muted, not accent - matches the Devices table's own per-row type
+     icon (.hub-device-type-icon): a category glyph, not an interactive
+     control, so it shouldn't compete visually with actual buttons/links
+     for the one color that means "clickable". */
+  color: var(--hub-text-muted);
+}
+
+
+.hub-meter-card-header-icon {
+  display: inline-flex;
+}
+
+
+.hub-meter-card-header-label {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--hub-text-muted);
+}
+
+
+.hub-meter-card-status {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* A meter's lowest-weight metric (Total Consumption) - the one figure
+ * that actually matters day to day - shown big; everything else in the
+ * card (Flow Rate) as a plain, secondary label/value line below it.
+ *
+ * A plain stacked layout, deliberately, not the secondary metric beside
+ * the headline: that would mean Total Consumption has to fit next to
+ * Flow Rate on one line, fundamentally incompatible with this project's
+ * "never truncate or round a measurement" requirement (these are
+ * measuring instruments, full precision shown always - see fmtValue()
+ * in web/dashboard.js): a reading can legitimately run to several
+ * decimal digits, and no column-width trick makes two such
+ * numbers reliably fit side by side on a phone screen. Stacked, each
+ * metric gets the card's full width and never has to fight the other
+ * for room. */
+.hub-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 7px 0;
+  /* Subtle, not the full-strength border - an internal divider between
+     two metrics in the same card, not the card's own outer edge; see the
+     Devices table's own row dividers for the same distinction. */
+  border-top: 1px solid var(--hub-border-subtle);
+}
+
+.hub-metric:first-child {
+  border-top: none;
+}
+
+/* Its help text (see attachHelp() in dashboard.js) is a flex sibling of
+ * the value/label, inserted right after whichever one it's attached to -
+ * forcing it onto its own full-width line (via flex-wrap above) keeps it
+ * from being squeezed in as a third column next to the number. */
+.hub-metric .hub-help-text {
+  flex-basis: 100%;
+  order: 3;
+}
+
+/* Same white-space: nowrap overflow fix .hub-list-row .v needed - a long
+ * headline number (a multi-digit Total Consumption reading, 32px font on
+ * the headline metric) can otherwise force the card - and the page -
+ * wider than the viewport. Same fix: let it wrap
+ * instead of pushing the layout wider. min-width: 0 on the parent .v
+ * flex item is needed for that wrapping to actually take effect, same
+ * reasoning as .hub-list-row .v. */
+.hub-metric .v {
+  /* Monospace, tabular numerals - a live instrument reading, not prose;
+     digits line up in a column and don't jitter sideways as they update.
+     The unit suffix (.unit below) stays in the
+     UI sans, matching .hub-metric .l - only the number itself needs to be
+     "instrument-panel" styled. */
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  /* A measurement can be shown in more than one unit at once (a flow rate
+     is published in both m³/h and l/min) - those sit side by side in one
+     row. wrap, not nowrap: on a narrow phone the second value drops to
+     its own line rather than pushing the card wider than the viewport,
+     which is a failure this card has had before. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 14px;
+}
+
+/* One value + its unit. Reserving a fixed width for the first of a pair
+   is what makes the second value start at the same place on every card,
+   so the second column lines up down the page instead of drifting with
+   however many digits the first value happens to have. Sized for the
+   practical maximum of a flow rate at this precision - "99.999999 m³/h",
+   nine monospace digits plus the unit in the (narrower) UI sans. A value
+   wider than that pushes its neighbour right rather than being cut off:
+   these are measuring instruments, and a misaligned column is a much
+   smaller problem than a truncated reading. */
+.hub-metric-value {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.hub-metric-value:not(:only-child) {
+  white-space: nowrap;
+}
+
+.hub-metric-value:not(:only-child):first-child {
+  min-width: 15ch;
+}
+
+/* A hairline between the two units, so they read as one measurement
+   shown twice rather than two unrelated numbers that happen to sit next
+   to each other. Same subtle border the card already uses between
+   metrics - a divider, not an edge. Padding matches the column gap, so
+   the line sits midway between the two values. */
+.hub-metric-value:not(:only-child) + .hub-metric-value {
+  border-left: 1px solid var(--hub-border-subtle);
+  padding-left: 14px;
+}
+
+.hub-metric .v .unit {
+  /* Back to the UI sans - only the number itself is monospace/
+     instrument-styled, the unit suffix reads as a label. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--hub-text-muted);
+  margin-left: 4px;
+}
+
+.hub-metric .l {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--hub-text-muted);
+}
+
+.hub-metric.hub-metric-headline {
+  padding: 4px 0 14px;
+  border-top: none;
+}
+
+.hub-metric.hub-metric-headline .v {
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.hub-metric.hub-metric-headline .v .unit {
+  font-size: 15px;
+}
+
+/* --- Diagnostics page: grouped, plain label/value rows - no boxes --- */
+
+.hub-diag-group {
+  margin-bottom: 24px;
+}
+
+.hub-diag-group:last-child {
+  margin-bottom: 0;
+}
+
+.hub-list-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 0;
+  /* Subtle, not the full-strength border - see .hub-metric's own comment
+     for the same distinction. */
+  border-bottom: 1px solid var(--hub-border-subtle);
+  font-size: 13.5px;
+}
+
+.hub-list-row:last-child {
+  border-bottom: none;
+}
+
+.hub-list-row .k {
+  flex: 0 1 auto;
+  color: var(--hub-text-muted);
+}
+
+/* Some diagnostic values (e.g. Reset Reason's full device-info string)
+ * are long, unbroken text - nowrap forced the whole row (and the page
+ * with it - #hub-main had no overflow-x guard either) wider than the
+ * viewport. min-width: 0 lets a flex item actually shrink below
+ * its content's natural width instead of only ever growing the row. */
+.hub-list-row .v {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+
+.hub-diag-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* Without this, the fixed margin-top above still opened a blank gap even
+ * for a group whose actions row has nothing in it. */
+.hub-diag-actions:empty {
+  margin-top: 0;
+}
+
+/* --- Service page: calibration + device actions --- */
+
+.hub-service-group {
+  margin-bottom: 26px;
+
+  max-width: 560px;
+}
+
+.hub-service-group:last-child {
+  margin-bottom: 0;
+}
+
+.hub-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hub-field {
+  background: var(--hub-surface);
+  border: 1px solid var(--hub-border);
+  border-radius: var(--hub-radius);
+  padding: 14px 16px;
+}
+
+.hub-field .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+.hub-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hub-field input[type="number"],
+.hub-field input[type="text"],
+.hub-field input[type="password"] {
+  flex: 1 1 auto;
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+  border-radius: var(--hub-radius-sm);
+  padding: 9px 10px;
+  /* 16px, not smaller: iOS Safari auto-zooms the page in on focus for any
+   * input whose computed font-size is under 16px (an accessibility
+   * behavior, not a bug, but with real fallout here) - the zoomed-in state
+   * this caused was the actual root of two separately-reported symptoms:
+   * horizontal scroll that only ever started once a text field was tapped
+   * and stayed scrollable afterwards, and the header/status row appearing
+   * to slide down and overlap the content below it (both are consistent
+   * with the whole page rendering at an unintended zoom level, not two
+   * independent bugs). This was 15px before - one pixel below the
+   * threshold that matters. */
+  font-size: 16px;
+  min-width: 0;
+}
+
+.hub-field input[type="number"]:focus,
+.hub-field input[type="text"]:focus,
+.hub-field input[type="password"]:focus {
+  outline: none;
+  border-color: var(--hub-accent);
+}
+
+.hub-field input[type="range"] {
+  flex: 1 1 auto;
+  accent-color: var(--hub-accent);
+}
+
+/* min/max shown as a separate, distinctly styled + positioned hint chip,
+ * not inline with the label or crammed next to the input. */
+.hub-hint {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--hub-text-muted);
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.hub-hint:empty {
+  display: none;
+}
+
+/* A small tap-to-reveal "?" next to a label, and the explanation it
+ * toggles - see attachHelp() in dashboard.js. Off by default, so it
+ * never adds clutter to anything that doesn't opt in with actual text. */
+.hub-help-btn {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--hub-text-muted);
+  background: none;
+  color: var(--hub-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.hub-help-btn:hover {
+  border-color: var(--hub-accent);
+  color: var(--hub-accent);
+}
+
+.hub-help-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--hub-text-muted);
+  margin: -4px 0 10px;
+}
+
+/* The pill toggle for a "Show on Dashboard" switch field. */
+.hub-toggle {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--hub-border);
+  background: var(--hub-surface-2);
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+}
+
+.hub-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--hub-text-muted);
+  transition: transform 150ms, background 150ms;
+}
+
+.hub-toggle.hub-toggle-on {
+  background: var(--hub-accent-dim);
+  border-color: var(--hub-accent);
+}
+
+.hub-toggle.hub-toggle-on::after {
+  transform: translateX(18px);
+  background: var(--hub-accent);
+}
+
+/* A disabled meter's Home card disappears entirely. */
+.hub-hidden {
+  display: none !important;
+}
+
+.hub-btn {
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  background: var(--hub-accent-dim);
+  color: var(--hub-accent);
+  border: 1px solid var(--hub-accent);
+  border-radius: var(--hub-radius-sm);
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: background 150ms, color 150ms;
+}
+
+.hub-btn:hover {
+  background: var(--hub-accent);
+  /* Was a hardcoded dark-teal-specific hex, tuned for the old accent -
+     the page background reads dark against any bright accent fill
+     regardless of its hue, so it survives an accent recolor for free. */
+  color: var(--hub-bg);
+}
+
+
+.hub-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.hub-btn:disabled:hover {
+  background: var(--hub-accent-dim);
+  color: var(--hub-accent);
+}
+
+.hub-btn.hub-pressed {
+  opacity: 0.6;
+}
+
+/* A button mounted next to a field (e.g. Reading + Update) instead of
+ * taking its own full-width card. */
+.hub-btn.hub-btn-compact {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 9px 16px;
+}
+
+
+
+/* Full-width, matching the System and Log pages. The section carries
+ * both "hub-service-group" and "hub-pressure-group" (see
+ * ensureDeviceTable() in dashboard.js) -
+ * .hub-service-group's own max-width: 560px above is what
+ * was actually capping it all along; this class's own 900px never was the
+ * binding constraint (560 < 900). Overriding it here explicitly - simply
+ * having no max-width declaration of its own wouldn't un-set a property a
+ * same-specificity earlier rule already set. */
+.hub-pressure-group {
+  max-width: none;
+}
+
+
+.hub-pressure-table tr.hub-pulsemeter-expanded td {
+  border-top: none;
+  background: var(--hub-accent-dim);
+  padding-top: 2px;
+  padding-bottom: 12px;
+}
+
+.hub-pulsemeter-expanded-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  /* Battery/Correction's read-only lines (a bare text span - no input,
+     no button) are naturally much shorter than a line holding an input
+     or a button, so their box collapsed to a fraction of the others'
+     height even with the same 4px/4px padding above - which read as an
+     inconsistent gap between lines rather than a shorter one. Floors
+     every line's box at that same input/button height so the padding
+     reads as an equal gap everywhere. */
+  min-height: 38px;
+}
+
+/* Required, not redundant with the browser default - same reasoning as
+ * .hub-pressure-scan-status[hidden]/.hub-spinner[hidden] above: this rule's
+ * own `display: flex` has equal specificity to the UA stylesheet's
+ * `[hidden] { display: none }` and, being an author rule, would otherwise
+ * win and silently defeat `hidden` - without this, the Flow-only
+ * Reading/Update row stays visible on a Pressure-type slot. */
+.hub-pulsemeter-expanded-field[hidden] {
+  display: none;
+}
+
+.hub-pulsemeter-expanded-field:first-child {
+  padding-top: 2px;
+}
+
+
+.hub-pulsemeter-expanded-label {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  color: var(--hub-text-muted);
+}
+
+.hub-pulsemeter-expanded-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+
+
+/* [type="text"] here is Reading (see readingInput's own comment,
+ * web/dashboard.js, for why it's text/inputmode:decimal rather than
+ * type="number" now) - Modbus Address stays type="number". The compact
+ * 100px default suits Address (3 digits at most) and Zero-Flow Timeout;
+ * Reading overrides it below. */
+.hub-pressure-table .hub-pulsemeter-expanded-field input[type="number"],
+.hub-pressure-table .hub-pulsemeter-expanded-field input[type="text"] {
+  flex: 0 0 auto;
+  width: 100px;
+}
+
+/* Reading holds a full-precision meter reading - at accuracy_decimals: 6
+ * that's up to "12345.123456", which the shared 100px box above cut off
+ * mid-number. 15ch, not a px width: it's sized in characters, so it
+ * holds the same number of digits whatever the rendered font actually
+ * is. flex-shrink
+ * stays enabled (with min-width: 0) so a genuinely narrow phone screen
+ * still shrinks it rather than pushing the row off-screen - the same
+ * overflow guard every other input in this file has. */
+.hub-pressure-table .hub-pulsemeter-expanded-field input.hub-reading-input {
+  flex: 0 1 auto;
+  width: 15ch;
+  min-width: 0;
+}
+
+/* .hub-btn.hub-btn-compact's own 9px vertical padding, on top of its
+ * 14px font, renders taller than the 16px-font/5px-padding input it
+ * sits next to (.hub-pressure-table input[type] above) - the Update and
+ * Reset rows visibly bulged compared to the input-only rows (Address,
+ * Zero-Flow Timeout) next to them. Trimmed to line up with the input's
+ * own height instead. */
+.hub-pulsemeter-expanded-field .hub-btn.hub-btn-compact {
+  flex: 0 0 auto;
+  padding: 6px 16px;
+}
+
+.hub-pulsemeter-expanded-unit {
+  flex: 0 0 auto;
+  color: var(--hub-text-muted);
+  font-size: 12.5px;
+}
+
+/* Read-only value display for the expanded row's own info-only lines -
+ * the Correction offset, and the device-info pair (Range/Battery
+ * Voltage) below. flex: 0 1 auto (sized to its own content, not
+ * growing) rather than 1 1 auto - Correction's own Reset button sits
+ * right after the value, the same "button right next to the field it
+ * acts on" position Update has next to Reading, not pushed off to the
+ * far right edge of the row. Monospace/tabular-nums like every other
+ * live instrument reading in this file (.hub-metric .v, .hub-list-row .v) -
+ * it IS one, just a small one. */
+.hub-pulsemeter-expanded-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--hub-text);
+}
+
+/* The card frame around the WHOLE Devices section - table and toolbar
+ * together as one continuous surface (redesign round; dashboard.js's
+ * ensureDeviceTable() wraps both in this single element) - not a table
+ * with its own border sitting above a second, separate toolbar block.
+ * overflow: hidden is what actually clips the table's square corners to
+ * this element's own border-radius (a <table> with border-collapse:
+ * collapse doesn't reliably clip to its own border-radius across
+ * browsers, so the radius has to live - and clip - up here instead). */
+.hub-devices-card {
+  background: var(--hub-surface);
+  border: 1px solid var(--hub-border);
+  border-radius: var(--hub-radius);
+  overflow: hidden;
+}
+
+/* Lets the table itself scroll sideways, independent of the rest of the
+ * page, if its content ever needs more width than even a widened
+ * .hub-pressure-group has to give (a narrow phone screen, or a future
+ * extra column) - see this element's own creation comment in
+ * ensurePressureTable() (dashboard.js) for why that's the right
+ * fallback instead of squeezing columns down further or clipping. */
+.hub-pressure-table-scroll {
+  overflow-x: auto;
+}
+
+
+.hub-pressure-toolbar {
+  display: flex;
+
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 12px;
+  border-top: 1px solid var(--hub-border-subtle);
+}
+
+.hub-pressure-toolbar .hub-btn.hub-btn-compact {
+  flex: 0 0 auto;
+}
+
+
+.hub-pressure-scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--hub-text-muted);
+  font-size: 13px;
+}
+
+.hub-pressure-scan-status[hidden] {
+  display: none;
+}
+
+/* Small spinning ring - `currentColor` so it always matches whatever
+ * text color surrounds it (theme-aware, no separate color token needed).
+ * The [hidden] rule is required, not redundant with the browser default
+ * - .hub-spinner's own `display: inline-block` below has equal
+ * specificity to the UA stylesheet's `[hidden] { display: none }` and,
+ * being an author rule, would otherwise win and silently defeat
+ * `hidden`. */
+.hub-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: hub-spin 0.7s linear infinite;
+}
+
+.hub-spinner[hidden] {
+  display: none;
+}
+
+@keyframes hub-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.hub-pressure-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.hub-pressure-table thead th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hub-text-faint);
+  font-weight: 600;
+  padding: 12px 12px 8px;
+}
+
+
+.hub-pressure-table thead th:nth-child(2) {
+  text-align: center;
+}
+
+
+.hub-pressure-table td {
+
+  padding: 4px 10px;
+  background: var(--hub-surface);
+  border-top: 1px solid var(--hub-border-subtle);
+}
+
+.hub-pressure-table tbody tr:first-child td {
+  border-top: none;
+}
+
+.hub-pressure-table input[type="text"],
+.hub-pressure-table input[type="number"] {
+  width: 100%;
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+
+  border-radius: var(--hub-radius-xs);
+
+  padding: 5px 8px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .hub-field input above */
+  min-width: 0;
+  transition: background-color 0.1s ease, border-color 0.1s ease, padding 0.1s ease;
+}
+
+
+.hub-pressure-type-select {
+  margin-top: 6px;
+  width: auto;
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+
+  border-radius: var(--hub-radius-xs);
+  padding: 5px 8px;
+  font-size: 13.5px;
+}
+
+
+.hub-pressure-name-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.hub-pressure-name-edit-row input[type="text"] {
+  /* Overrides .hub-pressure-table input[type="text"]'s width: 100% -
+     inside this row the name input shares space with the type select
+     and hint instead of owning the whole line by itself. */
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hub-pressure-name-edit-row .hub-pressure-type-select {
+  /* Its own margin-top above was for the old stacked layout; flush here,
+     align-items: center on the row does the vertical alignment now. */
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+
+
+.hub-pressure-type-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--hub-text-faint);
+}
+
+
+.hub-pressure-table input[type="text"]:disabled,
+.hub-pressure-table input[type="number"]:disabled {
+  background: none;
+  border-color: transparent;
+  padding-left: 0;
+  padding-right: 0;
+  font-size: 13.5px;
+  opacity: 1;
+  color: var(--hub-text);
+}
+
+
+.hub-pressure-addr-hint {
+  display: block;
+  /* Monospace - a Modbus address, same instrument-panel numeral
+     treatment as every other reading/number in this file. */
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--hub-text-faint);
+  margin-bottom: 3px;
+}
+
+.hub-pressure-table input[type="number"] {
+  text-align: right;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  /* Plain numeric text entry, no native spinner - a Modbus address is
+     typed/edited as a whole value, not incremented/decremented one at a
+     time, and the spinner arrows ate into the already-narrow Address
+     column. Still type="number" (keeps the numeric mobile keyboard and
+     built-in validation), just without the up/down control. */
+  -moz-appearance: textfield;
+}
+
+.hub-pressure-table input[type="number"]::-webkit-outer-spin-button,
+.hub-pressure-table input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.hub-pressure-table input:focus {
+  outline: none;
+  border-color: var(--hub-accent);
+}
+
+
+.hub-pressure-table td.hub-pressure-status {
+  width: 1%;
+  min-width: 90px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.hub-pressure-table td.hub-pressure-action {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.hub-pressure-table td.hub-pressure-order {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Up/Down (movePressureRow() in dashboard.js) - stacked, not side by
+ * side, so this stays narrow next to the Name/Address/Status/Action
+ * columns rather than widening the row further. */
+.hub-pressure-order-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-pressure-order-btn {
+
+  padding: 1px;
+}
+
+.hub-pressure-order-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+
+.hub-pressure-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  cursor: default;
+}
+
+.hub-pressure-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+/* Status color, not the accent (redesign round - see the :root token
+   comment for the full reasoning). "OK"/pulse meters' "Ready" both use
+   this same class. */
+.hub-pressure-badge-ok {
+  color: var(--hub-status-good);
+}
+
+.hub-pressure-badge-lost {
+  color: var(--hub-warning);
+}
+
+.hub-pressure-badge-new {
+  color: var(--hub-text-faint);
+}
+
+/* "Checking…" - a just-registered slot before its own first poll
+ * completes, not yet confirmed either way - deliberately the same muted
+ * tone as New, not the alarm-colored Lost, since it isn't one. */
+.hub-pressure-badge-pending {
+  color: var(--hub-text-faint);
+}
+
+.hub-pressure-badge-collision {
+  color: var(--hub-danger);
+}
+
+
+.hub-pressure-badge-mismatch {
+  color: var(--hub-danger);
+}
+
+
+.hub-pressure-badge.hub-pulse-flash::before {
+  animation: hub-pulse-ring 0.6s ease-out;
+}
+
+@keyframes hub-pulse-ring {
+  from {
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  to {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+/* Row action icons (pencil/trash/check/close - see
+ * upsertRegisteredPressureRow() in dashboard.js). Edit/Delete show by
+ * default; a row entering edit mode (hub-pressure-row-editing) swaps to
+ * Save/Cancel instead - only one pair is ever visible at a time, so
+ * there's no way to press Delete mid-edit or Save without having pressed
+ * Edit first. */
+.hub-pressure-icon-btn {
+  background: none;
+  border: none;
+  color: var(--hub-text-muted);
+
+  padding: 4px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hub-pressure-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.hub-pressure-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hub-pressure-edit-btn:hover {
+  color: var(--hub-text);
+}
+
+.hub-pressure-del-btn:hover {
+  color: var(--hub-danger);
+}
+
+/* Status-good, not the accent - a checkmark is a
+   positive/confirm action, reads correctly with the same green as every
+   other "this is fine" signal in the app, distinct from "this is an
+   ordinary interactive control" blue. */
+.hub-pressure-save-btn:hover {
+  color: var(--hub-status-good);
+}
+
+.hub-pressure-cancel-btn:hover {
+  color: var(--hub-danger);
+}
+
+/* suppressStaleHover() in dashboard.js - briefly disables the hover
+ * colors above right after a row is removed (Delete), so whatever icon
+ * ends up positionally under an unmoved mouse cursor (the click that
+ * triggered this went through a blocking confirm() dialog, not a real
+ * mouse move) doesn't show a "stuck" hover look until the mouse actually
+ * moves. Higher specificity than the plain :hover rules above, wins
+ * regardless of source order. */
+.hub-pressure-table-settling .hub-pressure-icon-btn:hover {
+  color: var(--hub-text-muted);
+}
+
+.hub-pressure-save-btn,
+.hub-pressure-cancel-btn {
+  display: none;
+}
+
+.hub-pressure-row-editing .hub-pressure-edit-btn,
+.hub-pressure-row-editing .hub-pressure-del-btn {
+  display: none;
+}
+
+.hub-pressure-row-editing .hub-pressure-save-btn,
+.hub-pressure-row-editing .hub-pressure-cancel-btn {
+  display: inline-flex;
+}
+
+
+.hub-pressure-row-new .hub-pressure-save-btn,
+.hub-pressure-row-new .hub-pressure-cancel-btn,
+.hub-device-add-row .hub-pressure-save-btn,
+.hub-device-add-row .hub-pressure-cancel-btn {
+  display: inline-flex;
+}
+
+
+.hub-device-type-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--hub-text-faint);
+}
+
+.hub-device-type-icon svg {
+
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Name cell layout: a flex wrapper INSIDE the <td> (not on the <td>
+ * itself - overriding a table cell's own `display: table-cell` to `flex`
+ * would pull it out of the table's column layout entirely) puts the type
+ * icon fixed-width on the left, with everything else (address hint/
+ * collision note/name input, stacked top-to-bottom as normal block flow)
+ * filling the rest - a plain inline icon directly before the input would
+ * otherwise fight the input's own width: 100% (resolves against the
+ * icon-less cell width, not the space actually left beside the icon),
+ * pushing/overlapping it. */
+.hub-pressure-name-row {
+  display: flex;
+
+  align-items: center;
+  gap: 6px;
+}
+
+.hub-pressure-name-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+
+.hub-pressure-table input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Accent, not status-good, on purpose - this highlights "you are
+   editing this row" (an interactive/in-progress state), not a health
+   reading. */
+.hub-pressure-table tbody tr.hub-pressure-row-editing td {
+  background: var(--hub-accent-dim);
+}
+
+.hub-pressure-table td.hub-pressure-action .hub-btn.hub-btn-compact {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.hub-pressure-table td.hub-pressure-action .hub-btn.hub-btn-compact:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.hub-pressure-empty td {
+  text-align: center;
+  color: var(--hub-text-faint);
+  padding: 14px 8px;
+  font-size: 13px;
+}
+
+/* An unclaimed collision address (upsertCollisionPressureRow()) - no
+ * inputs, just a note explaining why there's no Add button here. */
+.hub-pressure-collision-note {
+  color: var(--hub-text-muted);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+
+.hub-device-add-row td {
+  background: var(--hub-accent-dim);
+}
+
+.hub-device-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.hub-device-add-form input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+  border-radius: var(--hub-radius-sm);
+  padding: 7px 9px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .hub-field input elsewhere */
+}
+
+.hub-device-add-form select {
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+  border-radius: var(--hub-radius-sm);
+  padding: 7px 9px;
+  font-size: 14px;
+}
+
+/* Manual "Add -> Modbus" probe failure (handleManualAddResult() in
+ * dashboard.js) - inline, next to the fields it applies to, rather than
+ * a native alert() (which every other irreversible action in this file
+ * gates with a confirm() instead - an alert() here would be the only
+ * plain informational one, out of place). */
+.hub-device-add-error {
+  color: var(--hub-danger);
+  font-size: 12.5px;
+  flex: 1 1 100%;
+}
+
+.hub-device-add-error:empty {
+  display: none;
+}
+
+/* --- Log page --- */
+
+#hub-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+#hub-log-toolbar .hub-btn {
+  width: auto;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+/* "Debug: Modbus" toggle - see mountLogDebugToggle() in dashboard.js. */
+.hub-log-debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--hub-text-muted);
+  cursor: pointer;
+}
+
+#hub-log {
+  margin: 0;
+  background: var(--hub-surface);
+  border: 1px solid var(--hub-border);
+  border-radius: var(--hub-radius);
+  padding: 12px 14px;
+  max-height: 65vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--hub-text-muted);
+}
+
+
+#hub-log:empty::before {
+  content: "Waiting for new log output (this is a live view, not history)…";
+  opacity: 0.6;
+}
+
+
+
+@media (max-width: 720px) {
+  #hub-root {
+    position: static;
+    display: block;
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    /* NOT the `overflow: visible` shorthand - that would also reset
+     * overflow-x back to its default (visible), silently undoing the
+     * horizontal-scroll guard the moment this media query applies. Only
+     * the vertical axis needs to change here; body/html are what actually
+     * scrolls now (see the block comment above), so overflow-y barely
+     * matters either way, but overflow-x staying hidden here too is a
+     * second belt-and-suspenders layer alongside html/body's own. */
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+
+  #hub-header {
+    position: sticky;
+    /* top: 0, NOT env(safe-area-inset-top) - real-device measurement
+     * (getBoundingClientRect() via Safari's Web Inspector console, on an
+     * iPhone with a 59px safe-area-inset-top) confirmed a genuine WebKit
+     * bug: position: sticky with a non-zero, env()-based `top` applies
+     * that offset even in the *static*, not-yet-stuck state (scrolled
+     * position 0), adding it on top of the element's normal in-flow
+     * position instead of only using it as the stick threshold. Measured
+     * ~59px of unexplained extra offset above this header, exactly
+     * matching env(safe-area-inset-top) - i.e. it was being counted
+     * *twice*, once correctly (by #hub-main's own padding-top, below) and
+     * once more, erroneously, by this rule.
+     *
+     * Fix: reserve the safe area in exactly one place - this element's
+     * own padding-top instead of its sticky `top` offset. Sticking at a
+     * flat 0 sidesteps the bug outright (0 mis-applied is still 0), and
+     * padding-top here still keeps the header's content (and its
+     * background, which covers the full padding box) clear of the
+     * status bar, both before and after it's actually stuck. */
+    top: 0;
+    padding-top: env(safe-area-inset-top);
+    z-index: 2;
+    background: var(--hub-bg);
+  }
+
+  #hub-main {
+
+    overflow-x: hidden;
+    overflow-y: visible;
+    /* Top: just a small cosmetic gap now - the actual safe-area
+     * reservation moved onto #hub-header's own padding-top above (see its
+     * comment for why keeping it here too would double-reserve it, a
+     * second, different way). Bottom: #hub-nav is now position: fixed,
+     * i.e. out of normal document flow - without this, the last bit of a
+     * page's content would scroll to underneath/behind it. ~76px is a
+     * deliberately generous estimate of the nav bar's real height (icon +
+     * label + its own padding); a little extra empty space at the bottom
+     * costs nothing, clipped content would. */
+    padding: 18px 16px calc(24px + 76px + env(safe-area-inset-bottom));
+  }
+
+  #hub-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    flex-direction: row;
+    justify-content: space-around;
+    border-right: none;
+    border-top: 1px solid var(--hub-border);
+    padding: 6px 4px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+
+  .hub-nav-item {
+    flex: 1 1 auto;
+  }
+}

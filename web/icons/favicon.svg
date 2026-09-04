@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+ <defs>
+  <linearGradient id="bgC" x1="0" y1="0" x2="1" y2="1">
+   <stop offset="0" stop-color="#2f7fe8"/><stop offset="1" stop-color="#0b3a8f"/>
+  </linearGradient>
+  <clipPath id="dropC">
+   <path d="M256 96 C256 96 376 240 376 320 A120 120 0 0 1 136 320 C136 240 256 96 256 96 Z"/>
+  </clipPath>
+ </defs>
+ <rect width="512" height="512" rx="112" fill="url(#bgC)"/>
+ 
+ <path d="M96 356 C146 320 176 392 226 356 C276 320 306 392 356 356 C396 328 416 366 436 352"
+       fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-opacity="0.55"/>
+ <path d="M96 412 C146 376 176 448 226 412 C276 376 306 448 356 412 C396 384 416 422 436 408"
+       fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-opacity="0.28"/>
+ <path d="M110 250 L190 250 L232 148 L286 296 L330 208 L402 208"
+       fill="none" stroke="#ffffff" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+ <g fill="#ffffff"><circle cx="232" cy="148" r="20"/><circle cx="286" cy="296" r="20"/></g>
+</svg>

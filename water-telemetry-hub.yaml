@@ -1,0 +1,1247 @@
+
+substitutions:
+  device_name: water-telemetry-hub
+  friendly_device_name: "Water Telemetry Hub"
+
+  # --- Modbus polling ---
+  # How often the scheduler advances the in-flight transaction. Small
+  # because it is nearly free (a look at how many bytes have arrived);
+  # this only sets the granularity with which a reply is noticed, so it
+  # adds at most this much latency twice per transaction.
+  modbus_tick_ms: "5"
+  # How often each registered slot is polled, at most. 300 ms = ~3.3
+  # readings a second per device. The bus is the real ceiling above this
+  # (see the scheduler's own comment), not this number.
+  modbus_poll_period_ms: "300"
+  # ...and how often a device that has stopped answering is retried,
+  # after 5 consecutive failures. Deliberately far slower: an unreachable
+  # slot otherwise burns its full timeout several times a second and slows
+  # every other slot down for nothing.
+  modbus_offline_period_ms: "3000"
+  # How often a registered slot asks the device at its address what it
+  # actually is (a read-only fingerprint - see rs485_modbus::
+  # identify_device). Rare on purpose: one extra transaction a minute
+  # against three polls a second is under one part in five hundred of the
+  # bus, and a device does not change identity often. What it catches is
+  # the case measurement alone cannot - a physically swapped instrument
+  # whose registers still decode to something plausible (a pressure
+  # transmitter on a flow meter's address can read as a healthy 0.00
+  # bar), and a second device plugged onto an address that already has
+  # one, which the measurement poll cannot see at all.
+  #
+  # 10s rather than the minute this started at: hot-plugging a second
+  # device onto a live address is exactly when someone is standing at the
+  # cabinet waiting to be told, and a minute of "everything is fine" in
+  # that moment is worse than useless. Still one transaction per slot per
+  # 10s against three polls a second - well under one percent of the bus.
+  modbus_identity_period_ms: "10000"
+  # Per-transaction timeout. Both meter types answer well inside this at
+  # 9600 baud; it is the wait before a slot is declared unreachable, and
+  # since nothing blocks on it any more it costs bus time, not UI time.
+  modbus_timeout_ms: "60"
+
+  board_type: esp32-s3-devkitc1-n16r8
+  meter1_pulse_pin: GPIO1
+  meter2_pulse_pin: GPIO2
+
+  # --- Hardware: test phase (older, non-S3 ESP32 devkit) ---
+  # board_type: esp32dev
+  # meter1_pulse_pin: GPIO32
+  # meter2_pulse_pin: GPIO33
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_device_name}
+  comment: "Water-supply telemetry: RS485/Modbus flow meters and pressure transmitters plus pulse water meters, served to Home Assistant"
+  # Hand-written Modbus RTU master helpers used by the RS485 bus
+  # scan/pressure-poll/re-address logic below - see the header comment in
+  # include/rs485_modbus.h for why this isn't ESPHome's built-in
+  # modbus_controller: component. Included globally, so every symbol in
+  # it (the rs485_modbus:: namespace) is available from any lambda below
+  # without its own #include.
+  includes:
+    - include/volume.h
+    - include/rs485_modbus.h
+
+esp32:
+  board: ${board_type}
+  framework:
+    type: esp-idf
+    # Paired with the raised httpd max_open_sockets in the local
+    # web_server_idf override below (components/web_server_idf/
+    # web_server_idf.cpp) - that value can't actually be used if the
+    # system-wide LWIP socket pool doesn't have room for it too. ESPHome
+    # auto-sizes this from each component's own declared socket needs, but
+    # has no visibility into a value hardcoded directly in our forked .cpp
+    # (it's not exposed through Python config), so it has to be set
+    # explicitly here instead of trusting the auto-calc. Comfortably above
+    # web_server_idf's own new max_open_sockets (12) plus headroom for the
+    # native api: connection, mDNS, and OTA - cheap relative to the ~100KB
+    # free heap this device normally runs with.
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "20"
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [web_server_idf, log_ring_buffer, web_icons]
+
+# Checkpoint mechanism: every restore_value: true global/number persists
+# through this. flash_write_interval already defaults to 60s, spelled out
+# explicitly here to keep it traceable against REQUIREMENTS.md.
+preferences:
+  flash_write_interval: 60s
+
+globals:
+  - id: modbus_add_claimed
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Scratch result of "Modbus Devices Add"'s own probe() call (see that
+  # button's on_press) - not persisted, only ever read within the same
+  # button press that just wrote it.
+  - id: pressure_add_probe_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Why the Add above was refused, for the result channel the dashboard
+  # reads: 0 = registered, 1 = nothing answered, 2 = more than one device
+  # on that address, 3 = the device is not the type that was chosen. Same
+  # scratch lifetime as pressure_add_probe_ok.
+  - id: pressure_add_refusal
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  # Which slot owns the in-flight Modbus transaction (0 = none), and
+  # where the round-robin left off. See the scheduler below.
+  - id: modbus_poll_owner
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: modbus_poll_cursor
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  # True exactly while the in-flight shared Modbus transaction belongs to
+  # a bus scan rather than a slot's own poll - see the central scheduler
+  # below for why this matters (a scan and live polling now interleave
+  # instead of a scan owning every tick).
+  - id: modbus_scan_owns_tx
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Slot number whose non-blocking periodic identity inspection owns the
+  # shared transaction/listen window (0 = none).
+  - id: modbus_identity_owner
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  # Backs pressure_scan_generation - see that sensor's own comment.
+  # uint32_t, not that a scan will ever run four billion times: it just
+  # needs to keep changing, and a fixed-width wraparound is a fine
+  # "changed" signal too (the dashboard never compares it to anything but
+  # its own last-seen value).
+  - id: modbus_scan_generation
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # Separate ordering barrier for collision CSV changes made by live slot
+  # polling. Scan-owned changes use modbus_scan_generation instead, so the
+  # dashboard can keep a scan's Results/Types/Collisions snapshot atomic
+  # without delaying collision badges discovered between scans.
+  - id: modbus_live_collision_generation
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: next_device_sort_order
+    type: uint16_t
+    restore_value: true
+    initial_value: "1"
+
+# level (compile-time ceiling - anything above it is stripped from the
+# binary entirely, can never be shown no matter what) is raised to
+# VERY_VERBOSE so the include/rs485_modbus.h "modbus" tag's detailed
+# wire-level tracing (raw request/reply hex dumps) actually exists in
+# the firmware; initial_level (the boot-time default, applies to every
+# tag that isn't otherwise overridden) stays at the previous default
+# (DEBUG) so nothing gets noisier by default - the "modbus" tag's own
+# VERY_VERBOSE detail only turns on when "Debug Log: Modbus" (Log page)
+# is switched on, via logger.set_level - see the switch: section below.
+logger:
+  id: logger_id
+  level: VERY_VERBOSE
+  initial_level: DEBUG
+
+log_ring_buffer:
+
+# The dashboard's tab and home-screen icons, served from flash (see
+# components/web_icons/__init__.py for why served, not inlined). The SVG
+# is the logo's source; the PNG is that SVG rendered at 180x180, the size
+# iOS asks for.
+web_icons:
+  favicon_svg: web/icons/favicon.svg
+  apple_touch_icon: web/icons/apple-touch-icon.png
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+uart:
+  id: rs485_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO18
+  flow_control_pin: GPIO21
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+# Backs the "Free Heap" diagnostic sensor below.
+debug:
+
+web_server:
+  version: 3
+  # IMPORTANT: do NOT set `local: true` here. With `local: true` ESPHome
+  # serves a fixed, pre-built index.html (baked into the esphome pip
+  # package at release time) that never references css_include/js_include
+  # at all - our dashboard would compile in fine but never actually load
+  # in the browser. css_include/js_include only get wired into the page
+  # (<link href=/0.css>, <script type=module src=/0.js>) in the
+  # *dynamically generated* index.html, which is what's used when `local`
+  # is left at its default (false). See build_index_html() in
+  # esphome/components/web_server/__init__.py if this ever needs
+  # re-verifying against a newer ESPHome version.
+  #
+  # That dynamic index.html would otherwise also add a
+  # <script src="https://oi.esphome.io/v3/www.js"> for the stock app -
+  # blanking js_url removes that tag entirely (falsy value == the
+  # generator skips it), so there's still no network dependency. css_url
+  # already defaults to empty for version 3.
+  js_url: ""
+  css_url: ""
+  # Our own dark, section-per-page dashboard (web/dashboard.{css,js}) - see
+  # the files themselves for how/why. Hides the stock <esp-app> UI and
+  # replaces it client-side; still uses ESPHome's normal REST/SSE API
+  # underneath, so nothing else here changes.
+  css_include: web/dashboard.css
+  js_include: web/dashboard.js
+  # The dashboard is the device's own management surface, so it needs the
+  # entities marked internal: true - everything that changes the device's
+  # configuration (Delete, Update, Add, addresses, names, order, Forget
+  # Wi-Fi, the debug toggle) and the plumbing channels behind it (scan
+  # results, exact millilitres, update results). internal keeps them out
+  # of the native API, i.e. out of Home Assistant, where a stray
+  # automation or a tap on the wrong tile could reconfigure the device;
+  # this flag keeps them on the local web server, which is where they are
+  # actually used. What Home Assistant gets is what it can only read:
+  # measurements, diagnostics, and the one harmless action (Reboot).
+  include_internal: true
+  # No `auth:` - deliberate, see REQUIREMENTS.md "Hálózat és biztonság".
+  # This is a local-network-only dashboard, meant to also work as an iOS
+  # home-screen app; a login screen would only be friction, not a real
+  # security boundary (anyone already on the home Wi-Fi reaches it either
+  # way). api_encryption_key/ota_password (below) stay secret - those
+  # protect the native API and firmware flashing, unrelated to this.
+  sorting_groups:
+    # Umbrella group for the "Pulse Meters" table (web/dashboard.js) -
+    # same role as sorting_group_pressure below (houses the Add/Delete
+    # table itself), positioned just before the two meters' own groups so
+    # the table renders above their (only-shown-once-Registered)
+    # calibration fields. No entity is directly tagged to this group -
+    # unlike the pressure sensors' umbrella (which hosts a shared Scan/Add
+    # button), a water meter's Add doesn't need any shared/cross-meter
+    # entity at all (see water_meter.yaml's own commissioning-model note)
+    # - this id exists purely to anchor the table section's position.
+    - id: sorting_group_pulse_meters
+      name: "Pulse Meters"
+      sorting_weight: 8
+    - id: sorting_group_meter1
+      name: "Pulse Meter 1"
+      sorting_weight: 10
+    - id: sorting_group_meter2
+      name: "Pulse Meter 2"
+      sorting_weight: 20
+    - id: sorting_group_pressure
+      name: "Modbus Devices"
+      sorting_weight: 30
+    - id: sorting_group_pressure1
+      name: "Modbus Device 1"
+      sorting_weight: 31
+    - id: sorting_group_pressure2
+      name: "Modbus Device 2"
+      sorting_weight: 32
+    - id: sorting_group_pressure3
+      name: "Modbus Device 3"
+      sorting_weight: 33
+    - id: sorting_group_pressure4
+      name: "Modbus Device 4"
+      sorting_weight: 34
+    - id: sorting_group_network
+      name: "Network"
+      sorting_weight: 80
+    - id: sorting_group_system
+      name: "System"
+      sorting_weight: 90
+
+# Wi-Fi credentials are deliberately absent here (see REQUIREMENTS.md
+# "Hálózat és biztonság"): the device boots with none configured, and gets
+# them only at runtime, via BLE (esp32_improv below) or this AP + captive
+# portal. Whatever is entered there is saved to the ESP's own flash, not
+# to this build.
+wifi:
+  # Explicit id so the "Forget Wi-Fi" button below can call save_wifi_sta()
+  # directly - see the button for why that's the right API for this.
+  id: wifi_id
+  ap:
+    ssid: "${friendly_device_name} Setup"
+    ap_timeout: 30s
+  power_save_mode: none
+  on_connect:
+    - script.stop: reenable_ble_after_disconnect
+    - ble.disable
+  on_disconnect:
+    - script.execute: reenable_ble_after_disconnect
+  post_connect_roaming: false
+
+# Backs the wifi: on_disconnect/on_connect BLE debounce above - see the
+# comment there for why this exists (grace period before turning BLE back
+# on, so it doesn't contend with Wi-Fi during a fast/self-resolving
+# reconnect). mode: restart so a fresh disconnect always gets the full
+# delay again, and on_connect's script.stop cleanly cancels a pending
+# enable if Wi-Fi comes back before the delay elapses - it's a no-op if
+# the script isn't running.
+script:
+  - id: reenable_ble_after_disconnect
+    mode: restart
+    then:
+      - delay: 2min
+      - ble.enable
+
+  # Runs exactly once, on the interval tick where rs485_modbus::
+  # ScanController::step() reports the sweep just completed (see the
+  # central scheduler below) - never from the button press itself, which
+  # only arms the sweep and returns immediately. Publishes the same three
+  # things the old blocking Scan button used to publish inline, at the
+  # very end of a ~12s stall; now this runs on its own single tick, after
+  # the sweep has already been spread across however many ticks it took,
+  # so the dashboard sees "Scan In Progress" go true, stay observable for
+  # the whole sweep, and only then go false with fresh results - not two
+  # publishes queued back to back inside one blocking call, which is what
+  # used to let the SSE stream coalesce them into nothing arriving at all.
+  - id: modbus_scan_finish
+    mode: single
+    then:
+      - lambda: |-
+          auto result = rs485_modbus::scan_controller().take_result();
+          auto to_csv = [](const std::vector<uint8_t> &addresses) {
+            std::string csv;
+            for (size_t i = 0; i < addresses.size(); i++) {
+              if (i > 0) csv += ",";
+              csv += std::to_string(addresses[i]);
+            }
+            return csv;
+          };
+          id(pressure_scan_results).publish_state(to_csv(result.found));
+          // "<address>:<type>" pairs for the ones we could identify; an
+          // address we could not is left out rather than guessed at.
+          std::string types;
+          for (size_t i = 0; i < result.found.size() && i < result.kinds.size(); i++) {
+            const char *kind = rs485_modbus::device_kind_name(result.kinds[i]);
+            if (kind[0] == '\0') continue;
+            if (!types.empty()) types += ",";
+            types += std::to_string(result.found[i]) + ":" + kind;
+          }
+          id(pressure_scan_types).publish_state(types);
+          // Reconciled, not overwritten - rs485_modbus::
+          // reconcile_scan_collisions()'s own comment explains why: a
+          // registered slot's own live Collision verdict must survive a
+          // scan pass that did not happen to re-detect it, and only an
+          // UNREGISTERED address is this scan's alone to re-decide.
+          std::vector<uint8_t> registered;
+          for (uint8_t a : {(uint8_t) id(slot1_modbus_address).state, (uint8_t) id(slot2_modbus_address).state,
+                            (uint8_t) id(slot3_modbus_address).state, (uint8_t) id(slot4_modbus_address).state}) {
+            if (a != 0) registered.push_back(a);
+          }
+          auto &scan = rs485_modbus::scan_controller();
+          id(pressure_scan_collisions).publish_state(
+              rs485_modbus::reconcile_scan_collisions(id(pressure_scan_collisions).state, scan.min_address(),
+                                                       scan.max_address(), registered, result.collisions));
+          // Exactly what the dashboard was handed, on one line at the end
+          // of the sweep. The per-address fingerprint results are logged
+          // too, but they are scattered through 247 addresses of trace -
+          // and when the Device Type does not appear on a New row, the
+          // question is only ever "did the firmware publish a type for
+          // that address or not", which this answers without anyone
+          // having to find the right line among a thousand.
+          ESP_LOGD("modbus", "scan_bus: published results=\"%s\" collisions=\"%s\" types=\"%s\"",
+                   id(pressure_scan_results).state.c_str(), id(pressure_scan_collisions).state.c_str(),
+                   types.c_str());
+          // Published LAST, once - see pressure_scan_generation's own
+          // comment for why this, and not any of the three above, is
+          // what actually triggers the dashboard to redraw.
+          id(modbus_scan_generation)++;
+          id(pressure_scan_generation).publish_state(id(modbus_scan_generation));
+          // A scan is the other thing on this device that can tell one
+          // device from two, and it has just looked at every address. Due
+          // the registered slots for an immediate identity check so its
+          // verdict is confirmed (or withdrawn) on their next poll rather
+          // than up to a full period later - a scan is normally run
+          // precisely because someone has just changed the wiring.
+          id(slot1_next_identity_ms) = 0;
+          id(slot2_next_identity_ms) = 0;
+          id(slot3_next_identity_ms) = 0;
+          id(slot4_next_identity_ms) = 0;
+          // A sweep has just spoken to every address, the last few of
+          // which never answered. Hand the bus back to the normal poll
+          // empty rather than with whatever arrived too late to be read.
+          rs485_modbus::flush_rx(id(rs485_uart));
+      - lambda: 'id(modbus_scan_in_progress).publish_state(false);'
+
+# --- Central Modbus scheduler -------------------------------------------
+# The ONE thing that talks to the RS485 bus on a schedule. Every
+# registered slot's poll runs from here, one transaction at a time.
+#
+# Two problems this solves, and they are different:
+#
+# 1. Serialisation. Each slot used to run its own template-sensor
+#    update_interval - two of them for a Flow slot - staggered only by
+#    hand-picked offsets that drift relative to each other. Nothing
+#    actually serialised them: transactions overlapped, a slow reply
+#    pushed the next slot's poll into a timeout, and a timeout costs more
+#    bus time than a success, which makes the next overlap likelier still.
+#
+# 2. Blocking. Even serialised, waiting for a reply inside the main loop
+#    is what made the whole dashboard sluggish: ESPHome pumps the SSE
+#    stream from the main loop, and the initial entity dump advances one
+#    entity per loop iteration (AsyncEventSource::loop(), our own
+#    components/web_server_idf fork). At four devices polled three times a
+#    second, a blocking poll would spend ~45% of the main loop waiting on
+#    the UART - the old "belassult az egész app", straight back.
+#
+# So this ticks fast and never waits: each tick advances the in-flight
+# transaction by whatever bytes have arrived (rs485_modbus::Transaction),
+# hands a completed one to its owner slot, and starts the next due slot if
+# the bus is free. The only main-loop cost left is transmitting each
+# request (~8 ms at 9600 baud - ESPHome holds the RS485 driver-enable pin
+# across the write), so at 4 devices x 3.3 Hz that is ~10% of the loop
+# instead of ~45%.
+#
+# Rate: each slot is polled at most every ${modbus_poll_period_ms} ms, so
+# with all four registered every device is read ~3.3 times a second. The
+# bus itself is the ceiling above that - a Flow slot's 12-register read is
+# ~42 ms of wire time at 9600 baud, so four of them cannot go much past
+# 5 Hz each no matter how fast this ticks. Unregistered slots cost
+# nothing: their poll returns without touching the bus, and the next
+# registered one starts in the same tick.
+interval:
+  - interval: ${modbus_tick_ms}ms
+    then:
+      - lambda: |-
+          // A bus scan (rs485_modbus::ScanController) shares this SAME
+          // poll_transaction() with the slots below rather than owning a
+          // transaction of its own - see ScanController's own comment
+          // for why, and modbus_scan_finish (this file's own script:)
+          // for what happens the tick a sweep completes.
+          //
+          // Telemetry is this scheduler's primary job; a scan is a
+          // diagnostic helper someone runs occasionally - so a slot that
+          // is actually due always gets the bus first, and the scan only
+          // gets ticks no due slot needs. Returning unconditionally the
+          // instant a scan is active would stop all four slots'
+          // Online/Collision/readings - and any registered slot's own
+          // live mismatch or collision detection - from updating for the
+          // whole several seconds a sweep takes. This does NOT mean the
+          // two literally share the wire
+          // at once - it is still one half-duplex bus, one transaction
+          // at a time - only that neither can lock the other out for an
+          // entire sweep any more. In practice the scan still gets the
+          // large majority of ticks: a slot is only ever "due" for the
+          // brief window every ${modbus_poll_period_ms} ms it takes one
+          // request/reply pair to complete.
+          auto &scan = rs485_modbus::scan_controller();
+          auto &tx = rs485_modbus::poll_transaction();
+          // Scanner ownership includes both an in-flight Transaction and
+          // the following TAIL_LISTEN window. The latter deliberately has
+          // an idle Transaction, but another request must not start there:
+          // start_request() flushes RX and would erase the delayed second
+          // frame which proves an address collision.
+          if (id(modbus_scan_owns_tx)) {
+            if (!scan.active()) {
+              id(modbus_scan_owns_tx) = false;
+            } else {
+              if (scan.step(id(rs485_uart), tx)) id(modbus_scan_finish).execute();
+              id(modbus_scan_owns_tx) = scan.active() && (!tx.idle() || scan.requires_bus_exclusive());
+              return;
+            }
+          }
+          if (id(modbus_identity_owner) != 0) {
+            rs485_modbus::IdentityInspector *identity = nullptr;
+            switch (id(modbus_identity_owner)) {
+              case 1: identity = &rs485_modbus::identity_inspector("slot1"); break;
+              case 2: identity = &rs485_modbus::identity_inspector("slot2"); break;
+              case 3: identity = &rs485_modbus::identity_inspector("slot3"); break;
+              case 4: identity = &rs485_modbus::identity_inspector("slot4"); break;
+            }
+            if (identity == nullptr) {
+              id(modbus_identity_owner) = 0;
+              if (!tx.idle()) tx.reset();
+              return;
+            }
+            identity->step(id(rs485_uart), tx);
+            if (identity->done()) {
+              switch (id(modbus_identity_owner)) {
+                case 1: id(slot1_identity_finish).execute(); break;
+                case 2: id(slot2_identity_finish).execute(); break;
+                case 3: id(slot3_identity_finish).execute(); break;
+                case 4: id(slot4_identity_finish).execute(); break;
+              }
+              id(modbus_identity_owner) = 0;
+            }
+            return;
+          }
+          if (tx.busy()) {
+            // Something is already in flight - whoever put it there is
+            // the only one allowed to keep polling it; ownership cannot
+            // change mid-transaction.
+            tx.poll(id(rs485_uart));
+            if (tx.done()) {
+              // The owner consumes the result (tx.take()), which also
+              // frees the bus for the next slot below - in this same
+              // tick.
+              switch (id(modbus_poll_owner)) {
+                case 1: id(slot1_poll_finish).execute(); break;
+                case 2: id(slot2_poll_finish).execute(); break;
+                case 3: id(slot3_poll_finish).execute(); break;
+                case 4: id(slot4_poll_finish).execute(); break;
+                default: tx.reset(); break;  // no owner (shouldn't happen) - drop it rather than wedge the bus
+              }
+              id(modbus_poll_owner) = 0;
+              if (!tx.idle()) tx.reset();  // owner didn't consume it - never leave the bus stuck
+            }
+            return;
+          }
+          // Bus idle. A one-shot operation (Add, address change, battery
+          // read) takes the bus by draining whatever poll (or scan step)
+          // was in flight and discarding it - see rs485_modbus::
+          // drain_poll_transaction(). When that happens the owner never
+          // gets to consume a result, so clear both ownership flags here
+          // rather than leaving a stale one recorded against the next
+          // transaction.
+          if (id(modbus_poll_owner) != 0) id(modbus_poll_owner) = 0;
+          id(modbus_scan_owns_tx) = false;
+          // A successful slot poll may have armed its periodic identity
+          // inspector. Run one complete non-blocking fingerprint sequence
+          // before starting another telemetry request; this is rare and
+          // prevents a permanently-due slot from starving the check.
+          for (uint8_t slot = 1; slot <= 4; slot++) {
+            bool active = false;
+            switch (slot) {
+              case 1: active = rs485_modbus::identity_inspector("slot1").active(); break;
+              case 2: active = rs485_modbus::identity_inspector("slot2").active(); break;
+              case 3: active = rs485_modbus::identity_inspector("slot3").active(); break;
+              case 4: active = rs485_modbus::identity_inspector("slot4").active(); break;
+            }
+            if (active) {
+              id(modbus_identity_owner) = slot;
+              return;
+            }
+          }
+          // Start the next slot that is due. Round-robin from wherever we
+          // left off so no slot can be starved by an earlier one always
+          // being ready first. A slot's own _poll_start decides whether it
+          // is registered and due; the bus going non-idle is what tells us
+          // it actually started one.
+          for (uint8_t attempt = 0; attempt < 4; attempt++) {
+            uint8_t slot = (uint8_t) ((id(modbus_poll_cursor) % 4) + 1);
+            id(modbus_poll_cursor) = slot;
+            switch (slot) {
+              case 1: id(slot1_poll_start).execute(); break;
+              case 2: id(slot2_poll_start).execute(); break;
+              case 3: id(slot3_poll_start).execute(); break;
+              case 4: id(slot4_poll_start).execute(); break;
+            }
+            if (!tx.idle()) {
+              id(modbus_poll_owner) = slot;
+              return;
+            }
+          }
+          // Nothing was actually due this tick - hand it to the scan
+          // instead of wasting it, if one is running. AddressInspector::
+          // step() also covers its TAIL_LISTEN bookkeeping. That phase
+          // keeps ownership even though `tx` is idle; see the ownership
+          // branch above.
+          if (scan.active()) {
+            if (scan.step(id(rs485_uart), tx)) id(modbus_scan_finish).execute();
+            if (scan.active() && (!tx.idle() || scan.requires_bus_exclusive())) id(modbus_scan_owns_tx) = true;
+          }
+
+captive_portal:
+
+esp32_improv:
+  authorizer: none
+
+sensor:
+  # entity_category: diagnostic on everything below - it's what routes
+  # these onto the dashboard's "Diagnostics" page (see web/dashboard.js:
+  # pageFor()) instead of the primary "Home" page, which is reserved for
+  # the meters' own readings.
+  #
+  # disabled_by_default: true throughout this file and water_meter.yaml
+  # (except each meter's own Flow Rate/Total Consumption - the device's
+  # actual job): Home Assistant registers every entity enabled by default
+  # on first discovery, regardless of ESPHome's own entity_category - HA
+  # has no concept of "diagnostic/config, so hide it", that's a purely
+  # ESPHome-side dashboard convention. Without this, connecting HA would
+  # surface two dozen entities at once, most of which either aren't
+  # useful there (this dashboard's own visibility toggles, timing knobs)
+  # or are actively misleading out of context (a "Firmware Version" with
+  # no HA-side update mechanism looks like it should mean something it
+  # doesn't). disabled_by_default doesn't remove or hide anything from
+  # THIS custom dashboard - it talks to the device directly over its own
+  # REST/SSE API, never through HA's entity registry, so it's completely
+  # unaffected either way. It only changes HA's own starting state; still
+  # a normal entity, one opt-in click away if ever needed there.
+  - platform: wifi_signal
+    name: "Wi-Fi Signal"
+    # Was 60s - far too slow to actually see anything with (found live: a
+    # hand placed near the board dropped the connection immediately, but
+    # the dashboard's own signal reading was up to a minute stale, so it
+    # never showed the drop happening - just silence, then a reconnect).
+    # This reads already-known radio state (esp_wifi_sta_get_ap_info()) -
+    # no scan, no extra airtime, effectively free - so there's no real cost
+    # to polling it this often. Paired with the header signal-bars readout
+    # in web/dashboard.js/.css, this is what makes an antenna-sensitivity
+    # theory like that actually visible and testable live, instead of
+    # something you can only infer after the fact from a disconnect reason.
+    update_interval: 2s
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_network
+      sorting_weight: 10
+
+
+  - platform: internal_temperature
+    name: "Unit Temperature"
+    update_interval: 2s
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 20
+
+  - platform: debug
+    free:
+      name: "Free Heap"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_system
+        sorting_weight: 30
+
+  # A plain counter, incremented and published exactly once by
+  # modbus_scan_finish (this file's own script:), strictly AFTER Scan
+  # Results/Scan Device Types/Scan Collisions have all been published for
+  # the same sweep. Its only purpose is to be the single thing
+  # web/dashboard.js waits for before redrawing the Devices table from a
+  # scan: those three still publish as three separate SSE events, one
+  # browser event-loop tick apart, and rendering on each one's own
+  # arrival (what this used to do) could draw the table from an old
+  # scan's Results paired with a brand new Collisions, or any other
+  # mismatched mix, for the handful of milliseconds between them.
+  # Publishing this counter last, once, turns
+  # "Results/Types/Collisions changed" into a single atomic event instead
+  # of three - by the time its own SSE frame arrives, the other three are
+  # guaranteed already at their new values, since ESPHome delivers SSE
+  # frames over one connection in the order they were written. The VALUE
+  # itself carries no meaning beyond "changed since I last rendered" - it
+  # is never compared to anything but its own previous reading.
+  - platform: template
+    id: pressure_scan_generation
+    name: "Modbus Devices Scan Generation"
+    internal: true
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    accuracy_decimals: 0
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.75
+
+  - platform: template
+    id: pressure_live_collision_generation
+    name: "Modbus Devices Live Collision Generation"
+    internal: true
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    accuracy_decimals: 0
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.8
+
+binary_sensor:
+  # Live/ephemeral, never persisted - true for the ~12s a "Find Modbus
+  # Devices" press actually takes, published the instant the press arms
+  # the sweep (rs485_modbus::ScanController::start(), before a single
+  # byte goes out) and cleared only once modbus_scan_finish (this file's
+  # own script:) has published fresh results at the end. Both publishes
+  # now land on their OWN interval tick, not queued back to back inside
+  # one blocking call - queuing them back to back let the SSE stream
+  # coalesce a same-tick true/false pair into nothing ever arriving at
+  # the dashboard at all. Not pressure-specific in spirit (the scan
+  # sweeps the whole Modbus bus,
+  # any device type), kept under the "Modbus Devices" heading for now
+  # only because that's still the only Add flow that exists - see
+  # modbus_add_claimed's own comment for the same naming note.
+  - platform: template
+    id: modbus_scan_in_progress
+    name: "Modbus Devices Scan In Progress"
+    internal: true
+    # ~12s in the worst case for the full 1-247 sweep at 50 ms per
+    # address (rs485_modbus::AddressInspector's own comment has the exact
+    # per-address cost) - spent across many small, non-blocking steps
+    # driven by the central scheduler below, never inside one call.
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 4.5
+
+text_sensor:
+  # Latest bus-scan result - a comma-separated list of Modbus addresses
+  # that answered (e.g. "1,4,9"), published by modbus_scan_finish (this
+  # file's own script:) once "Find Modbus Devices" below has finished
+  # sweeping (rs485_modbus::ScanController, include/rs485_modbus.h).
+  # Read-only/diagnostic: the dashboard's own JS parses this to find
+  # not-yet-registered addresses (registered slots' own live online/
+  # offline status instead comes from each slot's own continuous poll -
+  # see packages/pressure_sensor.yaml's "Online" binary_sensor) - see
+  # web/dashboard.js's pressure-table section. Never itself persisted - a
+  # scan result is only ever as fresh as the last scan.
+  - platform: template
+    id: pressure_scan_results
+    name: "Modbus Devices Scan Results"
+    internal: true
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3
+
+  # Two owners, not one: a REGISTERED slot's own live poll adds/removes
+  # its own single address here as its SlotLinkState evidence changes
+  # (rs485_modbus::set_scan_collision_address(), called from each slot's
+  # _poll_finish - packages/pressure_sensor.yaml) - a scan is the only
+  # authority for an UNREGISTERED address, since nothing else ever asks
+  # it a question between scans. A scan therefore reconciles into this
+  # CSV (rs485_modbus::reconcile_scan_collisions(), applied by
+  # modbus_scan_finish) rather than overwriting it wholesale: it may add
+  # or clear any address nothing has registered, and must never touch an
+  # address a registered slot's own continuous polling already owns -
+  # a scan pass is exactly as capable of missing a real, ongoing
+  # collision (its own alignment luck) as of finding a new one.
+  - platform: template
+    id: pressure_scan_collisions
+    name: "Modbus Devices Scan Collisions"
+    internal: true
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.5
+
+  - platform: template
+    id: pressure_scan_mismatches
+    name: "Modbus Devices Scan Mismatches"
+    internal: true
+    icon: "mdi:alert-octagon-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.6
+
+  # What each answering device turned out to BE, as "<address>:<type>"
+  # pairs - e.g. "10:Flow,12:Pressure". Published alongside Scan Results
+  # by the same sweep, from the read-only fingerprints in
+  # rs485_modbus::identify_device().
+  #
+  # Its whole purpose is that nobody should have to know which box on the
+  # wall is which: the dashboard pre-selects the Device Type on a
+  # scan-discovered row from this, instead of asking someone to remember
+  # it and silently registering the wrong kind of instrument if they
+  # guess wrong. An address whose type was not recognised is simply
+  # absent - "we looked and cannot tell" is a real answer here, and the
+  # dashboard leaves the choice to the person for those.
+  - platform: template
+    id: pressure_scan_types
+    name: "Modbus Devices Scan Device Types"
+    internal: true
+    icon: "mdi:tag-search-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.7
+
+  # "ok"/"no_response" - published once, right after every "Pressure
+  # Sensors Add" press (see that button's own comment) - lets the
+  # dashboard's manual "Add -> Modbus" flow (web/dashboard.js) show a
+  # real error instead of the row just silently never appearing when a
+  # hand-typed address doesn't answer. Not meaningful on its own before
+  # the first Add press this session (starts empty) - the dashboard only
+  # ever reads this value reactively, right after firing that same Add.
+  - platform: template
+    id: pressure_add_result
+    name: "Modbus Devices Add Result"
+    internal: true
+    icon: "mdi:radar"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 3.2
+
+  # Outcome of the most recent Reading Update, for either meter type:
+  # "<sequence>|<device>|<status>", published by
+  # volume::publish_update_result() (include/volume.h - see that
+  # function's own comment for why an out-of-band channel is needed at
+  # all). Status is "ok" or a refusal reason: "invalid" (not a plain
+  # decimal number), "range", "resolution" (finer than the meter can
+  # measure), "no_reading"/"stale" (no fresh raw reading to correct
+  # against), "wrong_type".
+  #
+  # web/dashboard.js watches this after firing an Update and reports a
+  # refusal to the person who asked for it, instead of leaving them
+  # looking at a value the device never accepted.
+  - platform: template
+    id: device_update_result
+    name: "Device Update Result"
+    internal: true
+    icon: "mdi:clipboard-check-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 70
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 20
+    ssid:
+      name: "Connected SSID"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 30
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_network
+        sorting_weight: 40
+
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 10
+
+  # Kept, despite the fair "what's the point if you can't update from
+  # here" objection - this isn't meant to claim "you're up to date", just
+  # to report which build is actually flashed right now, which has been
+  # genuinely useful for real debugging in this project already (matching
+  # a crash log's timestamp to the exact source it was built from).
+  # disabled_by_default rather than removed: costs HA nothing while
+  # unused, still there to check on demand.
+  - platform: version
+    name: "Firmware Version"
+    entity_category: diagnostic
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 40
+
+  - platform: debug
+    device:
+      name: "Reset Reason"
+      entity_category: diagnostic
+      disabled_by_default: true
+      web_server:
+        sorting_group_id: sorting_group_system
+        sorting_weight: 50
+
+switch:
+  # Turns the "modbus" log tag (include/rs485_modbus.h) up to
+  # VERY_VERBOSE - raw request/reply hex dumps for every Modbus
+  # transaction, plus per-scan/per-poll detail - and back down to the
+  # normal DEBUG default. Off by default: at VERY_VERBOSE a full bus
+  # scan alone would log ~250 lines, not something to leave running.
+  # Intercepted by the dashboard's own JS (see the "Log page" section of
+  # web/dashboard.js) and mounted directly into the Log page's toolbar,
+  # not the generic Service list - rendered via the normal fallback
+  # there too if that interception ever doesn't fire (e.g. in Home
+  # Assistant, which has no such special-casing).
+  - platform: template
+    id: debug_log_modbus
+    name: "Debug Log: Modbus"
+    internal: true
+    icon: "mdi:bug-outline"
+    entity_category: diagnostic
+    disabled_by_default: true
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 60
+    # The lambda alongside each logger.set_level is what actually makes
+    # the wire-level tracing cheap when it's off: rs485_modbus.h builds
+    # its hex dumps only when this flag says someone is listening (see
+    # trace_enabled() there, and why it can't just ask the logger).
+    turn_on_action:
+      - logger.set_level:
+          level: VERY_VERBOSE
+          tag: "modbus"
+      - lambda: 'rs485_modbus::trace_enabled_flag() = true;'
+    turn_off_action:
+      - logger.set_level:
+          level: DEBUG
+          tag: "modbus"
+      - lambda: 'rs485_modbus::trace_enabled_flag() = false;'
+
+button:
+  - platform: restart
+    name: "Reboot Device"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 90
+
+  # Clears *only* the saved Wi-Fi credentials and reboots into provisioning
+  # mode (fallback AP + BLE improv) - everything else (calibration offsets,
+  # zero-flow timeouts, display names, the Show on Dashboard toggles) stays
+  # exactly as it was. The actual, common need this answers: physically
+  # moving the device to a different Wi-Fi network.
+  #
+  # save_wifi_sta(ssid, password) (confirmed public in wifi_component.h) is
+  # the same call esp32_improv itself makes when new BLE-provisioned
+  # credentials come in - it writes to the wifi component's own,
+  # dedicated preference slot (SavedWifiSettings) and flushes immediately
+  # (global_preferences->sync() inside it already), never touching any of
+  # this project's own preference keys (offset_m3 etc - see
+  # water_meter.yaml). Calling it with empty strings clears that slot the
+  # same way; the reboot then finds no usable saved network, and (matching
+  # exactly what a truly first-boot/freshly-flashed device does today, per
+  # real captured logs) goes straight to the fallback AP + BLE improv,
+  # ready to be reprovisioned like new - without losing anything else.
+  #
+  # Deliberately this narrow: the one everyday reason to wipe anything is
+  # "switch to a different network", and that must not cost the
+  # calibration. There is no all-settings reset entity any more - the only
+  # case it covered beyond this (a device wedged past reprovisioning) is
+  # what a USB flash with erase does, and a full wipe one tap away in
+  # Home Assistant was a liability, not a feature.
+  - platform: template
+    name: "Forget Wi-Fi"
+    internal: true
+    icon: "mdi:wifi-off"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_system
+      sorting_weight: 91
+    on_press:
+      - lambda: |-
+          id(wifi_id).save_wifi_sta("", "");
+      - delay: 100ms
+      - lambda: App.safe_reboot();
+
+  # A bus scan (1-247) driven by the central scheduler below, one short
+  # transaction at a time (rs485_modbus::ScanController, include/
+  # rs485_modbus.h) - NOT run from here. This press only ARMS it: drains
+  # whatever the periodic poll had in flight (the same handover every
+  # one-shot action in this file already does before touching the shared
+  # bus - see drain_poll_transaction()'s own comment), publishes "Scan In
+  # Progress" immediately, and starts the sweep. Everything the sweep
+  # used to do inline - probing, identifying, publishing results - now
+  # happens over however many interval ticks the sweep actually takes
+  # (up to ~12s worst case), never inside this press, so the web server
+  # and every other component keep running normally while a scan is in
+  # progress; see modbus_scan_finish (this file's own script:) for what
+  # runs when it completes. This button is what the dashboard's "New
+  # device" rows are found by; a registered slot's own live status
+  # instead comes from its continuous per-slot poll (packages/
+  # pressure_sensor.yaml's "Online" binary_sensor), not from this button.
+  - platform: template
+    id: pressure_scan
+    name: "Modbus Devices Find Modbus Devices"
+    internal: true
+    icon: "mdi:radar"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 5
+    on_press:
+      - lambda: |-
+          // A second press while one sweep is still running must not
+          // start (or queue) a second one - ScanController::start()
+          // itself already refuses this, but bail out before even
+          // touching the bus/progress publish for it.
+          if (rs485_modbus::scan_controller().active()) return;
+          rs485_modbus::drain_poll_transaction(id(rs485_uart));
+          id(modbus_scan_in_progress).publish_state(true);
+          rs485_modbus::scan_controller().start(1, 247, 50);
+
+  - platform: template
+    id: pressure_add
+    name: "Modbus Devices Add"
+    internal: true
+    icon: "mdi:plus"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 20
+    on_press:
+      - lambda: |-
+          uint8_t address = (uint8_t) id(pressure_add_address).state;
+          std::string chosen = id(pressure_add_device_type).current_option();
+          id(pressure_add_probe_ok) = false;
+          id(pressure_add_refusal) = 0;
+          // The SAME evidence machine the bus scan uses (rs485_modbus::
+          // inspect_address_blocking(), include/rs485_modbus.h) - not a
+          // lone probe()+identify() pair, which has no retry and no
+          // confirmation reads and would make Add the WEAKER of this
+          // file's two write-safety checks: exactly the two-identical-
+          // devices and damaged-first-reply cases the scan is hardened
+          // against could slip past it. Registering a device is a write
+          // to this project's own configuration with the same
+          // consequence as a bad address change - it must never be
+          // checked more loosely than that.
+          auto inspection = rs485_modbus::inspect_address_blocking(id(rs485_uart), address, 100);
+          if (inspection.verdict() == rs485_modbus::AddressObservation::PROVEN_COLLISION) {
+            // Covers both shapes: two devices answering as different
+            // instruments, AND two identical ones whose replies merely
+            // happen to line up often enough that a single probe would
+            // have missed it.
+            id(pressure_add_refusal) = 2;
+            ESP_LOGW("pressure", "Add: more than one device answers on address %d - not registering", address);
+          } else if (inspection.verdict() == rs485_modbus::AddressObservation::SILENCE) {
+            id(pressure_add_refusal) = 1;
+            ESP_LOGW("pressure", "Add: no clean response from address %d - not registering", address);
+          } else {
+            // Registering a device as the wrong type is not a harmless
+            // mistake: the slot then polls a register block that means
+            // something else entirely on that instrument, and whatever
+            // comes back is published as a measurement. The type is
+            // checked here, on the device itself, rather than trusted
+            // from the dropdown - a pressure transmitter could otherwise
+            // be accepted onto a flow meter's slot without a word.
+            // UNKNOWN is not a refusal: the fingerprints cover
+            // the two instruments this system knows, and an
+            // unrecognised device is the person's call, not ours.
+            const char *detected = rs485_modbus::device_kind_name(inspection.kind());
+            if (detected[0] != '\0' && chosen != detected) {
+              id(pressure_add_refusal) = 3;
+              ESP_LOGW("pressure", "Add: address %d holds a %s device, not the %s that was chosen - not registering",
+                       address, detected, chosen.c_str());
+            } else {
+              id(pressure_add_probe_ok) = true;
+            }
+          }
+      - if:
+          condition:
+            lambda: 'return id(pressure_add_probe_ok);'
+          then:
+            - globals.set:
+                id: modbus_add_claimed
+                value: "false"
+            - script.execute:
+                id: slot1_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
+            - script.execute:
+                id: slot2_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
+            - script.execute:
+                id: slot3_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
+            - script.execute:
+                id: slot4_try_register
+                name: !lambda 'return id(pressure_add_name).state;'
+                address: !lambda 'return (int) id(pressure_add_address).state;'
+                device_type: !lambda 'return id(pressure_add_device_type).current_option();'
+      - text.set:
+          id: pressure_add_name
+          value: ""
+      - number.set:
+          id: pressure_add_address
+          value: 0
+      - select.set:
+          id: pressure_add_device_type
+          option: "Pressure"
+      - lambda: |-
+          static const char *const REFUSALS[] = {"ok", "no_response", "collision", "wrong_type"};
+          int code = id(pressure_add_probe_ok) ? 0 : id(pressure_add_refusal);
+          if (code < 0 || code > 3) code = 1;
+          id(pressure_add_result).publish_state(REFUSALS[code]);
+
+text:
+  # Set by the dashboard (not typed by hand in normal use) immediately
+  # before pressing "Modbus Devices Add" - see that button's own
+  # comment. Not persisted (restore_value unset/false): a transient
+  # scratch field, cleared back to empty right after Add fires.
+  - platform: template
+    id: pressure_add_name
+    name: "Modbus Devices Add Name"
+    internal: true
+    icon: "mdi:form-textbox"
+    mode: text
+    optimistic: true
+    min_length: 0
+    max_length: 32
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 10
+
+number:
+  # Set by the dashboard immediately before pressing "Modbus Devices
+  # Add" - see that button's own comment. Not persisted: transient,
+  # cleared back to 0 right after Add fires.
+  - platform: template
+    id: pressure_add_address
+    name: "Modbus Devices Add Target Address"
+    internal: true
+    icon: "mdi:identifier"
+    mode: box
+    min_value: 0
+    max_value: 247
+    step: 1
+    optimistic: true
+    restore_value: false
+    initial_value: 0
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 15
+
+select:
+  - platform: template
+    id: pressure_add_device_type
+    name: "Modbus Devices Add Device Type"
+    internal: true
+    icon: "mdi:chip"
+    options:
+      - "Pressure"
+      - "Flow"
+    optimistic: true
+    restore_value: false
+    initial_option: "Pressure"
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 17
+
+packages:
+  meter1: !include
+    file: packages/water_meter.yaml
+    vars:
+      id_prefix: meter1
+      friendly_name: "Pulse Meter 1"
+      pulse_pin: ${meter1_pulse_pin}
+      liters_per_pulse: "1.0"
+      zero_flow_timeout_default: "60"
+      sorting_group_id: sorting_group_meter1
+
+  meter2: !include
+    file: packages/water_meter.yaml
+    vars:
+      id_prefix: meter2
+      friendly_name: "Pulse Meter 2"
+      pulse_pin: ${meter2_pulse_pin}
+      liters_per_pulse: "1.0"
+      zero_flow_timeout_default: "60"
+      sorting_group_id: sorting_group_meter2
+
+  pressure_slot1: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot1
+      friendly_name: "Modbus Device 1"
+      sorting_group_id: sorting_group_pressure1
+      poll_period_ms: ${modbus_poll_period_ms}
+      poll_offline_period_ms: ${modbus_offline_period_ms}
+      poll_timeout_ms: ${modbus_timeout_ms}
+      identity_check_period_ms: ${modbus_identity_period_ms}
+
+  pressure_slot2: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot2
+      friendly_name: "Modbus Device 2"
+      sorting_group_id: sorting_group_pressure2
+      poll_period_ms: ${modbus_poll_period_ms}
+      poll_offline_period_ms: ${modbus_offline_period_ms}
+      poll_timeout_ms: ${modbus_timeout_ms}
+      identity_check_period_ms: ${modbus_identity_period_ms}
+
+  pressure_slot3: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot3
+      friendly_name: "Modbus Device 3"
+      sorting_group_id: sorting_group_pressure3
+      poll_period_ms: ${modbus_poll_period_ms}
+      poll_offline_period_ms: ${modbus_offline_period_ms}
+      poll_timeout_ms: ${modbus_timeout_ms}
+      identity_check_period_ms: ${modbus_identity_period_ms}
+
+  pressure_slot4: !include
+    file: packages/pressure_sensor.yaml
+    vars:
+      id_prefix: slot4
+      friendly_name: "Modbus Device 4"
+      sorting_group_id: sorting_group_pressure4
+      poll_period_ms: ${modbus_poll_period_ms}
+      poll_offline_period_ms: ${modbus_offline_period_ms}
+      poll_timeout_ms: ${modbus_timeout_ms}
+      identity_check_period_ms: ${modbus_identity_period_ms}
