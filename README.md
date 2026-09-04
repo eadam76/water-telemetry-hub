@@ -119,4 +119,4 @@ See `project-docs/REQUIREMENTS.md` for the full functional/non-functional requir
 
 ## License
 
-[MIT](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal, hobby, educational and other noncommercial use. Commercial/industrial use requires the licensor's permission.
