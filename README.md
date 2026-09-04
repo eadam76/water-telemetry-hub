@@ -1,3 +1,5 @@
+<img src="web/icons/favicon.svg" width="72" height="72" alt="">
+
 # Water Telemetry Hub
 
 ESPHome firmware + a built-in web dashboard for monitoring a water supply: pulse-type water meters and Modbus RTU (RS485) pressure/flow sensors, all served locally from the device and optionally mirrored into Home Assistant. No cloud, no app — just the device's own IP address in a browser.
@@ -16,13 +18,13 @@ ESPHome firmware + a built-in web dashboard for monitoring a water supply: pulse
 
 ## Hardware
 
-| Part | Used for | Notes |
-|---|---|---|
-| [Waveshare ESP32-S3-RS485-CAN](project-docs/docs/hardware/esp32-s3-rs485-can-board.md) | Main controller | Isolated RS485/CAN, DIN-rail mountable |
-| IZAR PULSE i (Diehl Metering) | Pulse water meter sensor | Open-collector output, battery-powered (no wiring for power) |
-| QDW90A (RS485/Modbus variant) | Pressure sensor | 0–10 bar, 24V DC |
-| T3-1-2-H ultrasonic flow meter | Flow sensor | DN20, RS485/Modbus, 12–30V DC |
-| CDEBYTE E810-R14 | RS485 hub | Only needed if wiring the sensors star-topology instead of daisy-chain |
+| Part | Used for | Notes | Docs |
+|---|---|---|---|
+| Waveshare ESP32-S3-RS485-CAN | Main controller | Isolated RS485/CAN, DIN-rail mountable | [Spec](project-docs/docs/hardware/esp32-s3-rs485-can-board.md) · [Datasheet](project-docs/docs/hardware/esp32-s3-rs485-can-board.pdf) |
+| IZAR PULSE i (Diehl Metering) | Pulse water meter sensor | Open-collector output, battery-powered (no wiring for power) | [Datasheet](project-docs/docs/hardware/izar-pulse-i-datasheet.pdf) · [Install guide](project-docs/docs/hardware/izar-pulse-i-installation-guide.pdf) |
+| QDW90A (RS485/Modbus variant) | Pressure sensor | 0–10 bar, 24V DC | [Modbus reference](project-docs/docs/hardware/qdw90a-modbus-reference.md) · [Datasheet](project-docs/docs/hardware/qdw90a-pressure-transmitter-datasheet.pdf) · [Protocol (mfr.)](project-docs/docs/hardware/qdw90a-modbus-protocol-manufacturer.pdf) |
+| T3-1-2-H ultrasonic flow meter | Flow sensor | DN20, RS485/Modbus, 12–30V DC | [Modbus reference](project-docs/docs/hardware/t3-1-2-h-flow-meter.md) · [Quick install](project-docs/docs/hardware/t3-1-2-h-flow-meter-quick-install.pdf) |
+| CDEBYTE E810-R14 | RS485 hub | Only needed if wiring the sensors star-topology instead of daisy-chain | [User manual](project-docs/docs/hardware/e810-r1x-rs485-hub-user-manual.pdf) |
 
 Any pulse-output water meter or QDW90A/T3-1-2-H-compatible Modbus device works the same way — these are just the specific parts this project has been tested against.
 
