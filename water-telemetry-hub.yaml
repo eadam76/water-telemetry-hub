@@ -1141,6 +1141,149 @@ text:
       sorting_group_id: sorting_group_pressure
       sorting_weight: 10
 
+  # Exchanges two Modbus slots' whole configuration, so the person - not
+  # the order devices happened to be added in - decides which instrument
+  # feeds which Home Assistant entity. See rs485_modbus::SlotSwapRequest
+  # (include/rs485_modbus.h) for the request format and why it is safe to
+  # receive twice. One value-carrying write, like a Reading Update, and
+  # reported the same way: on the shared Device Update Result channel,
+  # since an HTTP 200 only means the request arrived. The dashboard puts
+  # an explicit warning in front of it (see swapPressureSlot() in
+  # web/dashboard.js) - HA's entities stay where they are, and what they
+  # measure changes.
+  #
+  # Moved per slot: Modbus Address, Device Type, Display Name, Sort Order
+  # and the Reading correction offset (with its flash copy). Reset per
+  # slot: everything learned about the previous occupant
+  # (<slot>_after_slot_swap). Not touched: anything keyed by ADDRESS (scan
+  # results, collision and mismatch lists) - a device keeps its address,
+  # so those stay true.
+  - platform: template
+    id: pressure_slot_swap
+    name: "Modbus Devices Slot Swap Request"
+    internal: true
+    icon: "mdi:swap-vertical"
+    mode: text
+    optimistic: false
+    min_length: 0
+    max_length: 24
+    entity_category: config
+    disabled_by_default: true
+    web_server:
+      sorting_group_id: sorting_group_pressure
+      sorting_weight: 22
+    set_action:
+      - lambda: |-
+          rs485_modbus::SlotSwapRequest request;
+          const char *status = "invalid";
+          if (rs485_modbus::parse_slot_swap_request(x, request)) {
+            struct Slot {
+              const char *key;
+              const char *default_name;
+              esphome::number::Number *address;
+              esphome::select::Select *type;
+              esphome::text::Text *name;
+              esphome::number::Number *order;
+              int64_t *offset_ml;
+              bool *swapping;
+              int *revert_to;
+            };
+            Slot slots[rs485_modbus::SWAPPABLE_SLOTS] = {
+                {"slot1", "Modbus Device 1", id(slot1_modbus_address), id(slot1_device_type), id(slot1_display_name),
+                 id(slot1_sort_order), &id(slot1_flow_offset_ml), &id(slot1_slot_swapping), &id(slot1_address_revert_to)},
+                {"slot2", "Modbus Device 2", id(slot2_modbus_address), id(slot2_device_type), id(slot2_display_name),
+                 id(slot2_sort_order), &id(slot2_flow_offset_ml), &id(slot2_slot_swapping), &id(slot2_address_revert_to)},
+                {"slot3", "Modbus Device 3", id(slot3_modbus_address), id(slot3_device_type), id(slot3_display_name),
+                 id(slot3_sort_order), &id(slot3_flow_offset_ml), &id(slot3_slot_swapping), &id(slot3_address_revert_to)},
+                {"slot4", "Modbus Device 4", id(slot4_modbus_address), id(slot4_device_type), id(slot4_display_name),
+                 id(slot4_sort_order), &id(slot4_flow_offset_ml), &id(slot4_slot_swapping), &id(slot4_address_revert_to)},
+            };
+            uint8_t current[rs485_modbus::SWAPPABLE_SLOTS];
+            // A failed address change puts its old address back 50 ms
+            // later (<slot>_revert_address). Swapping inside that window
+            // would let the revert land on whichever device the slot holds
+            // by then.
+            bool revert_pending = false;
+            for (uint8_t i = 0; i < rs485_modbus::SWAPPABLE_SLOTS; i++) {
+              current[i] = (uint8_t) slots[i].address->state;
+              if (*slots[i].revert_to >= 0) revert_pending = true;
+            }
+            status = rs485_modbus::slot_swap_verdict(request, current,
+                                                     rs485_modbus::scan_controller().active() || revert_pending);
+            if (strcmp(status, "ok") == 0) {
+              Slot &a = slots[request.from - 1];
+              Slot &b = slots[request.to - 1];
+              // Everything each slot holds, captured before either is
+              // written. An empty slot's name is its own fixed default,
+              // which must not travel: a device moved out of slot 4 into
+              // empty slot 2 leaves slot 4 named "Modbus Device 4", not
+              // "Modbus Device 2" - the same reset Delete performs.
+              struct Config {
+                uint8_t address;
+                std::string type;
+                std::string name;
+                float order;
+                int64_t offset_ml;
+              };
+              auto capture = [](Slot &s, uint8_t address) {
+                return Config{address, std::string(s.type->current_option()), s.name->state, s.order->state,
+                              *s.offset_ml};
+              };
+              Config from_a = capture(a, current[request.from - 1]);
+              Config from_b = capture(b, current[request.to - 1]);
+              if (from_b.address == 0) from_b.name = a.default_name;
+
+              // Off the bus first. A transaction or identity check in
+              // flight for either slot is about the device that is leaving
+              // it; its answer must not be credited to the one arriving.
+              // The scheduler waits for an owned inspector to finish, so
+              // releasing ownership is part of cancelling it.
+              for (Slot *s : {&a, &b}) {
+                uint8_t n = (uint8_t) (s - slots) + 1;
+                rs485_modbus::identity_inspector(s->key).cancel();
+                if (id(modbus_identity_owner) == n) id(modbus_identity_owner) = 0;
+              }
+              rs485_modbus::drain_poll_transaction(id(rs485_uart));
+
+              auto apply = [](Slot &s, const Config &c) {
+                *s.swapping = true;
+                auto address = s.address->make_call();
+                address.set_value((float) c.address);
+                address.perform();
+                *s.swapping = false;  // the set_action clears it too; never let it outlive this one write
+                auto type = s.type->make_call();
+                type.set_option(c.type);
+                type.perform();
+                auto name = s.name->make_call();
+                name.set_value(c.name);
+                name.perform();
+                auto order = s.order->make_call();
+                order.set_value(c.order);
+                order.perform();
+                *s.offset_ml = c.offset_ml;
+                auto pref = global_preferences->make_preference<int64_t>(fnv1a_hash(std::string(s.key) + "_flow_offset_ml"));
+                pref.save(s.offset_ml);
+              };
+              apply(a, from_b);
+              apply(b, from_a);
+              global_preferences->sync();
+
+              for (uint8_t n : {request.from, request.to}) {
+                switch (n) {
+                  case 1: id(slot1_after_slot_swap).execute(); break;
+                  case 2: id(slot2_after_slot_swap).execute(); break;
+                  case 3: id(slot3_after_slot_swap).execute(); break;
+                  case 4: id(slot4_after_slot_swap).execute(); break;
+                }
+              }
+              ESP_LOGI("pressure", "Slot swap: slot %u <-> slot %u (addresses %u and %u)", (unsigned) request.from,
+                       (unsigned) request.to, (unsigned) from_a.address, (unsigned) from_b.address);
+            } else {
+              ESP_LOGW("pressure", "Slot swap refused (%s) for request '%s'", status, x.c_str());
+            }
+          }
+          volume::publish_update_result(id(device_update_result), "Modbus Devices", status, x);
+
 number:
   # Set by the dashboard immediately before pressing "Modbus Devices
   # Add" - see that button's own comment. Not persisted: transient,

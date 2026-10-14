@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -749,6 +750,11 @@ class AddressChangeAuthorization {
     return allowed;
   }
 
+  // Drops an armed-but-unused authorization. A slot swap moves the slot
+  // to a different device, and an arm issued for the old one must not
+  // survive to authorize a write against whatever is there now.
+  void disarm() { this->clear_(); }
+
  private:
   void clear_() {
     this->armed_ = false;
@@ -783,6 +789,67 @@ inline AddressChangeAuthorization &address_change_authorization(const char *key)
   return entries[MAX_AUTHORIZATIONS - 1].authorization;
 }
 
+// --- Slot swap ----------------------------------------------------------
+// Home Assistant's entities belong to a SLOT ("Modbus Device 2 Pressure"),
+// not to a device: ESPHome fixes entity names at compile time, and Add
+// gives a device the first free slot. Which instrument feeds which HA
+// entity was therefore an accident of the order things were added in,
+// with no way to change it short of deleting everything. A swap exchanges
+// two slots' whole configuration - address, type, name, order, reading
+// correction - so the person decides. Moving onto an empty slot is the
+// same operation; the empty slot's defaults simply travel the other way.
+// Nothing is written to any device: addresses move between slots, not on
+// the wire.
+//
+// The request is "<from>,<to>,<from_address>,<to_address>": both slots,
+// plus the address each one holds as the requester last saw it. Those
+// addresses are what make the request safe to receive twice. Once a swap
+// has run, neither slot holds its old address any more, so a delayed
+// duplicate, a retried POST, or a second tab acting on an old view is
+// refused as "stale" instead of quietly swapping everything back. The
+// address-change interlock needs a nonce for the same job because its
+// request does not carry the state it was made against; this one does.
+struct SlotSwapRequest {
+  uint8_t from{0};
+  uint8_t to{0};
+  uint8_t from_address{0};
+  uint8_t to_address{0};
+};
+
+static constexpr uint8_t SWAPPABLE_SLOTS = 4;
+
+inline bool parse_slot_swap_request(const std::string &text, SlotSwapRequest &out) {
+  unsigned from = 0, to = 0, from_address = 0, to_address = 0;
+  char trailing = 0;
+  if (std::sscanf(text.c_str(), "%u,%u,%u,%u%c", &from, &to, &from_address, &to_address, &trailing) != 4) {
+    return false;
+  }
+  if (from < 1 || from > SWAPPABLE_SLOTS || to < 1 || to > SWAPPABLE_SLOTS || from == to) return false;
+  if (from_address > 247 || to_address > 247) return false;
+  out.from = (uint8_t) from;
+  out.to = (uint8_t) to;
+  out.from_address = (uint8_t) from_address;
+  out.to_address = (uint8_t) to_address;
+  return true;
+}
+
+// Whether a well-formed request may run against the slots as they are
+// right now. `current` holds every slot's address, slot 1 first (0 =
+// empty). "busy" is checked first: while a bus scan or an address revert
+// is running, the addresses themselves are about to change under us.
+inline const char *slot_swap_verdict(const SlotSwapRequest &request, const uint8_t current[SWAPPABLE_SLOTS],
+                                     bool busy) {
+  if (busy) return "busy";
+  if (current[request.from - 1] != request.from_address || current[request.to - 1] != request.to_address) {
+    return "stale";
+  }
+  // The action lives on a registered device's own row, so its source is
+  // never empty. A request that says otherwise did not come from that
+  // row and is refused rather than interpreted.
+  if (request.from_address == 0) return "empty";
+  return "ok";
+}
+
 // Non-blocking counterpart of identify() for periodic slot checks. It
 // asks the same two fingerprint questions and keeps the bus through each
 // reply's tail-listen window, but every step returns immediately so the
@@ -807,6 +874,14 @@ class IdentityInspector {
   bool active() const { return this->phase_ != Phase::IDLE && this->phase_ != Phase::DONE; }
   bool done() const { return this->phase_ == Phase::DONE; }
   bool requires_bus_exclusive() const { return this->phase_ == Phase::TAIL_LISTEN; }
+
+  // Abandons a check in progress, or an unconsumed result, without
+  // delivering it. Only for a slot swap: the answer would be about the
+  // device that USED to own the slot. The caller must also release the
+  // scheduler's modbus_identity_owner if it points at this inspector -
+  // the scheduler waits for done(), which a cancelled inspector never
+  // reaches - and drain any transaction it had in flight.
+  void cancel() { this->phase_ = Phase::IDLE; }
   uint8_t address() const { return this->address_; }
 
   void step(UARTComponent *bus, Transaction &tx) {

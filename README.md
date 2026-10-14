@@ -101,6 +101,7 @@ flowchart LR
 - **Pulse meters**: on the Devices page, press **Add Pulse Meter**, pick which GPIO input it's wired to, give it a name, and press Add.
 - **Modbus sensors**: press **Find Modbus Devices** to sweep the RS485 bus for connected devices. Found devices show up with their detected type (Pressure/Flow) pre-filled — name them and press Add. Address conflicts and wiring issues are flagged directly in the table (Collision / Mismatch / Lost), no external Modbus tooling required.
 - Everything — display names, addresses, calibration — is editable later from the same table.
+- **HA slot**: Home Assistant's entities belong to a slot (`Modbus Device 1`…`4`), not to a device, and Add uses the first free one. Each row shows its slot; to choose which device feeds which Home Assistant entities, open the row and pick another slot under **HA slot** — the two devices swap (or the device moves, if that slot is empty), taking their address, name, order and calibration with them. Nothing is written to the devices, but what those Home Assistant entities measure changes from that moment on, which the dashboard warns about before it does it.
 
 <img src="project-docs/docs/screenshots/devices.png" width="380" alt="Devices page with a row expanded, showing address, reading and status">
 

@@ -574,6 +574,86 @@ static void test_address_change_authorization_does_not_infect_a_later_device_at_
   CHECK(!authorization.arm(1, 33, 555, much_later_ms));  // nor can the original nonce reopen the window
 }
 
+static void test_address_change_authorization_disarm() {
+  printf("address change authorization: a slot swap disarms a pending arm\n");
+  rs485_modbus::AddressChangeAuthorization authorization;
+  CHECK(authorization.arm(11, 30, 777, 0));
+  authorization.disarm();
+  CHECK(!authorization.consume(11, 30, 1));  // the arm was for the slot's previous device
+  CHECK(authorization.arm(11, 30, 778, 2));  // a fresh, explicit request still works
+}
+
+static void test_parse_slot_swap_request() {
+  printf("slot swap: the request carries both slots and the addresses they were seen holding\n");
+  rs485_modbus::SlotSwapRequest r;
+  CHECK(rs485_modbus::parse_slot_swap_request("4,2,11,13", r));
+  CHECK_EQ_I64(r.from, 4);
+  CHECK_EQ_I64(r.to, 2);
+  CHECK_EQ_I64(r.from_address, 11);
+  CHECK_EQ_I64(r.to_address, 13);
+  CHECK(rs485_modbus::parse_slot_swap_request("1,3,14,0", r));  // onto an empty slot
+  CHECK_EQ_I64(r.to_address, 0);
+
+  CHECK(!rs485_modbus::parse_slot_swap_request("", r));
+  CHECK(!rs485_modbus::parse_slot_swap_request("4,2,11", r));          // the target's address is required
+  CHECK(!rs485_modbus::parse_slot_swap_request("4,2,11,13,9", r));     // nothing may follow
+  CHECK(!rs485_modbus::parse_slot_swap_request("4,2,11,13x", r));
+  CHECK(!rs485_modbus::parse_slot_swap_request("2,2,13,13", r));       // a slot with itself
+  CHECK(!rs485_modbus::parse_slot_swap_request("0,2,11,13", r));
+  CHECK(!rs485_modbus::parse_slot_swap_request("5,2,11,13", r));       // four slots exist
+  CHECK(!rs485_modbus::parse_slot_swap_request("-1,2,11,13", r));
+  CHECK(!rs485_modbus::parse_slot_swap_request("4,2,248,13", r));      // not a Modbus address
+  CHECK(!rs485_modbus::parse_slot_swap_request("4,2,11,248", r));
+}
+
+static void test_slot_swap_verdict() {
+  printf("slot swap: runs only against the slots exactly as the requester saw them\n");
+  const uint8_t live[4] = {14, 13, 12, 11};
+  rs485_modbus::SlotSwapRequest r;
+
+  CHECK(rs485_modbus::parse_slot_swap_request("4,2,11,13", r));
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, live, false), "ok");
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, live, true), "busy");
+
+  // The same request arriving again after it ran - a retried POST, a
+  // second tab - finds the addresses already exchanged and does nothing,
+  // instead of swapping everything back.
+  const uint8_t after[4] = {14, 11, 12, 13};
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, after, false), "stale");
+
+  // Moving onto an empty slot: a repeat finds the source already empty.
+  const uint8_t with_gap[4] = {14, 0, 12, 11};
+  CHECK(rs485_modbus::parse_slot_swap_request("4,2,11,0", r));
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, with_gap, false), "ok");
+  const uint8_t moved[4] = {14, 11, 12, 0};
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, moved, false), "stale");
+
+  // Someone else filled the empty target in the meantime.
+  const uint8_t refilled[4] = {14, 20, 12, 11};
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, refilled, false), "stale");
+
+  // The source must hold a device.
+  CHECK(rs485_modbus::parse_slot_swap_request("2,4,0,11", r));
+  CHECK_EQ_STR(rs485_modbus::slot_swap_verdict(r, with_gap, false), "empty");
+}
+
+// A cancelled inspector is idle at once - neither active nor done - and
+// can be started again for the slot's new device.
+static void test_identity_inspector_cancel() {
+  printf("IdentityInspector: cancel drops a check in progress and an unread result\n");
+  esphome::test_millis = 0;
+  UARTComponent bus;
+  rs485_modbus::IdentityInspector inspector;
+  rs485_modbus::Transaction tx;
+  CHECK(inspector.start(10, 20));
+  CHECK(inspector.active());
+  inspector.cancel();
+  CHECK(!inspector.active());
+  CHECK(!inspector.done());
+  CHECK(inspector.start(11, 20));
+  CHECK_EQ_I64(inspector.address(), 11);
+}
+
 // AddressInspector/inspect_address_blocking() replaced probe()+identify()
 // as the one evidence machine Add, address-change and the scan all share
 // (see the class's own comment in rs485_modbus.h for the full sequence
@@ -1932,6 +2012,10 @@ int main() {
   test_address_change_is_verified_by_readback();
   test_address_change_authorization_is_exact_and_one_shot();
   test_address_change_authorization_does_not_infect_a_later_device_at_the_old_address();
+  test_address_change_authorization_disarm();
+  test_parse_slot_swap_request();
+  test_slot_swap_verdict();
+  test_identity_inspector_cancel();
   test_address_inspection_single_device();
   test_silent_fingerprint_does_not_open_a_tail_window();
   test_periodic_identity_inspector_never_blocks();

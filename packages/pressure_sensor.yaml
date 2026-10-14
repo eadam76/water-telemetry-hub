@@ -83,6 +83,18 @@ globals:
     restore_value: false
     initial_value: "false"
 
+  # Set by the slot swap (water-telemetry-hub.yaml, "Modbus Devices Slot
+  # Swap Request") for exactly one Modbus Address write. A swap hands this
+  # slot the address ANOTHER slot's device already sits on - relabelling,
+  # not reprogramming - so the set_action below must not treat it as an
+  # address change and go out on the bus. Cleared by that set_action
+  # itself, and again by the swap right after, so it cannot outlive the
+  # one write it was set for.
+  - id: ${id_prefix}_slot_swapping
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
   # When this slot next asks the device at its address what it actually
   # is - see the identity check in _poll_finish. Not persistent: after a
   # restart the right answer is "check on the first good poll", which is
@@ -444,6 +456,13 @@ number:
           // nothing to reprogram, just let the optimistic publish happen.
           if (id(${id_prefix}_address_reverting)) {
             id(${id_prefix}_address_reverting) = false;
+            return;
+          }
+          // A slot swap moving another slot's device (and its address)
+          // into this slot - nothing on the bus changes. The swap resets
+          // this slot's runtime state itself (${id_prefix}_after_slot_swap).
+          if (id(${id_prefix}_slot_swapping)) {
+            id(${id_prefix}_slot_swapping) = false;
             return;
           }
           uint8_t old_address = (uint8_t) id(${id_prefix}_modbus_address).state;
@@ -1238,6 +1257,46 @@ script:
           auto call = id(${id_prefix}_modbus_address).make_call();
           call.set_value((float) revert_to);
           call.perform();
+
+  # Run by the slot swap (water-telemetry-hub.yaml) once this slot's
+  # configuration has been replaced by another slot's. Everything here was
+  # learned about the device that USED to own the slot - verdicts,
+  # backoff, the raw total a Reading is corrected against, the last
+  # published measurements - and would otherwise be credited to the new
+  # one. Same reset Delete and an address change perform, for the same
+  # reason. The measurements go to NAN rather than being left in place:
+  # a Pressure slot never republishes Total Consumption, so a Flow
+  # meter's last total would otherwise stay on this slot indefinitely.
+  # The next poll (a third of a second away) publishes real values, and
+  # the brief "unknown" marks the moment of the swap in HA's history.
+  - id: ${id_prefix}_after_slot_swap
+    mode: single
+    then:
+      - lambda: |-
+          id(${id_prefix}_identity_conflict) = false;
+          id(${id_prefix}_identity_mismatch) = false;
+          rs485_modbus::slot_link("${id_prefix}") = rs485_modbus::SlotLinkState{};
+          rs485_modbus::address_change_authorization("${id_prefix}").disarm();
+          id(${id_prefix}_next_identity_ms) = 0;
+          id(${id_prefix}_fail_streak) = 0;
+          id(${id_prefix}_next_poll_ms) = 0;
+          id(${id_prefix}_flow_raw_valid) = false;
+          id(${id_prefix}_flow_raw_ml) = 0;
+          id(${id_prefix}_flow_raw_ms) = 0;
+          id(${id_prefix}_pressure).publish_state(NAN);
+          id(${id_prefix}_flow_rate).publish_state(NAN);
+          id(${id_prefix}_flow_rate_lpm).publish_state(NAN);
+          id(${id_prefix}_flow_total).publish_state(NAN);
+          id(${id_prefix}_flow_battery_voltage).publish_state(NAN);
+          id(${id_prefix}_flow_reading).publish_state(0);
+          id(${id_prefix}_flow_exact).publish_state("");
+          // The correction moved with its device - show the one this slot
+          // holds now, from the moment of the swap, same as on_boot does.
+          id(${id_prefix}_flow_offset).publish_state((float) ((double) id(${id_prefix}_flow_offset_ml) / 1000000.0));
+          // An emptied slot is offline by definition. A slot that received
+          // a device keeps its last Online value for the third of a second
+          // until its first poll says what is really there.
+          if ((uint8_t) id(${id_prefix}_modbus_address).state == 0) id(${id_prefix}_online).publish_state(false);
 
   - id: ${id_prefix}_try_register
     mode: single

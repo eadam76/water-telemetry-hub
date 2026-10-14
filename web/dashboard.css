@@ -839,6 +839,20 @@ body {
   padding: 6px 16px;
 }
 
+/* Same look as the Add form's own selects. Shrinkable, so a long device
+ * name in an option cannot push the Swap button off a phone screen. */
+.hub-pulsemeter-expanded-field select.hub-slot-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  background: var(--hub-surface-2);
+  border: 1px solid var(--hub-border);
+  color: var(--hub-text);
+  border-radius: var(--hub-radius-xs);
+  padding: 5px 8px;
+  font-size: 16px; /* iOS zoom-on-focus threshold - see the same note on .hub-field input */
+}
+
 .hub-pulsemeter-expanded-unit {
   flex: 0 0 auto;
   color: var(--hub-text-muted);
@@ -1310,6 +1324,16 @@ body {
 .hub-pressure-name-content {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Which Home Assistant slot a registered Modbus device lives in - see
+ * the "HA slot" line in its edit panel. Quiet on purpose: reference
+ * information, read when needed, not a status. */
+.hub-pressure-slot-tag {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--hub-text-faint);
 }
 
 

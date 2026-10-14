@@ -17,6 +17,7 @@
     "Zero-Flow Timeout": "How long with no pulses before Calculated Flow Rate is shown as 0. Lower reacts faster; higher tolerates slow trickles without a false zero.",
     "Display Name": "Shown instead of the fixed name above, on the Dashboard page and here.",
     "Flow Rate": "Live instantaneous flow rate, read directly from the Modbus flow meter - not derived from pulse timing the way the pulse meters' own Calculated Flow Rate is.",
+    "HA slot": "Which \"Modbus Device N\" entities this device appears under in Home Assistant. Home Assistant's entities belong to the slot, not to the device, so choosing another slot here moves this device there (swapping with whatever is in it) and changes what those entities measure. The device itself is not touched.",
   };
 
   // Buttons/fields whose action isn't easily undone get an explicit
@@ -754,6 +755,10 @@
       nameInput.disabled = true;
       nameContent.appendChild(nameInput);
       row._nameInput = nameInput;
+      // Fixed for the life of this row - the row IS the slot (keyed by
+      // groupName). Shown so the Home Assistant entity a device feeds can
+      // be read off the table, not worked out from its live values.
+      nameContent.appendChild(el("span", "hub-pressure-slot-tag", `HA slot ${slotNumberOf(groupName)}`));
 
       const status = el("span", "hub-pressure-badge");
       row.querySelector(".hub-pressure-status").appendChild(status);
@@ -835,6 +840,28 @@
       expandedCell.appendChild(addrLine);
       row._expandedRow = expandedRow;
       row._addrInput = addrInput;
+
+      // HA slot - its own immediate action behind its own warning
+      // (swapPressureSlot()), like Update, never part of Save: Save edits
+      // this slot's fields, a swap moves the whole device to another
+      // slot. Options are rebuilt every render (refreshSlotOptions()),
+      // since what occupies the other slots can change at any time.
+      const slotLine = el("div", "hub-pulsemeter-expanded-field");
+      const slotLabel = el("span", "hub-pulsemeter-expanded-label", "HA slot");
+      const slotSelect = document.createElement("select");
+      slotSelect.className = "hub-slot-select";
+      slotSelect.setAttribute("aria-label", "HA slot");
+      const swapBtn = el("button", "hub-btn hub-btn-compact hub-slot-swap-btn", "Swap");
+      swapBtn.type = "button";
+      slotLine.append(slotLabel, slotSelect, swapBtn);
+      expandedCell.appendChild(slotLine);
+      row._slotSelect = slotSelect;
+      row._swapBtn = swapBtn;
+      attachHelp(slotLine, HELP_TEXT["HA slot"]);
+      slotSelect.addEventListener("change", () => refreshSlotSwapButton(row, groupName));
+      swapBtn.addEventListener("click", async () => {
+        await swapPressureSlot({ groupName, targetSlot: Number(slotSelect.value), row });
+      });
 
       const readingLine = el("div", "hub-pulsemeter-expanded-field");
       const readingLabel = el("span", "hub-pulsemeter-expanded-label", "Reading");
@@ -984,6 +1011,7 @@
         row._readingState = READING_CLEAN;
         nameInput.disabled = false;
         addrInput.disabled = false;
+        refreshSlotOptions(row, groupName, true);
         row.classList.add("hub-pressure-row-editing");
         row._editing = true;
         tbody.insertBefore(expandedRow, row.nextSibling);
@@ -1206,6 +1234,7 @@
       row._nameInput.value = (nameEntity && nameEntity.value) || "";
       if (addrEntity) row._addrInput.value = addrEntity.value ?? "";
     }
+    refreshSlotOptions(row, groupName, false);
     // Only a field nobody is working on gets refreshed from live state.
     // While it is dirty (typed but not applied) or pending (applied,
     // waiting for the device's verdict) it is off limits - see
@@ -2988,6 +3017,157 @@
       timer = setTimeout(() => finish(null), 4000);
     });
     return { promise, cancel: () => finish(null) };
+  }
+
+  // --- HA slot swap ----------------------------------------------------
+  // Home Assistant's entities belong to a slot ("Modbus Device 2 ..."),
+  // not to a device - see rs485_modbus::SlotSwapRequest in
+  // include/rs485_modbus.h. These let a registered row pick its slot.
+
+  function slotNumberOf(groupName) {
+    const m = /(\d+)$/.exec(groupName);
+    return m ? Number(m[1]) : NaN;
+  }
+
+  // What a slot holds right now: its address (0 = empty) and the name to
+  // call it by. A slot whose address has not arrived yet counts as empty -
+  // the firmware compares the address against its own and refuses a
+  // request built on a wrong guess, so this can never swap the wrong pair.
+  function slotOccupant(slot) {
+    const groupName = `Modbus Device ${slot}`;
+    const addrEntity = pressureSlotEntity(groupName, "Modbus Address");
+    const address = addrEntity ? Math.round(Number(addrEntity.value) || 0) : 0;
+    if (!address) return { address: 0, name: null };
+    const nameEntity = pressureSlotEntity(groupName, "Display Name");
+    return { address, name: (nameEntity && nameEntity.value) || groupName };
+  }
+
+  // Rebuilds the slot list (only when what it says has changed, so an
+  // open native picker is not torn down under the user's finger) and
+  // keeps the user's pending choice unless `reset` asks for the row's
+  // own slot again (entering edit mode).
+  function refreshSlotOptions(row, groupName, reset) {
+    const select = row._slotSelect;
+    if (!select) return;
+    const own = slotNumberOf(groupName);
+    const options = [];
+    for (let slot = 1; slot <= PRESSURE_MAX_SLOTS; slot++) {
+      const occupant = slotOccupant(slot);
+      const label = slot === own ? `${slot} – this device` : `${slot} – ${occupant.name || "empty"}`;
+      options.push({ value: String(slot), label });
+    }
+    const signature = options.map((o) => o.label).join("|");
+    const previous = reset ? String(own) : select.value || String(own);
+    if (select._signature !== signature) {
+      select.replaceChildren(
+        ...options.map((o) => {
+          const option = document.createElement("option");
+          option.value = o.value;
+          option.textContent = o.label;
+          return option;
+        })
+      );
+      select._signature = signature;
+    }
+    select.value = options.some((o) => o.value === previous) ? previous : String(own);
+    refreshSlotSwapButton(row, groupName);
+  }
+
+  function refreshSlotSwapButton(row, groupName) {
+    if (!row._swapBtn || !row._slotSelect) return;
+    const own = slotNumberOf(groupName);
+    const target = Number(row._slotSelect.value);
+    row._swapBtn.disabled = row._swapping || !Number.isInteger(target) || target === own;
+    row._swapBtn.textContent = Number.isInteger(target) && target !== own && !slotOccupant(target).address ? "Move" : "Swap";
+  }
+
+  // The confirmation is the warning - it is the last thing between the
+  // person and a change that alters what Home Assistant records, so it
+  // says in plain terms what moves, what does not, and what follows.
+  function slotSwapWarning(from, source, to, target) {
+    const lines = [];
+    if (target.address) {
+      lines.push(`Swap HA slots ${from} and ${to}?`, "");
+      lines.push(`"${source.name}" moves from slot ${from} to slot ${to}.`);
+      lines.push(`"${target.name}" moves from slot ${to} to slot ${from}.`);
+    } else {
+      lines.push(`Move "${source.name}" from HA slot ${from} to slot ${to}?`, "");
+      lines.push(`Slot ${to} is empty now; slot ${from} will be empty afterwards.`);
+    }
+    lines.push("", "WARNING - this changes what Home Assistant measures:");
+    const after = target.address
+      ? `"Modbus Device ${to} ..." entities will report "${source.name}", and "Modbus Device ${from} ..." entities will report "${target.name}".`
+      : `"Modbus Device ${to} ..." entities will report "${source.name}", and "Modbus Device ${from} ..." entities will report nothing.`;
+    lines.push(`- Home Assistant entities belong to the slot, not to the device. From now on ${after}`);
+    lines.push("- History already recorded is not moved. Graphs and statistics will show a jump at this moment.");
+    lines.push("- Automations, dashboards and utility meters using these entities will act on the other device.");
+    lines.push(
+      "- Nothing is written to the devices. Address, type, name, order and Reading correction move with each device."
+    );
+    lines.push("", "Continue?");
+    return lines.join("\n");
+  }
+
+  async function swapPressureSlot({ groupName, targetSlot, row }) {
+    const from = slotNumberOf(groupName);
+    const to = targetSlot;
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return;
+    // A swap moves the SAVED configuration. An unsaved edit in this row
+    // would otherwise be silently dropped, or worse, saved afterwards
+    // onto whatever device the slot holds by then.
+    if (row._saveBtn && !row._saveBtn.disabled) {
+      alert("Save or cancel the other changes in this row first - a slot swap moves the saved settings only.");
+      return;
+    }
+    const swapEntity = pressureSlotEntity(PRESSURE_ADD_GROUP, "Slot Swap Request");
+    if (!swapEntity) {
+      alert("This hub's firmware cannot move devices between slots. Update the firmware first.");
+      return;
+    }
+    // Captured BEFORE the question is asked: the request carries the
+    // state the person agreed to, and the firmware refuses it if either
+    // slot has changed by the time it arrives.
+    const source = slotOccupant(from);
+    const target = slotOccupant(to);
+    if (!source.address) return;
+    if (!confirm(slotSwapWarning(from, source, to, target))) return;
+
+    const request = `${from},${to},${source.address},${target.address}`;
+    const outcome = watchUpdateResult(PRESSURE_ADD_GROUP, request);
+    row._swapping = true;
+    refreshSlotSwapButton(row, groupName);
+    try {
+      await postRequest(`${swapEntity.namePath}/set?value=${encodeURIComponent(request)}`);
+      const result = await outcome.promise;
+      if (result && result.status === "ok") {
+        // This row's slot now holds the other device (or nothing) - its
+        // edit panel describes a device that has left.
+        if (row._editing && row._cancelEdit) row._cancelEdit();
+        renderDeviceTableBody();
+      } else if (result && result.status === "stale") {
+        alert(
+          "The slots changed since this page showed them (another browser tab, a Delete or an Add), so nothing " +
+            "was swapped. Check the table and try again."
+        );
+      } else if (result && result.status === "busy") {
+        alert(
+          "A bus scan or an address change is still running, so nothing was swapped. Wait for it to finish, " +
+            "then try again."
+        );
+      } else if (result) {
+        alert(`The hub refused the slot swap (${result.status}), so nothing was changed.`);
+      } else {
+        // Unlike an address change, an unconfirmed swap leaves the person
+        // not knowing which device HA is now recording - worth saying.
+        alert("The hub did not confirm the slot swap. Check the HA slot shown on each row before relying on it.");
+      }
+    } catch (error) {
+      outcome.cancel();
+      showRequestError(error, "Slot swap failed");
+    } finally {
+      row._swapping = false;
+      refreshSlotSwapButton(row, groupName);
+    }
   }
 
   // The exact millilitre value of a typed reading, or null if it isn't a

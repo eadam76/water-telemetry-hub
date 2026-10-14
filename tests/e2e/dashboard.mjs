@@ -948,11 +948,205 @@ async function run() {
   await testRefusalRestoresLiveValue(page);
   await testAnotherTabsResultIsNotOurs(page);
 
+  await addSlotSwapFixture(page);
+  await testEachRowShowsItsHaSlot(page);
+  await testSlotSwapWarnsAndSendsTheStateItWasShown(page);
+  await testDeclinedSlotSwapSendsNothing(page);
+  await testStaleSlotSwapIsReported(page);
+  await testMoveOntoAnEmptySlot(page);
+  await testSlotSwapWaitsForUnsavedEdits(page);
+
   check(pageErrors.length === 0, `no uncaught page errors (got: ${pageErrors.join(" | ")})`);
 
   await browser.close();
   console.log(`\n${checks} checks, ${failures} failures`);
   process.exit(failures === 0 ? 0 : 1);
+}
+
+// --- HA slot swap ----------------------------------------------------------
+// Home Assistant's entities belong to a slot, not to a device; the swap is
+// how a person chooses which device feeds which slot. It changes what HA
+// records, so the confirmation has to say so, and the request has to carry
+// the exact state the person agreed to (the firmware refuses it otherwise).
+
+const SLOT2 = "Modbus Device 2";
+const SLOT3 = "Modbus Device 3";
+
+async function addSlotSwapFixture(page) {
+  await page.evaluate(
+    ([slot2, slot3]) => {
+      window.__emit("sorting_group", { name: slot2, sorting_weight: 32 });
+      window.__emit("sorting_group", { name: slot3, sorting_weight: 33 });
+      const slot = (group, address, name, type, order) => [
+        { id: `select/${group} Device Type`, domain: "select", name: `${group} Device Type`, sorting_group: group, sorting_weight: 5, value: type, entity_category: 1 },
+        { id: `number/${group} Modbus Address`, domain: "number", name: `${group} Modbus Address`, sorting_group: group, sorting_weight: 20, value: address, min_value: 0, max_value: 247, step: 1, entity_category: 1 },
+        { id: `number/${group} Sort Order`, domain: "number", name: `${group} Sort Order`, sorting_group: group, sorting_weight: 25, value: order, entity_category: 2 },
+        { id: `binary_sensor/${group} Online`, domain: "binary_sensor", name: `${group} Online`, sorting_group: group, sorting_weight: 15, value: address > 0, entity_category: 2 },
+        { id: `text/${group} Display Name`, domain: "text", name: `${group} Display Name`, sorting_group: group, sorting_weight: 30, value: name, entity_category: 1 },
+        { id: `button/${group} Delete`, domain: "button", name: `${group} Delete`, sorting_group: group, sorting_weight: 100, entity_category: 1 },
+      ];
+      for (const e of slot(slot2, 13, "Rendszer nyomás", "Pressure", 2)) window.__emit("state", e);
+      for (const e of slot(slot3, 0, slot3, "Pressure", 0)) window.__emit("state", e);
+      // Slot 1 ("Kerti óra") back at the address the fixture started it on,
+      // whatever the address-change tests above left behind.
+      window.__emit("state", { id: "number/Modbus Device 1 Modbus Address", value: 1 });
+      window.__emit("state", {
+        id: "text/Modbus Devices Slot Swap Request",
+        domain: "text",
+        name: "Modbus Devices Slot Swap Request",
+        sorting_group: "Modbus Devices",
+        sorting_weight: 22,
+        value: "",
+        max_length: 24,
+        entity_category: 1,
+      });
+    },
+    [SLOT2, SLOT3]
+  );
+  await page.waitForTimeout(150);
+}
+
+async function openSlotSwap(page, displayNameValue) {
+  await resetHarness(page);
+  await openRow(page, displayNameValue);
+  const expanded = page.locator("tr.hub-pulsemeter-expanded");
+  return {
+    select: expanded.locator("select.hub-slot-select"),
+    swap: expanded.locator("button.hub-slot-swap-btn"),
+  };
+}
+
+async function emitSwapResult(page, status, request) {
+  await page.evaluate(
+    ([s, r]) => window.__emit("state", { id: "text_sensor/Device Update Result", value: `${Date.now()}|Modbus Devices|${s}|${r}` }),
+    [status, request]
+  );
+  await page.waitForTimeout(80);
+}
+
+async function testEachRowShowsItsHaSlot(page) {
+  console.log("slot swap: every registered Modbus row says which HA slot it is");
+  const tags = await page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll("td.hub-pressure-name")]
+        .filter((cell) => cell.querySelector(".hub-pressure-slot-tag"))
+        .map((cell) => [cell.querySelector("input").value, cell.querySelector(".hub-pressure-slot-tag").textContent])
+    )
+  );
+  eq(tags["Kerti óra"], "HA slot 1", "the flow meter's row names slot 1");
+  eq(tags["Rendszer nyomás"], "HA slot 2", "the pressure sensor's row names slot 2");
+}
+
+async function testSlotSwapWarnsAndSendsTheStateItWasShown(page) {
+  console.log("slot swap: an explicit warning first, then one request carrying the state that was shown");
+  const ui = await openSlotSwap(page, "Kerti óra");
+  const options = await ui.select.locator("option").allTextContents();
+  eq(options.length, 4, "all four slots are offered");
+  check(options[0].includes("this device"), `the row's own slot is marked (got "${options[0]}")`);
+  check(options[1].includes("Rendszer nyomás"), `an occupied slot names its device (got "${options[1]}")`);
+  check(options[2].includes("empty"), `an empty slot says so (got "${options[2]}")`);
+  check(await ui.swap.isDisabled(), "nothing to do until another slot is chosen");
+
+  await ui.select.selectOption("2");
+  eq(await ui.swap.textContent(), "Swap", "an occupied target is a swap");
+  check(!(await ui.swap.isDisabled()), "a different slot enables the action");
+  await ui.swap.click();
+  await page.waitForTimeout(50);
+
+  const h = await harness(page);
+  eq(h.confirms.length, 1, "exactly one confirmation is asked");
+  const warning = h.confirms[0] || "";
+  check(/WARNING/.test(warning), "the confirmation is an explicit warning");
+  check(warning.includes('"Kerti óra" moves from slot 1 to slot 2'), "it says where this device goes");
+  check(warning.includes('"Rendszer nyomás" moves from slot 2 to slot 1'), "and where the other one goes");
+  check(warning.includes('"Modbus Device 2 ..." entities will report "Kerti óra"'), "it names the HA entities that change meaning");
+  check(/History already recorded is not moved/.test(warning), "it says recorded history stays behind");
+  check(/Automations/.test(warning), "it says automations will act on the other device");
+  check(/Nothing is written to the devices/.test(warning), "it says the devices themselves are not touched");
+
+  const swapPosts = h.posts.filter((p) => p.path.includes("Slot%20Swap%20Request"));
+  eq(swapPosts.length, 1, "one request is sent");
+  check(swapPosts[0] && swapPosts[0].path.endsWith("/set?value=1%2C2%2C1%2C13"), `it carries both slots and both addresses (got ${swapPosts[0] && swapPosts[0].path})`);
+  check(!h.posts.some((p) => /Modbus%20Address\/set|Display%20Name\/set|Address%20Change/.test(p.path)), "no address or name write goes out alongside it");
+
+  await emitSwapResult(page, "ok", "1,2,1,13");
+  const after = await harness(page);
+  eq(after.alerts.length, 0, "a confirmed swap needs no further message");
+  eq(await page.locator("tr.hub-pressure-row-editing").count(), 0, "the row leaves edit mode - it now holds the other device");
+}
+
+async function testDeclinedSlotSwapSendsNothing(page) {
+  console.log("slot swap: declining the warning sends nothing");
+  const ui = await openSlotSwap(page, "Kerti óra");
+  await page.evaluate(() => (window.__confirmAnswer = false));
+  await ui.select.selectOption("2");
+  await ui.swap.click();
+  await page.waitForTimeout(50);
+  const h = await harness(page);
+  eq(h.confirms.length, 1, "the warning was shown");
+  check(!h.posts.some((p) => p.path.includes("Slot%20Swap%20Request")), "and a no means nothing is sent");
+  await page.evaluate(() => (window.__confirmAnswer = true));
+  await page.evaluate(() => {
+    const row = document.querySelector("tr.hub-pressure-row-editing");
+    if (row) row.querySelector(".hub-pressure-cancel-btn").click();
+  });
+}
+
+async function testStaleSlotSwapIsReported(page) {
+  console.log("slot swap: a refusal because the slots changed meanwhile is reported");
+  const ui = await openSlotSwap(page, "Kerti óra");
+  await ui.select.selectOption("2");
+  await ui.swap.click();
+  await page.waitForTimeout(50);
+  await emitSwapResult(page, "stale", "1,2,1,13");
+  const h = await harness(page);
+  eq(h.alerts.length, 1, `the refusal surfaces (got ${JSON.stringify(h.alerts)})`);
+  check(h.alerts[0] && /nothing was swapped/i.test(h.alerts[0]), `it says nothing changed (got "${h.alerts[0]}")`);
+  await page.evaluate(() => {
+    const row = document.querySelector("tr.hub-pressure-row-editing");
+    if (row) row.querySelector(".hub-pressure-cancel-btn").click();
+  });
+}
+
+async function testMoveOntoAnEmptySlot(page) {
+  console.log("slot swap: moving onto an empty slot says so and sends its empty address");
+  const ui = await openSlotSwap(page, "Kerti óra");
+  await ui.select.selectOption("3");
+  eq(await ui.swap.textContent(), "Move", "an empty target is a move");
+  await ui.swap.click();
+  await page.waitForTimeout(50);
+  const h = await harness(page);
+  const warning = h.confirms[0] || "";
+  check(warning.includes("Slot 3 is empty now; slot 1 will be empty afterwards."), `the warning describes a move (got "${warning}")`);
+  check(warning.includes('"Modbus Device 1 ..." entities will report nothing'), "and that slot 1's entities go quiet");
+  const swapPost = h.posts.find((p) => p.path.includes("Slot%20Swap%20Request"));
+  check(swapPost && swapPost.path.endsWith("/set?value=1%2C3%2C1%2C0"), `the empty slot travels as address 0 (got ${swapPost && swapPost.path})`);
+  await emitSwapResult(page, "busy", "1,3,1,0");
+  const after = await harness(page);
+  check(after.alerts[0] && /still running/i.test(after.alerts[0]), `a busy hub is reported (got "${after.alerts[0]}")`);
+  await page.evaluate(() => {
+    const row = document.querySelector("tr.hub-pressure-row-editing");
+    if (row) row.querySelector(".hub-pressure-cancel-btn").click();
+  });
+}
+
+async function testSlotSwapWaitsForUnsavedEdits(page) {
+  console.log("slot swap: an unsaved edit in the row blocks it instead of being lost");
+  const ui = await openSlotSwap(page, "Kerti óra");
+  const name = page.locator("tr.hub-pressure-row-editing td.hub-pressure-name input");
+  await name.click({ clickCount: 3 });
+  await name.pressSequentially("Új név", { delay: 5 });
+  await ui.select.selectOption("2");
+  await ui.swap.click();
+  await page.waitForTimeout(50);
+  const h = await harness(page);
+  eq(h.confirms.length, 0, "no swap is offered over an unsaved edit");
+  check(h.alerts[0] && /Save or cancel/.test(h.alerts[0]), `the person is told why (got "${h.alerts[0]}")`);
+  check(!h.posts.some((p) => p.path.includes("Slot%20Swap%20Request")), "nothing is sent");
+  await page.evaluate(() => {
+    const row = document.querySelector("tr.hub-pressure-row-editing");
+    if (row) row.querySelector(".hub-pressure-cancel-btn").click();
+  });
 }
 
 async function openAndGet(page, displayNameValue) {
